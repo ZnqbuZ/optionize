@@ -1,4 +1,5 @@
 use proc_macro::TokenStream;
+use std::iter::zip;
 use proc_macro2::Ident;
 use quote::quote;
 use std::mem::take;
@@ -159,16 +160,28 @@ fn is_option(ty: &Type) -> bool {
 }
 
 pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
-    let args = parse_macro_input!(args as StructArgs);
-    let original = parse_macro_input!(input as ItemStruct);
+    let struct_args = parse_macro_input!(args as StructArgs);
+    let mut original = parse_macro_input!(input as ItemStruct);
+
+    let fields_args =
+        match original
+            .fields
+            .iter_mut()
+            .map(|field| FieldArgs::extract(&mut field.attrs))
+            .collect::<Result<Vec<_>>>() {
+            Ok(args) => args,
+            Err(e) => return e.to_compile_error().into(),
+        };
 
     let mut optionized = original.clone();
 
-    let ident = optionized.ident;
-    let name = args.name.replace("{}", &ident.to_string());
-    optionized.ident = Ident::new(&name, ident.span());
+    optionized.ident = {
+        let ident = optionized.ident;
+        let name = struct_args.name.replace("{}", &ident.to_string());
+        Ident::new(&name, ident.span())
+    };
 
-    if let Some(attributes) = args.attributes {
+    if let Some(attributes) = struct_args.attributes {
         optionized.attrs = attributes
             .into_iter()
             .map(|meta| parse_quote! { #[#meta] })
@@ -183,23 +196,19 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
         syn::Fields::Unnamed(fields) => &mut fields.unnamed,
         syn::Fields::Unit => return Default::default(),
     };
-    for mut field in take(fields) {
-        let args = match FieldArgs::extract(&mut field.attrs) {
-            Ok(args) => args,
-            Err(e) => return e.to_compile_error().into(),
-        };
-
+    for (mut field, args) in zip(take(fields), fields_args) {
         if args.skip {
             continue;
         }
 
         if let Some(name) = args.name {
-            let Some(span) = field.ident.map(|id| id.span()) else {
+            let Some(ident) = field.ident else {
                 return Error::new_spanned(field.ty, "cannot rename unnamed field")
                     .to_compile_error()
                     .into();
             };
-            field.ident = Some(Ident::new(&name, span));
+            let name = name.replace("{}", &ident.to_string());
+            field.ident = Some(Ident::new(&name, ident.span()));
         }
 
         if args.wrapped.unwrap_or_else(|| !is_option(&field.ty)) {

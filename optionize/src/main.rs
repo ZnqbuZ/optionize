@@ -4,6 +4,7 @@ use optionize_macros::optionize;
 #[derive(Debug)]
 struct MyStruct {
     field: i32,
+    #[optionize(wrapped = true)]
     ofield: Option<i32>,
 }
 
