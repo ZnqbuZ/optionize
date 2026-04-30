@@ -122,8 +122,10 @@ impl FieldArgs {
 }
 
 fn is_option(ty: &Type) -> bool {
-    let Type::Path(path) = ty else {
-        return false;
+    let path = match ty {
+        Type::Path(path) => path,
+        Type::Paren(ty) => return is_option(&ty.elem),
+        _ => return false
     };
 
     if path.qself.is_some() {
