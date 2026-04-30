@@ -1,87 +1,122 @@
 use proc_macro::TokenStream;
+use proc_macro2::Ident;
 use quote::quote;
-use syn::parse::{Parse, ParseStream, Result};
+use std::mem::take;
+use syn::parse::{Parse, ParseStream, Parser, Result};
+use syn::punctuated::Punctuated;
 use syn::{
-    parenthesized, parse_macro_input, parse_quote, Error, GenericArgument, Ident, ItemStruct, Meta, PathArguments,
+    parse_macro_input, parse_quote, Attribute, Error, Expr, GenericArgument, ItemStruct, Lit, Meta, PathArguments,
     Token, Type,
 };
 
-mod kw {
-    use syn::custom_keyword;
-
-    custom_keyword!(name);
-    custom_keyword!(attributes);
+macro_rules! bail {
+    ($tokens:expr, $message:expr) => {
+        return Err(Error::new_spanned($tokens, $message))
+    };
 }
 
-enum Arg {
-    Ident(Ident),
-    Attributes(Vec<Meta>),
-}
-
-impl Parse for Arg {
-    fn parse(input: ParseStream) -> Result<Self> {
-        let lookahead = input.lookahead1();
-
-        if lookahead.peek(kw::name) {
-            input.parse::<kw::name>()?;
-            input.parse::<Token![=]>()?;
-            let name = input.parse::<syn::Ident>()?;
-
-            return Ok(Arg::Ident(name));
-        }
-
-        if lookahead.peek(kw::attributes) {
-            input.parse::<kw::attributes>()?;
-
-            let metas = {
-                let metas;
-                parenthesized!(metas in input);
-                metas
-                    .parse_terminated(Meta::parse, Token![,])?
-                    .into_iter()
-                    .collect()
-            };
-
-            return Ok(Arg::Attributes(metas));
-        }
-
-        if lookahead.peek(Ident) {
-            let ident = input.parse::<Ident>()?;
-            return Ok(Arg::Ident(ident));
-        }
-
-        Err(lookahead.error())
-    }
-}
-
-struct MacroArgs {
-    ident: Ident,
+struct StructArgs {
+    name: String,
     attributes: Option<Vec<Meta>>,
 }
 
-impl Parse for MacroArgs {
+impl Parse for StructArgs {
     fn parse(input: ParseStream) -> Result<Self> {
-        let args = input.parse_terminated(Arg::parse, Token![,])?;
-        let mut ident = None;
+        let metas = input.parse_terminated(Meta::parse, Token![,])?;
+
+        let mut name = None;
         let mut attributes = None::<Vec<_>>;
 
-        for arg in args {
-            match arg {
-                Arg::Ident(id) => {
-                    if ident.is_some() {
-                        return Err(Error::new(id.span(), "only one name can be specified"));
+        for meta in &metas {
+            match meta {
+                Meta::NameValue(nv) if nv.path.is_ident("name") => {
+                    if let Expr::Lit(expr_lit) = &nv.value
+                        && let Lit::Str(lit_str) = &expr_lit.lit
+                    {
+                        name = Some(lit_str.value());
+                    } else {
+                        bail!(nv, "expected string literal");
                     }
-                    ident = Some(id);
                 }
-                Arg::Attributes(mut metas) => attributes.get_or_insert_default().append(&mut metas),
+                Meta::List(meta_list) if meta_list.path.is_ident("attributes") => {
+                    let Ok(nested) =
+                        meta_list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+                    else {
+                        bail!(meta_list, "invalid attributes format");
+                    };
+                    attributes.get_or_insert_default().extend(nested);
+                }
+                Meta::Path(path) if let Some(ident) = path.get_ident() => {
+                    name = Some(ident.to_string());
+                }
+                _ => bail!(meta, "unrecognized optionize argument"),
             }
         }
 
-        let Some(ident) = ident else {
-            return Err(Error::new(input.span(), "a name must be specified"));
-        };
+        let name = name.ok_or_else(|| input.error("a name must be specified"))?;
 
-        Ok(Self { ident, attributes })
+        Ok(Self { name, attributes })
+    }
+}
+
+#[derive(Default)]
+struct FieldArgs {
+    name: Option<String>,
+    attributes: Option<Vec<Meta>>,
+    wrapped: Option<bool>,
+    skip: bool,
+}
+
+impl FieldArgs {
+    fn extract(attributes: &mut Vec<Attribute>) -> Result<Self> {
+        let mut args = Self::default();
+
+        for attribute in take(attributes) {
+            if !attribute.path().is_ident("optionize") {
+                attributes.push(attribute);
+                continue;
+            }
+
+            let metas =
+                attribute.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
+
+            for meta in &metas {
+                match meta {
+                    Meta::NameValue(nv) if nv.path.is_ident("name") => {
+                        if let Expr::Lit(expr_lit) = &nv.value
+                            && let Lit::Str(lit_str) = &expr_lit.lit
+                        {
+                            args.name = Some(lit_str.value());
+                        } else {
+                            bail!(nv, "expected string literal");
+                        }
+                    }
+                    Meta::List(meta_list) if meta_list.path.is_ident("attributes") => {
+                        let Ok(nested) = meta_list
+                            .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+                        else {
+                            bail!(meta_list, "invalid attributes format");
+                        };
+                        args.attributes.get_or_insert_default().extend(nested);
+                    }
+                    Meta::NameValue(nv) if nv.path.is_ident("wrapped") => {
+                        if let Expr::Lit(expr_lit) = &nv.value
+                            && let Lit::Bool(lit_bool) = &expr_lit.lit
+                        {
+                            args.wrapped = Some(lit_bool.value);
+                        } else {
+                            bail!(nv, "expected boolean literal");
+                        }
+                    }
+                    Meta::Path(path) if path.is_ident("skip") => {
+                        args.skip = true;
+                    }
+                    _ => bail!(meta, "unrecognized optionize argument"),
+                }
+            }
+        }
+
+        Ok(args)
     }
 }
 
@@ -124,11 +159,14 @@ fn is_option(ty: &Type) -> bool {
 }
 
 pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
-    let args = parse_macro_input!(args as MacroArgs);
+    let args = parse_macro_input!(args as StructArgs);
     let original = parse_macro_input!(input as ItemStruct);
 
     let mut optionized = original.clone();
-    optionized.ident = args.ident;
+
+    let ident = optionized.ident;
+    let name = args.name.replace("{}", &ident.to_string());
+    optionized.ident = Ident::new(&name, ident.span());
 
     if let Some(attributes) = args.attributes {
         optionized.attrs = attributes
@@ -140,17 +178,41 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
         .attrs
         .retain(|attr| !attr.path().is_ident("optionize"));
 
-    for field in &mut optionized.fields {
-        let ty = &field.ty;
-        if !is_option(ty) {
+    let fields = match &mut optionized.fields {
+        syn::Fields::Named(fields) => &mut fields.named,
+        syn::Fields::Unnamed(fields) => &mut fields.unnamed,
+        syn::Fields::Unit => return Default::default(),
+    };
+    for mut field in take(fields) {
+        let args = match FieldArgs::extract(&mut field.attrs) {
+            Ok(args) => args,
+            Err(e) => return e.to_compile_error().into(),
+        };
+
+        if args.skip {
+            continue;
+        }
+
+        if let Some(name) = args.name {
+            let Some(span) = field.ident.map(|id| id.span()) else {
+                return Error::new_spanned(field.ty, "cannot rename unnamed field")
+                    .to_compile_error()
+                    .into();
+            };
+            field.ident = Some(Ident::new(&name, span));
+        }
+
+        if args.wrapped.unwrap_or_else(|| !is_option(&field.ty)) {
+            let ty = &field.ty;
             field.ty = parse_quote! { Option<#ty> };
         }
+
+        fields.push(field);
     }
 
-    let expanded = quote! {
+    quote! {
         #original
         #optionized
-    };
-
-    expanded.into()
+    }
+    .into()
 }

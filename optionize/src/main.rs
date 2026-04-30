@@ -1,6 +1,6 @@
 use optionize_macros::optionize;
 
-#[optionize(name = OptionizedStruct)]
+#[optionize(name = "Optionized{}")]
 #[derive(Debug)]
 struct MyStruct {
     field: i32,
@@ -8,6 +8,6 @@ struct MyStruct {
 }
 
 pub fn main() {
-    let o = OptionizedStruct { field: Some(0), ofield: None };
+    let o = OptionizedMyStruct { field: Some(0), ofield: None };
     println!("{:?}", o);
 }
