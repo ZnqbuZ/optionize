@@ -1,0 +1,20 @@
+[package]
+name = "optionize-macros"
+repository.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "The procedural macro engine powering the optionize crate"
+readme = "README.md"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+darling = "0.23"
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
