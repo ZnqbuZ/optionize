@@ -10,4 +10,8 @@ categories.workspace = true
 
 [lib]
 
+[[bin]]
+name = "optionize"
+
 [dependencies]
+optionize-macros = { version = "0.1", path = "../optionize-macros" }
