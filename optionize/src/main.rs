@@ -1,6 +1,6 @@
 use optionize_macros::optionize;
 
-#[optionize(name(OptionizedStruct))]
+#[optionize(name = OptionizedStruct)]
 #[derive(Debug)]
 struct MyStruct {
     field: i32,
