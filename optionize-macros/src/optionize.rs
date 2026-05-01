@@ -20,15 +20,15 @@ macro_rules! bail {
 
 #[derive(Default)]
 struct StructArgs {
-    name: String,
+    name: Option<String>,
     attributes: Option<Vec<Meta>>,
+    partial: bool,
     upgradable: bool,
 }
 
 impl Parse for StructArgs {
     fn parse(input: ParseStream) -> Result<Self> {
-        let mut name = None;
-        let mut args = Self::default();
+        let mut this = Self::default();
 
         let metas = input.parse_terminated(Meta::parse, Token![,])?;
 
@@ -38,7 +38,7 @@ impl Parse for StructArgs {
                     if let Expr::Lit(expr_lit) = &nv.value
                         && let Lit::Str(lit_str) = &expr_lit.lit
                     {
-                        name = Some(lit_str.value());
+                        this.name = Some(lit_str.value());
                     } else {
                         bail!(nv, "expected string literal");
                     }
@@ -49,21 +49,34 @@ impl Parse for StructArgs {
                     else {
                         bail!(meta_list, "invalid attributes format");
                     };
-                    args.attributes.get_or_insert_default().extend(nest);
+                    this.attributes.get_or_insert_default().extend(nest);
                 }
-                Meta::Path(path) if path.is_ident("upgradable") => {
-                    args.upgradable = true;
+                Meta::Path(path) if path.is_ident("partial") => {
+                    this.partial = true;
+                }
+                Meta::List(meta_list) if meta_list.path.is_ident("partial") => {
+                    this.partial = true;
+                    let Ok(nest) =
+                        meta_list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+                    else {
+                        bail!(meta_list, "invalid partial format");
+                    };
+                    for meta in nest {
+                        if meta.path().is_ident("upgradable") {
+                            this.upgradable = true;
+                        } else {
+                            bail!(meta, "unrecognized argument in partial(...)");
+                        }
+                    }
                 }
                 Meta::Path(path) if let Some(ident) = path.get_ident() => {
-                    name = Some(ident.to_string());
+                    this.name = Some(ident.to_string());
                 }
                 _ => bail!(meta, "unrecognized optionize argument"),
             }
         }
 
-        let name = name.ok_or_else(|| input.error("a name must be specified"))?;
-
-        Ok(Self { name, ..args })
+        Ok(this)
     }
 }
 
@@ -78,7 +91,7 @@ struct FieldArgs {
 
 impl FieldArgs {
     fn extract(attributes: &mut Vec<Attribute>) -> Result<Self> {
-        let mut args = Self::default();
+        let mut this = Self::default();
 
         for attribute in take(attributes) {
             if !attribute.path().is_ident("optionize") {
@@ -95,7 +108,7 @@ impl FieldArgs {
                         if let Expr::Lit(expr_lit) = &nv.value
                             && let Lit::Str(lit_str) = &expr_lit.lit
                         {
-                            args.name = Some(lit_str.value());
+                            this.name = Some(lit_str.value());
                         } else {
                             bail!(nv, "expected string literal");
                         }
@@ -106,13 +119,13 @@ impl FieldArgs {
                         else {
                             bail!(meta_list, "invalid attributes format");
                         };
-                        args.attributes.get_or_insert_default().extend(nest);
+                        this.attributes.get_or_insert_default().extend(nest);
                     }
                     Meta::NameValue(nv) if nv.path.is_ident("wrap") => {
                         if let Expr::Lit(expr_lit) = &nv.value
                             && let Lit::Bool(lit_bool) = &expr_lit.lit
                         {
-                            args.wrap = Some(lit_bool.value);
+                            this.wrap = Some(lit_bool.value);
                         } else {
                             bail!(nv, "expected boolean literal");
                         }
@@ -121,20 +134,20 @@ impl FieldArgs {
                         if let Expr::Lit(expr_lit) = &nv.value
                             && let Lit::Str(lit_str) = &expr_lit.lit
                         {
-                            args.nest = Some(lit_str.value());
+                            this.nest = Some(lit_str.value());
                         } else {
                             bail!(nv, "expected string literal");
                         }
                     }
                     Meta::Path(path) if path.is_ident("skip") => {
-                        args.skip = true;
+                        this.skip = true;
                     }
                     _ => bail!(meta, "unrecognized optionize argument"),
                 }
             }
         }
 
-        Ok(args)
+        Ok(this)
     }
 }
 
@@ -332,7 +345,11 @@ struct StructMeta {
 }
 
 impl StructMeta {
-    fn extract(fields: &mut Punctuated<Field, Comma>, args: Vec<FieldArgs>) -> Result<Self> {
+    fn extract(
+        fields: &mut Punctuated<Field, Comma>,
+        args: Vec<FieldArgs>,
+        partial: bool,
+    ) -> Result<Self> {
         let mut this = Self::default();
 
         for (i, (mut field, args)) in zip(take(fields), args).enumerate() {
@@ -348,6 +365,12 @@ impl StructMeta {
             };
 
             if args.skip {
+                if !partial {
+                    return Err(Error::new_spanned(
+                        &field,
+                        "`skip` attribute is only allowed when `partial` is specified",
+                    ));
+                }
                 this.skip.push(ty.clone());
                 this.fields.push(FieldMeta {
                     original_field,
@@ -435,7 +458,10 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
 
     optionized.ident = {
         let ident = optionized.ident;
-        let name = struct_args.name.replace("{}", &ident.to_string());
+        let name = struct_args
+            .name
+            .unwrap_or_else(|| "{}Optional".to_string())
+            .replace("{}", &ident.to_string());
         Ident::new(&name, ident.span())
     };
 
@@ -455,7 +481,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
         syn::Fields::Unit => return Default::default(),
     };
 
-    let meta = match StructMeta::extract(fields, field_args) {
+    let meta = match StructMeta::extract(fields, field_args, struct_args.partial) {
         Ok(meta) => meta,
         Err(e) => return e.to_compile_error().into(),
     };
@@ -558,7 +584,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
         }
     });
 
-    if struct_args.upgradable {
+    if !struct_args.partial || struct_args.upgradable {
         let (impl_generics, type_generics, where_clause) = {
             let where_clause = generics.make_where_clause();
             for (ty, nest_ty) in &meta.nest {
