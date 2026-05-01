@@ -206,6 +206,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
         optionized_ident.span(),
     );
 
+    let mut optionize = proc_macro2::TokenStream::new();
     let mut patch = proc_macro2::TokenStream::new();
     let mut merge = proc_macro2::TokenStream::new();
     let mut upgrade = proc_macro2::TokenStream::new();
@@ -251,13 +252,20 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
         };
 
         let wrapped = args.wrapped.unwrap_or_else(|| !is_option(&field.ty));
-        let init = if wrapped {
+
+        let optionize_value = if wrapped {
+            quote! { ::core::option::Option::Some(subject.#original_field) }
+        } else {
+            quote! { subject.#original_field }
+        };
+
+        let upgrade_value = if wrapped {
             let ty = &field.ty;
             field.ty = parse_quote! { Option<#ty> };
 
             patch.extend(quote! {
                 if let Some(value) = self.#optionized_field {
-                    target.#original_field = value;
+                    subject.#original_field = value;
                 }
             });
             merge.extend(quote! {
@@ -283,7 +291,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
             }
         } else {
             patch.extend(quote! {
-                target.#original_field = self.#optionized_field;
+                subject.#original_field = self.#optionized_field;
             });
             merge.extend(quote! {
                 self.#optionized_field = other.#optionized_field;
@@ -293,23 +301,37 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
         };
 
         if named {
-            upgrade.extend(quote! { #original_field: #init, });
+            upgrade.extend(quote! { #original_field: #upgrade_value, });
+            optionize.extend(quote! { #optionized_field: #optionize_value, });
         } else {
-            upgrade.extend(quote! { #init, });
+            upgrade.extend(quote! { #upgrade_value, });
+            optionize.extend(quote! { #optionize_value, });
         }
 
         fields.push(field);
     }
 
-    let (impl_generics, type_generics, where_clause) = optionized.generics.split_for_impl();
     let mut output = quote! {
         #original
         #optionized
+    };
 
+    let (impl_generics, type_generics, where_clause) = optionized.generics.split_for_impl();
+
+    let optionize = match &original.fields {
+        syn::Fields::Named(_) => quote! { Self { #optionize } },
+        syn::Fields::Unnamed(_) => quote! { Self ( #optionize ) },
+        syn::Fields::Unit => quote! { Self },
+    };
+    output.extend(quote! {
         impl #impl_generics optionize::Optionized for #optionized_ident #type_generics #where_clause {
-            type Target = #original_ident #type_generics;
+            type Subject = #original_ident #type_generics;
 
-            fn patch(self, target: &mut Self::Target) {
+            fn optionize(subject: Self::Subject) -> Self {
+                #optionize
+            }
+
+            fn patch(self, subject: &mut Self::Subject) {
                 #patch
             }
 
@@ -317,7 +339,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
                 #merge
             }
         }
-    };
+    });
 
     let original = match &original.fields {
         syn::Fields::Named(_) => quote! { #original_ident { #upgrade } },
@@ -356,7 +378,6 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
         });
     }
 
-
     output.extend(quote! {
         #[derive(Debug, Clone, PartialEq, Eq)]
         pub enum #error_ident {
@@ -375,7 +396,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
 
         impl #impl_generics optionize::Upgradable for #optionized_ident #type_generics #where_clause {
             type Error = #error_ident;
-            fn upgrade(self) -> ::core::result::Result<Self::Target, Self::Error> {
+            fn upgrade(self) -> ::core::result::Result<Self::Subject, Self::Error> {
                 ::core::result::Result::Ok(#original)
             }
         }
