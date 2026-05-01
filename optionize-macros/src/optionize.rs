@@ -1,46 +1,46 @@
 use bitflags::bitflags;
 use proc_macro::TokenStream;
 use proc_macro2::{Ident, Span};
-use quote::quote;
+use quote::{quote, ToTokens};
 use std::iter::zip;
 use std::mem::take;
-use syn::parse::{Parse, ParseStream, Result};
+use syn::meta::{parser, ParseNestedMeta};
+use syn::parse::{Parse, Result};
 use syn::punctuated::Punctuated;
-use syn::token::Comma;
+use syn::token::{Comma, Paren};
 use syn::{
     parse_macro_input, parse_quote, parse_str, Attribute, Error, Expr, Field, GenericArgument, Index, ItemStruct,
-    Lit, Meta, MetaList, MetaNameValue, PathArguments, Token, Type,
+    LitBool, LitStr, Meta, PathArguments, Token, Type,
 };
 
-macro_rules! bail {
-    ($tokens:expr, $message:expr) => {
-        return Err(Error::new_spanned($tokens, $message))
+macro_rules! match_meta {
+    (
+        $meta:ident;
+        $( $name:ident => $block:block )*
+    ) => {
+        $(
+            if $meta.path.is_ident(stringify!($name)) {
+                $block
+                return Ok(());
+            }
+        )*
     };
 }
 
-fn parse_lit_str(nv: &MetaNameValue) -> Result<String> {
-    if let Expr::Lit(expr_lit) = &nv.value
-        && let Lit::Str(lit_str) = &expr_lit.lit
-    {
-        Ok(lit_str.value())
-    } else {
-        bail!(nv, "expected string literal");
-    }
-}
-
-fn parse_lit_bool(nv: &MetaNameValue) -> Result<bool> {
-    if let Expr::Lit(expr_lit) = &nv.value
-        && let Lit::Bool(lit_bool) = &expr_lit.lit
-    {
-        Ok(lit_bool.value)
-    } else {
-        bail!(nv, "expected boolean literal");
-    }
-}
-
-fn parse_meta_list(ml: &MetaList) -> Result<Punctuated<Meta, Token![,]>> {
-    ml.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
-        .map_err(|_| Error::new_spanned(ml, "invalid list format"))
+macro_rules! match_meta_value {
+    (
+        $meta:ident, $self:ident;
+        $( $name:ident : $ty:path ),* $(,)?
+    ) => {
+        match_meta! {
+            $meta;
+            $(
+                $name => {
+                    $self.$name = Some($meta.value()?.parse::<$ty>()?.value());
+                }
+            )*
+        }
+    };
 }
 
 #[derive(Default)]
@@ -51,40 +51,35 @@ struct StructArgs {
     upgradable: bool,
 }
 
-impl Parse for StructArgs {
-    fn parse(input: ParseStream) -> Result<Self> {
-        let mut this = Self::default();
-
-        let metas = input.parse_terminated(Meta::parse, Token![,])?;
-
-        for meta in &metas {
-            match meta {
-                Meta::NameValue(nv) if nv.path.is_ident("name") => {
-                    this.name = Some(parse_lit_str(nv)?);
-                }
-                Meta::List(ml) if ml.path.is_ident("attributes") => {
-                    this.attributes
-                        .get_or_insert_default()
-                        .extend(parse_meta_list(ml)?);
-                }
-                Meta::Path(path) if path.is_ident("partial") => {
-                    this.partial = true;
-                }
-                Meta::List(ml) if ml.path.is_ident("partial") => {
-                    this.partial = true;
-                    for meta in parse_meta_list(ml)? {
-                        if meta.path().is_ident("upgradable") {
-                            this.upgradable = true;
-                        } else {
-                            bail!(meta, "unrecognized argument in partial(...)");
+impl StructArgs {
+    fn parse(&mut self, meta: ParseNestedMeta) -> Result<()> {
+        match_meta_value! {
+            meta, self;
+            name: LitStr,
+        }
+        match_meta! {
+            meta;
+            attributes => {
+                let content;
+                syn::parenthesized!(content in meta.input);
+                self.attributes.get_or_insert_default().extend(content.parse_terminated(Meta::parse, Token![,])?);
+            }
+            partial => {
+                self.partial = true;
+                if meta.input.peek(Paren) {
+                meta.parse_nested_meta(|nested| {
+                    match_meta! {
+                        nested;
+                        upgradable => {
+                            self.upgradable = true;
                         }
                     }
-                }
-                _ => bail!(meta, "unrecognized optionize argument"),
+                    Err(nested.error("unrecognized argument"))
+                })?;
+            }
             }
         }
-
-        Ok(this)
+        Err(meta.error("unrecognized argument"))
     }
 }
 
@@ -99,52 +94,62 @@ struct FieldArgs {
 }
 
 impl FieldArgs {
-    fn extract(attributes: &mut Vec<Attribute>) -> Result<Self> {
-        let mut this = Self::default();
-
-        for attribute in take(attributes) {
-            if !attribute.path().is_ident("optionize") {
-                attributes.push(attribute);
-                continue;
+    fn parse(&mut self, meta: ParseNestedMeta) -> Result<()> {
+        match_meta_value! {
+            meta, self;
+            name: LitStr,
+            wrap: LitBool,
+            nest: LitStr,
+        }
+        match_meta! {
+            meta;
+            attributes => {
+                let content;
+                syn::parenthesized!(content in meta.input);
+                self.attributes
+                    .get_or_insert_default()
+                    .extend(content.parse_terminated(Meta::parse, Token![,])?);
             }
-
-            let metas =
-                attribute.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
-
-            for meta in &metas {
-                match meta {
-                    Meta::NameValue(nv) if nv.path.is_ident("name") => {
-                        this.name = Some(parse_lit_str(nv)?);
-                    }
-                    Meta::List(ml) if ml.path.is_ident("attributes") => {
-                        this.attributes
-                            .get_or_insert_default()
-                            .extend(parse_meta_list(ml)?);
-                    }
-                    Meta::NameValue(nv) if nv.path.is_ident("wrap") => {
-                        this.wrap = Some(parse_lit_bool(nv)?);
-                    }
-                    Meta::NameValue(nv) if nv.path.is_ident("nest") => {
-                        this.nest = Some(parse_lit_str(nv)?);
-                    }
-                    Meta::Path(path) if path.is_ident("skip") => {
-                        this.skip = true;
-                    }
-                    Meta::List(ml) if ml.path.is_ident("skip") => {
-                        this.skip = true;
-                        for meta in parse_meta_list(ml)? {
-                            match meta {
-                                Meta::NameValue(nv) if nv.path.is_ident("upgrade") => {
-                                    let expr = &nv.value;
-                                    this.upgrade = Some(quote! { #expr });
-                                }
-                                _ => bail!(meta, "unrecognized argument in skip(...)"),
+            skip => {
+                self.skip = true;
+                if meta.input.peek(Paren) {
+                    meta.parse_nested_meta(|nested| {
+                        match_meta! {
+                            nested;
+                            upgrade => {
+                                self.upgrade = Some(nested.value()?.parse::<Expr>()?.to_token_stream());
                             }
                         }
-                    }
-                    _ => bail!(meta, "unrecognized optionize argument"),
+                        Err(nested.error("unrecognized argument"))
+                    })?;
                 }
             }
+        }
+        Err(meta.error("unrecognized argument"))
+    }
+
+    fn extract(attributes: &mut Vec<Attribute>) -> Result<Self> {
+        let mut this = Self::default();
+        let mut errors = None::<Error>;
+
+        attributes.retain(|attribute| {
+            if !attribute.path().is_ident("optionize") {
+                return true;
+            }
+
+            if let Err(e) = attribute.parse_nested_meta(|meta| this.parse(meta)) {
+                if let Some(errors) = errors.as_mut() {
+                    errors.combine(e);
+                } else {
+                    errors = Some(e);
+                }
+            }
+
+            false
+        });
+
+        if let Some(err) = errors {
+            return Err(err);
         }
 
         Ok(this)
@@ -162,23 +167,10 @@ fn is_option(ty: &Type) -> bool {
         return false;
     }
 
-    let mut iter = path.path.segments.iter().rev();
-
-    let Some(segment) = iter.next() else {
+    let Some(segment) = path.path.segments.last() else {
         return false;
     };
     if segment.ident != "Option" {
-        return false;
-    }
-
-    let mut iter = iter.map(|s| &s.ident);
-    if iter.next().is_some_and(|s| s != "option") {
-        return false;
-    }
-    if iter.next().is_some_and(|s| s != "std" && s != "core") {
-        return false;
-    }
-    if iter.next().is_some() {
         return false;
     }
 
@@ -407,13 +399,10 @@ impl StructMeta {
 
             let (ty, nest) = if let Some(nest) = &args.nest {
                 let nest = nest.replace("{}", &quote!(#ty).to_string());
-                let ty = parse_str::<Type>(&nest)
-                    .map(|nest_ty| {
-                        this.nest.push((ty.clone(), nest_ty.clone()));
-                        nest_ty
-                    })
+                let nest_ty = parse_str::<Type>(&nest)
                     .map_err(|e| Error::new_spanned(ty, format!("invalid nest type: {}", e)))?;
-                (ty, true)
+                this.nest.push((ty.clone(), nest_ty.clone()));
+                (nest_ty, true)
             } else {
                 (ty.clone(), false)
             };
@@ -449,17 +438,37 @@ impl StructMeta {
 }
 
 pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
-    let struct_args = parse_macro_input!(args as StructArgs);
+    let struct_args = {
+        let mut struct_args = StructArgs::default();
+        let parser = parser(|meta| struct_args.parse(meta));
+        parse_macro_input!(args with parser);
+        struct_args
+    };
+
     let mut original = parse_macro_input!(input as ItemStruct);
 
-    let field_args = match original
-        .fields
-        .iter_mut()
-        .map(|field| FieldArgs::extract(&mut field.attrs))
-        .collect::<Result<Vec<_>>>()
-    {
-        Ok(args) => args,
-        Err(e) => return e.to_compile_error().into(),
+    let field_args = {
+        let mut field_args = Vec::with_capacity(original.fields.len());
+        let mut errors: Option<Error> = None;
+
+        for field in original.fields.iter_mut() {
+            match FieldArgs::extract(&mut field.attrs) {
+                Ok(a) => field_args.push(a),
+                Err(e) => {
+                    if let Some(ref mut errors) = errors {
+                        errors.combine(e);
+                    } else {
+                        errors = Some(e);
+                    }
+                }
+            }
+        }
+
+        if let Some(e) = errors {
+            return e.to_compile_error().into();
+        }
+
+        field_args
     };
 
     let mut optionized = original.clone();
