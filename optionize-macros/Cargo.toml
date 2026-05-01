@@ -12,7 +12,8 @@ categories.workspace = true
 proc-macro = true
 
 [dependencies]
+darling = "0.23"
+itertools = "0.14.0"
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full"] }
-bitflags = "2.11.1"
