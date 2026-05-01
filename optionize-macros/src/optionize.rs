@@ -87,6 +87,7 @@ struct FieldArgs {
     wrap: Option<bool>,
     nest: Option<String>,
     skip: bool,
+    upgrade: Option<proc_macro2::TokenStream>,
 }
 
 impl FieldArgs {
@@ -141,6 +142,23 @@ impl FieldArgs {
                     }
                     Meta::Path(path) if path.is_ident("skip") => {
                         this.skip = true;
+                    }
+                    Meta::List(meta_list) if meta_list.path.is_ident("skip") => {
+                        this.skip = true;
+                        let Ok(nest) = meta_list
+                            .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+                        else {
+                            bail!(meta_list, "invalid skip format");
+                        };
+                        for neta in nest {
+                            match neta {
+                                Meta::NameValue(nv) if nv.path.is_ident("upgrade") => {
+                                    let expr = &nv.value;
+                                    this.upgrade = Some(quote! { #expr });
+                                }
+                                _ => bail!(neta, "unrecognized argument in skip(...)"),
+                            }
+                        }
                     }
                     _ => bail!(meta, "unrecognized optionize argument"),
                 }
@@ -319,6 +337,7 @@ struct FieldMeta {
     wrap: bool,
     nest: bool,
     skip: bool,
+    upgrade: proc_macro2::TokenStream,
     local: Ident,
 }
 
@@ -332,6 +351,7 @@ impl Default for FieldMeta {
             wrap: false,
             nest: false,
             skip: false,
+            upgrade: quote! { ::core::default::Default::default() },
             local: Ident::new("_", Span::call_site()),
         }
     }
@@ -371,12 +391,19 @@ impl StructMeta {
                         "`skip` attribute is only allowed when `partial` is specified",
                     ));
                 }
-                this.skip.push(ty.clone());
-                this.fields.push(FieldMeta {
+
+                let mut field = FieldMeta {
                     original_field,
                     skip: true,
                     ..Default::default()
-                });
+                };
+
+                if let Some(upgrade) = args.upgrade {
+                    field.upgrade = upgrade;
+                }
+
+                this.skip.push(ty.clone());
+                this.fields.push(field);
                 continue;
             }
 
@@ -429,8 +456,8 @@ impl StructMeta {
                 optionized_name: optionized_field.to_string(),
                 wrap,
                 nest,
-                skip: false,
                 local,
+                ..Default::default()
             });
 
             fields.push(field);
@@ -553,16 +580,8 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
         #optionized
     };
 
-    let mut generics = optionized.generics.clone();
-    let (impl_generics, type_generics, where_clause) = {
-        let where_clause = generics.make_where_clause();
-        for (ty, nest_ty) in &meta.nest {
-            where_clause
-                .predicates
-                .push(parse_quote! { #nest_ty: optionize::PartialOptionized<Subject = #ty> });
-        }
-        generics.split_for_impl()
-    };
+    let generics = optionized.generics.clone();
+    let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
 
     let original_ident = &original.ident;
     let optionized_ident = &optionized.ident;
@@ -585,19 +604,6 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
     });
 
     if !struct_args.partial || struct_args.upgradable {
-        let (impl_generics, type_generics, where_clause) = {
-            let where_clause = generics.make_where_clause();
-            for (ty, nest_ty) in &meta.nest {
-                where_clause.predicates.push(parse_quote! { <#nest_ty as optionize::Upgradable<#ty>>::Error: ::std::error::Error + 'static });
-            }
-            for ty in &meta.skip {
-                where_clause
-                    .predicates
-                    .push(parse_quote! { #ty: ::core::default::Default });
-            }
-            generics.split_for_impl()
-        };
-
         let destructure = if fields.is_empty() {
             quote! { let _ = self; }
         } else {
@@ -698,12 +704,13 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
             for field in &meta.fields {
                 let original_field = &field.original_field;
                 if field.skip {
+                    let upgrade = &field.upgrade;
                     if named {
                         fields.extend(
-                            quote! { #original_field: ::core::default::Default::default(), },
+                            quote! { #original_field: #upgrade, },
                         );
                     } else {
-                        fields.extend(quote! { ::core::default::Default::default(), });
+                        fields.extend(quote! { #upgrade, });
                     }
                     continue;
                 }

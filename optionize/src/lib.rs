@@ -16,6 +16,11 @@ pub trait Optionizable<O: PartialOptionized<Subject = Self>>: Sized where (): Si
 
 impl<T, O> Optionizable<O> for T where O: PartialOptionized<Subject = T> {}
 
+#[diagnostic::on_unimplemented(
+    message = "The type `{Self}` cannot be upgraded to `{Subject}`",
+    label = "Nested type lacks upgrade logic",
+    note = "Ensure the struct `{Self}` is not partial, or is annotated with `#[optionize(partial(upgradable))]`"
+)]
 pub trait Upgradable<Subject>: Sized {
     type Error;
     fn upgrade(self) -> Result<Subject, (Self::Error, Self)>;
