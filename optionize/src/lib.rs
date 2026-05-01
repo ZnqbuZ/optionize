@@ -1,3 +1,10 @@
+#![no_std]
+
+#[doc(hidden)]
+pub mod __private {
+    pub extern crate alloc;
+}
+
 pub trait PartialOptionized: Sized {
     type Subject;
     fn optionize(subject: Self::Subject) -> Self;

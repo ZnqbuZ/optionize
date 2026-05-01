@@ -9,13 +9,38 @@ use syn::punctuated::Punctuated;
 use syn::token::Comma;
 use syn::{
     parse_macro_input, parse_quote, parse_str, Attribute, Error, Expr, Field, GenericArgument, Index, ItemStruct,
-    Lit, Meta, PathArguments, Token, Type,
+    Lit, Meta, MetaList, MetaNameValue, PathArguments, Token, Type,
 };
 
 macro_rules! bail {
     ($tokens:expr, $message:expr) => {
         return Err(Error::new_spanned($tokens, $message))
     };
+}
+
+fn parse_lit_str(nv: &MetaNameValue) -> Result<String> {
+    if let Expr::Lit(expr_lit) = &nv.value
+        && let Lit::Str(lit_str) = &expr_lit.lit
+    {
+        Ok(lit_str.value())
+    } else {
+        bail!(nv, "expected string literal");
+    }
+}
+
+fn parse_lit_bool(nv: &MetaNameValue) -> Result<bool> {
+    if let Expr::Lit(expr_lit) = &nv.value
+        && let Lit::Bool(lit_bool) = &expr_lit.lit
+    {
+        Ok(lit_bool.value)
+    } else {
+        bail!(nv, "expected boolean literal");
+    }
+}
+
+fn parse_meta_list(ml: &MetaList) -> Result<Punctuated<Meta, Token![,]>> {
+    ml.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+        .map_err(|_| Error::new_spanned(ml, "invalid list format"))
 }
 
 #[derive(Default)]
@@ -35,42 +60,25 @@ impl Parse for StructArgs {
         for meta in &metas {
             match meta {
                 Meta::NameValue(nv) if nv.path.is_ident("name") => {
-                    if let Expr::Lit(expr_lit) = &nv.value
-                        && let Lit::Str(lit_str) = &expr_lit.lit
-                    {
-                        this.name = Some(lit_str.value());
-                    } else {
-                        bail!(nv, "expected string literal");
-                    }
+                    this.name = Some(parse_lit_str(nv)?);
                 }
-                Meta::List(meta_list) if meta_list.path.is_ident("attributes") => {
-                    let Ok(nest) =
-                        meta_list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
-                    else {
-                        bail!(meta_list, "invalid attributes format");
-                    };
-                    this.attributes.get_or_insert_default().extend(nest);
+                Meta::List(ml) if ml.path.is_ident("attributes") => {
+                    this.attributes
+                        .get_or_insert_default()
+                        .extend(parse_meta_list(ml)?);
                 }
                 Meta::Path(path) if path.is_ident("partial") => {
                     this.partial = true;
                 }
-                Meta::List(meta_list) if meta_list.path.is_ident("partial") => {
+                Meta::List(ml) if ml.path.is_ident("partial") => {
                     this.partial = true;
-                    let Ok(nest) =
-                        meta_list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
-                    else {
-                        bail!(meta_list, "invalid partial format");
-                    };
-                    for meta in nest {
+                    for meta in parse_meta_list(ml)? {
                         if meta.path().is_ident("upgradable") {
                             this.upgradable = true;
                         } else {
                             bail!(meta, "unrecognized argument in partial(...)");
                         }
                     }
-                }
-                Meta::Path(path) if let Some(ident) = path.get_ident() => {
-                    this.name = Some(ident.to_string());
                 }
                 _ => bail!(meta, "unrecognized optionize argument"),
             }
@@ -106,57 +114,31 @@ impl FieldArgs {
             for meta in &metas {
                 match meta {
                     Meta::NameValue(nv) if nv.path.is_ident("name") => {
-                        if let Expr::Lit(expr_lit) = &nv.value
-                            && let Lit::Str(lit_str) = &expr_lit.lit
-                        {
-                            this.name = Some(lit_str.value());
-                        } else {
-                            bail!(nv, "expected string literal");
-                        }
+                        this.name = Some(parse_lit_str(nv)?);
                     }
-                    Meta::List(meta_list) if meta_list.path.is_ident("attributes") => {
-                        let Ok(nest) = meta_list
-                            .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
-                        else {
-                            bail!(meta_list, "invalid attributes format");
-                        };
-                        this.attributes.get_or_insert_default().extend(nest);
+                    Meta::List(ml) if ml.path.is_ident("attributes") => {
+                        this.attributes
+                            .get_or_insert_default()
+                            .extend(parse_meta_list(ml)?);
                     }
                     Meta::NameValue(nv) if nv.path.is_ident("wrap") => {
-                        if let Expr::Lit(expr_lit) = &nv.value
-                            && let Lit::Bool(lit_bool) = &expr_lit.lit
-                        {
-                            this.wrap = Some(lit_bool.value);
-                        } else {
-                            bail!(nv, "expected boolean literal");
-                        }
+                        this.wrap = Some(parse_lit_bool(nv)?);
                     }
                     Meta::NameValue(nv) if nv.path.is_ident("nest") => {
-                        if let Expr::Lit(expr_lit) = &nv.value
-                            && let Lit::Str(lit_str) = &expr_lit.lit
-                        {
-                            this.nest = Some(lit_str.value());
-                        } else {
-                            bail!(nv, "expected string literal");
-                        }
+                        this.nest = Some(parse_lit_str(nv)?);
                     }
                     Meta::Path(path) if path.is_ident("skip") => {
                         this.skip = true;
                     }
-                    Meta::List(meta_list) if meta_list.path.is_ident("skip") => {
+                    Meta::List(ml) if ml.path.is_ident("skip") => {
                         this.skip = true;
-                        let Ok(nest) = meta_list
-                            .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
-                        else {
-                            bail!(meta_list, "invalid skip format");
-                        };
-                        for neta in nest {
-                            match neta {
+                        for meta in parse_meta_list(ml)? {
+                            match meta {
                                 Meta::NameValue(nv) if nv.path.is_ident("upgrade") => {
                                     let expr = &nv.value;
                                     this.upgrade = Some(quote! { #expr });
                                 }
-                                _ => bail!(neta, "unrecognized argument in skip(...)"),
+                                _ => bail!(meta, "unrecognized argument in skip(...)"),
                             }
                         }
                     }
@@ -180,26 +162,25 @@ fn is_option(ty: &Type) -> bool {
         return false;
     }
 
-    let segments = path
-        .path
-        .segments
-        .iter()
-        .map(|s| &s.ident)
-        .collect::<Vec<_>>();
+    let mut iter = path.path.segments.iter().rev();
 
-    match segments.as_slice() {
-        [ident] if *ident == "Option" => {}
-        [option, ident] if *option == "option" && *ident == "Option" => {}
-        [prefix, option, ident]
-            if (*prefix == "std" || *prefix == "core")
-                && *option == "option"
-                && *ident == "Option" => {}
-        _ => return false,
-    }
-
-    let Some(segment) = path.path.segments.last() else {
+    let Some(segment) = iter.next() else {
         return false;
     };
+    if segment.ident != "Option" {
+        return false;
+    }
+
+    let mut iter = iter.map(|s| &s.ident);
+    if iter.next().is_some_and(|s| s != "option") {
+        return false;
+    }
+    if iter.next().is_some_and(|s| s != "std" && s != "core") {
+        return false;
+    }
+    if iter.next().is_some() {
+        return false;
+    }
 
     matches!(
         &segment.arguments,
@@ -265,7 +246,7 @@ impl UpgradeErrorBuilder {
             error.extend(quote! {
                 NestedError {
                     field: &'static str,
-                    source: ::std::boxed::Box<dyn ::std::error::Error + 'static>,
+                    source: ::optionize::__private::alloc::boxed::Box<dyn ::core::error::Error + 'static>,
                 },
             });
             display.extend(quote! {
@@ -285,7 +266,7 @@ impl UpgradeErrorBuilder {
                 RenamedNestedError {
                     original: &'static str,
                     optionized: &'static str,
-                    source: ::std::boxed::Box<dyn ::std::error::Error + 'static>,
+                    source: ::optionize::__private::alloc::boxed::Box<dyn ::core::error::Error + 'static>,
                 },
             });
             display.extend(quote! {
@@ -310,8 +291,8 @@ impl UpgradeErrorBuilder {
                 #error
             }
 
-            impl ::std::error::Error for #ident {
-                fn source(&self) -> ::core::option::Option<&(dyn ::std::error::Error + 'static)> {
+            impl ::core::error::Error for #ident {
+                fn source(&self) -> ::core::option::Option<&(dyn ::core::error::Error + 'static)> {
                     match self {
                         #source
                     }
@@ -531,17 +512,17 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
             (true, true) => {
                 patch.extend(quote! {
                     if let Some(value) = self.#optionized_field {
-                        optionize::PartialOptionized::patch(value, &mut subject.#original_field);
+                        ::optionize::PartialOptionized::patch(value, &mut subject.#original_field);
                     }
                 });
                 merge.extend(quote! {
                     match (&mut self.#optionized_field, other.#optionized_field) {
-                        (Some(this), Some(other)) => optionize::PartialOptionized::merge(this, other),
+                        (Some(this), Some(other)) => ::optionize::PartialOptionized::merge(this, other),
                         (None, Some(other)) => self.#optionized_field = Some(other),
                         _ => {}
                     }
                 });
-                quote! { ::core::option::Option::Some(optionize::PartialOptionized::optionize(subject.#original_field)) }
+                quote! { ::core::option::Option::Some(::optionize::PartialOptionized::optionize(subject.#original_field)) }
             }
             (true, false) => {
                 patch.extend(quote! {
@@ -557,9 +538,9 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
                 quote! { ::core::option::Option::Some(subject.#original_field) }
             }
             (false, true) => {
-                patch.extend(quote! { optionize::PartialOptionized::patch(self.#optionized_field, &mut subject.#original_field); });
-                merge.extend(quote! { optionize::PartialOptionized::merge(&mut self.#optionized_field, other.#optionized_field); });
-                quote! { optionize::PartialOptionized::optionize(subject.#original_field) }
+                patch.extend(quote! { ::optionize::PartialOptionized::patch(self.#optionized_field, &mut subject.#original_field); });
+                merge.extend(quote! { ::optionize::PartialOptionized::merge(&mut self.#optionized_field, other.#optionized_field); });
+                quote! { ::optionize::PartialOptionized::optionize(subject.#original_field) }
             }
             (false, false) => {
                 patch.extend(quote! { subject.#original_field = self.#optionized_field; });
@@ -595,7 +576,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
     };
 
     output.extend(quote! {
-        impl #impl_generics optionize::PartialOptionized for #optionized_ident #type_generics #where_clause {
+        impl #impl_generics ::optionize::PartialOptionized for #optionized_ident #type_generics #where_clause {
             type Subject = #subject;
             fn optionize(subject: Self::Subject) -> Self { #optionize }
             fn patch(self, subject: &mut Self::Subject) { #patch }
@@ -639,13 +620,13 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
                 (
                     false,
                     quote! { #error_ident::MissingField(#original_name) },
-                    quote! { #error_ident::NestedError { field: #original_name, source: ::std::boxed::Box::new(_e) as _ } },
+                    quote! { #error_ident::NestedError { field: #original_name, source: ::optionize::__private::alloc::boxed::Box::new(_e) as _ } },
                 )
             } else {
                 (
                     true,
                     quote! { #error_ident::MissingRenamedField { original: #original_name, optionized: #optionized_name } },
-                    quote! { #error_ident::RenamedNestedError { original: #original_name, optionized: #optionized_name, source: ::std::boxed::Box::new(_e) as _ } },
+                    quote! { #error_ident::RenamedNestedError { original: #original_name, optionized: #optionized_name, source: ::optionize::__private::alloc::boxed::Box::new(_e) as _ } },
                 )
             };
 
@@ -678,7 +659,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
                     quote! { #local }
                 });
                 upgrade.extend(quote! {
-                    let #local = match optionize::Upgradable::upgrade(#local) {
+                    let #local = match ::optionize::Upgradable::upgrade(#local) {
                         ::core::result::Result::Ok(v) => v,
                         ::core::result::Result::Err((_e, #local)) => return ::core::result::Result::Err((#nest_err, #this)),
                     };
@@ -706,9 +687,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
                 if field.skip {
                     let upgrade = &field.upgrade;
                     if named {
-                        fields.extend(
-                            quote! { #original_field: #upgrade, },
-                        );
+                        fields.extend(quote! { #original_field: #upgrade, });
                     } else {
                         fields.extend(quote! { #upgrade, });
                     }
@@ -730,7 +709,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
         };
 
         output.extend(quote! {
-            impl #impl_generics optionize::Upgradable<#subject> for #optionized_ident #type_generics #where_clause {
+            impl #impl_generics ::optionize::Upgradable<#subject> for #optionized_ident #type_generics #where_clause {
                 type Error = #error_ident;
                 fn upgrade(self) -> ::core::result::Result<#subject, (Self::Error, Self)> {
                     #destructure
