@@ -10,12 +10,12 @@ use std::iter::zip;
 use std::mem::take;
 use syn::parse::Result;
 use syn::punctuated::Punctuated;
+use syn::spanned::Spanned;
 use syn::token::Comma;
 use syn::{
-    parse, parse_quote, parse_str, Error, Expr, Field, GenericArgument, Index, ItemStruct, Meta,
-    PathArguments, Type, Visibility,
+    parse, parse_quote, Error, Expr, Field, GenericArgument, Index, ItemStruct, Meta, PathArguments,
+    Type, Visibility,
 };
-use syn::spanned::Spanned;
 
 #[derive(Debug, Default)]
 struct MetaList(Vec<Meta>);
@@ -268,7 +268,10 @@ impl StructMeta {
             let original_field = match ident {
                 Some(ident) => quote! { #ident },
                 None => {
-                    let index = Index { index: i as u32, span: field.ty.span() };
+                    let index = Index {
+                        index: i as u32,
+                        span: field.ty.span(),
+                    };
                     quote! { #index }
                 }
             };
@@ -333,10 +336,13 @@ impl StructMeta {
                 ty.clone()
             };
 
-            let local = field
-                .ident
-                .clone()
-                .unwrap_or_else(|| format_ident!("_{}", i));
+            let local = format_ident!(
+                "v_{}",
+                field
+                    .ident
+                    .clone()
+                    .unwrap_or_else(|| format_ident!("{}", i))
+            );
 
             this.fields.push(FieldMeta {
                 original_field: original_field.clone(),
@@ -507,17 +513,6 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
     });
 
     if !partial || upgradable {
-        let destructure = if fields.is_empty() {
-            quote! { let _ = self; }
-        } else {
-            let locals = fields.iter().map(|m| &m.local);
-            if named {
-                quote! { let Self { #(#locals),* } = self; }
-            } else {
-                quote! { let Self ( #(#locals),* ) = self; }
-            }
-        };
-
         let error_ident = Ident::new(
             &format!("{}UpgradeError", optionized_ident),
             optionized_ident.span(),
@@ -528,8 +523,11 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
 
         let mut upgrade = Vec::with_capacity(fields.len());
 
+        upgrade.push(quote! { let errors = ::optionize::__private::alloc::vec::Vec::new(); });
+
         for (i, field) in fields.iter().enumerate() {
             let FieldMeta {
+                optionized_field,
                 original_name,
                 optionized_name,
                 wrap,
@@ -538,19 +536,19 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
                 ..
             } = field;
 
-            let err = format_ident!("err_{}", local);
+            let err_local = format_ident!("err_{}", optionized_name);
 
             let (renamed, missing_err, nest_err) = if original_name == optionized_name {
                 (
                     false,
                     quote! { #error_ident::MissingField(#original_name) },
-                    quote! { #error_ident::NestedError { field: #original_name, source: ::optionize::__private::alloc::boxed::Box::new(#err) as _ } },
+                    quote! { #error_ident::NestedError { field: #original_name, source: ::optionize::__private::alloc::boxed::Box::new(#err_local) as _ } },
                 )
             } else {
                 (
                     true,
                     quote! { #error_ident::MissingRenamedField { original: #original_name, optionized: #optionized_name } },
-                    quote! { #error_ident::RenamedNestedError { original: #original_name, optionized: #optionized_name, source: ::optionize::__private::alloc::boxed::Box::new(#err) as _ } },
+                    quote! { #error_ident::RenamedNestedError { original: #original_name, optionized: #optionized_name, source: ::optionize::__private::alloc::boxed::Box::new(#err_local) as _ } },
                 )
             };
 
@@ -558,13 +556,15 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
 
             let build = |current: proc_macro2::TokenStream| {
                 let past = &past;
-                let future = fields[(i + 1)..].iter().map(|m| &m.local);
                 if named {
-                    quote! { Self { #(#past)* #local: #current #(, #future)* } }
+                    quote! { Self { #(#past)* #optionized_field: #current, ..self } }
                 } else {
-                    quote! { Self ( #(#past)* #current #(, #future)* ) }
+                    let future = fields[(i + 1)..].iter().map(|m| &m.optionized_field);
+                    quote! { Self ( #(#past)* #current #(, self.#future)* ) }
                 }
             };
+
+            upgrade.push(quote! { let #local = self.#optionized_field; });
 
             if *wrap {
                 let this = build(quote! { ::core::option::Option::None });
@@ -585,7 +585,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
                 upgrade.push(quote! {
                     let #local = match ::optionize::Upgradable::upgrade(#local) {
                         ::core::result::Result::Ok(v) => v,
-                        ::core::result::Result::Err((#err, #local)) => return ::core::result::Result::Err((#nest_err, #this)),
+                        ::core::result::Result::Err((#err_local, #local)) => return ::core::result::Result::Err((#nest_err, #this)),
                     };
                 });
             }
@@ -596,7 +596,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
                 quote! { #local }
             };
             past.push(if named {
-                quote! { #local: #past_value, }
+                quote! { #optionized_field: #past_value, }
             } else {
                 quote! { #past_value, }
             });
@@ -635,8 +635,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
         output.push(quote! {
             impl #impl_generics ::optionize::Upgradable<#subject> for #optionized_ident #type_generics #where_clause {
                 type Error = #error_ident;
-                fn upgrade(self) -> ::core::result::Result<#subject, (Self::Error, Self)> {
-                    #destructure
+                fn upgrade(self) -> ::core::result::Result<#subject, (::optionize::__private::alloc::vec::Vec<Self::Error>, Self)> {
                     #(#upgrade)*
                     ::core::result::Result::Ok(#original)
                 }

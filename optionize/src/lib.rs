@@ -1,4 +1,7 @@
 #![no_std]
+extern crate alloc;
+
+use alloc::vec::Vec;
 
 #[doc(hidden)]
 pub mod __private {
@@ -30,7 +33,7 @@ impl<T, O> Optionizable<O> for T where O: PartialOptionized<Subject = T> {}
 )]
 pub trait Upgradable<Subject>: Sized {
     type Error;
-    fn upgrade(self) -> Result<Subject, (Self::Error, Self)>;
+    fn upgrade(self) -> Result<Subject, (Vec<Self::Error>, Self)>;
 }
 
 pub trait Optionized: PartialOptionized + Upgradable<Self::Subject> {}
