@@ -17,7 +17,7 @@ use syn::{
 };
 use syn::spanned::Spanned;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Default)]
 struct MetaList(Vec<Meta>);
 
 impl FromMeta for MetaList {
@@ -538,17 +538,19 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
                 ..
             } = field;
 
+            let err = format_ident!("err_{}", local);
+
             let (renamed, missing_err, nest_err) = if original_name == optionized_name {
                 (
                     false,
                     quote! { #error_ident::MissingField(#original_name) },
-                    quote! { #error_ident::NestedError { field: #original_name, source: ::optionize::__private::alloc::boxed::Box::new(_e) as _ } },
+                    quote! { #error_ident::NestedError { field: #original_name, source: ::optionize::__private::alloc::boxed::Box::new(#err) as _ } },
                 )
             } else {
                 (
                     true,
                     quote! { #error_ident::MissingRenamedField { original: #original_name, optionized: #optionized_name } },
-                    quote! { #error_ident::RenamedNestedError { original: #original_name, optionized: #optionized_name, source: ::optionize::__private::alloc::boxed::Box::new(_e) as _ } },
+                    quote! { #error_ident::RenamedNestedError { original: #original_name, optionized: #optionized_name, source: ::optionize::__private::alloc::boxed::Box::new(#err) as _ } },
                 )
             };
 
@@ -583,7 +585,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
                 upgrade.push(quote! {
                     let #local = match ::optionize::Upgradable::upgrade(#local) {
                         ::core::result::Result::Ok(v) => v,
-                        ::core::result::Result::Err((_e, #local)) => return ::core::result::Result::Err((#nest_err, #this)),
+                        ::core::result::Result::Err((#err, #local)) => return ::core::result::Result::Err((#nest_err, #this)),
                     };
                 });
             }
