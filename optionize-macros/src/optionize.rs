@@ -1,13 +1,13 @@
 use proc_macro::TokenStream;
 use proc_macro2::Ident;
-use quote::quote;
+use quote::{quote, ToTokens};
 use std::iter::zip;
 use std::mem::take;
-use syn::parse::{Parse, ParseStream, Result};
+use syn::parse::{Parse, ParseStream, Parser, Result};
 use syn::punctuated::Punctuated;
 use syn::{
-    parse_macro_input, parse_quote, Attribute, Error, Expr, GenericArgument, Index, ItemStruct, Lit, Meta,
-    PathArguments, Token, Type,
+    parse_macro_input, parse_quote, parse_str, Attribute, Error, Expr, GenericArgument, Index, ItemStruct, Lit,
+    Meta, PathArguments, Token, Type,
 };
 
 macro_rules! bail {
@@ -65,6 +65,7 @@ struct FieldArgs {
     name: Option<String>,
     attributes: Option<Vec<Meta>>,
     wrapped: Option<bool>,
+    nested: Option<String>,
     skip: bool,
 }
 
@@ -107,6 +108,15 @@ impl FieldArgs {
                             args.wrapped = Some(lit_bool.value);
                         } else {
                             bail!(nv, "expected boolean literal");
+                        }
+                    }
+                    Meta::NameValue(nv) if nv.path.is_ident("nested") => {
+                        if let Expr::Lit(expr_lit) = &nv.value
+                            && let Lit::Str(lit_str) = &expr_lit.lit
+                        {
+                            args.nested = Some(lit_str.value());
+                        } else {
+                            bail!(nv, "expected string literal");
                         }
                     }
                     Meta::Path(path) if path.is_ident("skip") => {
@@ -211,11 +221,18 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
     let mut merge = proc_macro2::TokenStream::new();
     let mut upgrade = proc_macro2::TokenStream::new();
 
-    let mut renamed = false;
+    let mut has_renamed = false;
+    let mut has_nested = false;
+    let mut has_renamed_nested = false;
+
     let mut skipped_types = Vec::new();
+    let mut nested_types = Vec::new();
 
     for (i, (mut field, args)) in zip(take(fields), fields_args).enumerate() {
-        let original_field = match &field.ident {
+        let ident = &field.ident;
+        let ty = &field.ty;
+
+        let original_field = match ident {
             Some(ident) => quote! { #ident },
             None => {
                 let index = Index::from(i);
@@ -224,7 +241,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
         };
 
         if args.skip {
-            skipped_types.push(field.ty.clone());
+            skipped_types.push(ty.clone());
             if named {
                 upgrade.extend(quote! { #original_field: ::core::default::Default::default(), });
             } else {
@@ -234,8 +251,8 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
         }
 
         if let Some(name) = args.name {
-            let Some(ident) = &field.ident else {
-                return Error::new_spanned(field.ty, "cannot rename an unnamed field")
+            let Some(ident) = ident else {
+                return Error::new_spanned(ty, "cannot rename an unnamed field")
                     .to_compile_error()
                     .into();
             };
@@ -251,53 +268,135 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
             }
         };
 
-        let wrapped = args.wrapped.unwrap_or_else(|| !is_option(&field.ty));
-
-        let optionize_value = if wrapped {
-            quote! { ::core::option::Option::Some(subject.#original_field) }
+        let (ty, nested) = if let Some(nested) = &args.nested {
+            has_nested = true;
+            let nested = nested.replace("{}", &quote!(#ty).to_string());
+            (
+                match parse_str::<Type>(&nested) {
+                    Ok(nested_ty) => {
+                        nested_types.push((ty.clone(), nested_ty.clone()));
+                        nested_ty
+                    }
+                    Err(e) => {
+                        return Error::new_spanned(&ty, format!("invalid nested type: {}", e))
+                            .to_compile_error()
+                            .into();
+                    }
+                },
+                true,
+            )
         } else {
-            quote! { subject.#original_field }
+            (ty.clone(), false)
         };
 
-        let upgrade_value = if wrapped {
-            let ty = &field.ty;
+        let wrapped = args.wrapped.unwrap_or_else(|| !is_option(&ty));
+        if wrapped {
             field.ty = parse_quote! { Option<#ty> };
+        }
 
-            patch.extend(quote! {
-                if let Some(value) = self.#optionized_field {
-                    subject.#original_field = value;
-                }
-            });
-            merge.extend(quote! {
-                if other.#optionized_field.is_some() {
-                    self.#optionized_field = other.#optionized_field;
-                }
-            });
+        let original_name = original_field.to_string();
+        let optionized_name = optionized_field.to_string();
 
-            let original_name = original_field.to_string();
-            let optionized_name = optionized_field.to_string();
-            if original_name == optionized_name {
+        let (extract, map_err) = if original_name == optionized_name {
+            (
+                quote! { self.#optionized_field.ok_or(#error_ident::MissingField(#original_name))? },
                 quote! {
-                    self.#optionized_field.ok_or(#error_ident::MissingField(#original_name))?
-                }
+                    |e| #error_ident::NestedError {
+                        field: #original_name,
+                        source: ::std::boxed::Box::new(e) as ::std::boxed::Box<dyn ::std::error::Error + 'static>,
+                    }
+                },
+            )
+        } else {
+            if nested {
+                has_renamed_nested = true;
             } else {
-                renamed = true;
+                has_renamed = true;
+            }
+            (
                 quote! {
                     self.#optionized_field.ok_or(#error_ident::MissingRenamedField {
                         original: #original_name,
                         optionized: #optionized_name,
                     })?
-                }
-            }
-        } else {
-            patch.extend(quote! {
-                subject.#original_field = self.#optionized_field;
-            });
-            merge.extend(quote! {
-                self.#optionized_field = other.#optionized_field;
-            });
+                },
+                quote! {
+                    |e| #error_ident::RenamedNestedError {
+                        original: #original_name,
+                        optionized: #optionized_name,
+                        source: ::std::boxed::Box::new(e) as ::std::boxed::Box<dyn ::std::error::Error + 'static>,
+                    }
+                },
+            )
+        };
 
-            quote! { self.#optionized_field }
+        let (optionize_value, upgrade_value) = match (wrapped, nested) {
+            (true, true) => {
+                patch.extend(quote! {
+                    if let Some(nested_value) = self.#optionized_field {
+                        optionize::Optionized::patch(nested_value, &mut subject.#original_field);
+                    }
+                });
+                merge.extend(quote! {
+                    match (&mut self.#optionized_field, other.#optionized_field) {
+                        (Some(this), Some(other)) => optionize::Optionized::merge(this, other),
+                        (None, Some(other)) => self.#optionized_field = Some(other),
+                        _ => {}
+                    }
+                });
+                (
+                    quote! {
+                        ::core::option::Option::Some(<#ty as optionize::Optionized>::optionize(subject.#original_field))
+                    },
+                    quote! {
+                        optionize::Upgradable::upgrade(#extract).map_err(#map_err)?
+                    },
+                )
+            }
+            (true, false) => {
+                patch.extend(quote! {
+                    if let Some(value) = self.#optionized_field {
+                        subject.#original_field = value;
+                    }
+                });
+                merge.extend(quote! {
+                    if other.#optionized_field.is_some() {
+                        self.#optionized_field = other.#optionized_field;
+                    }
+                });
+                (
+                    quote! { ::core::option::Option::Some(subject.#original_field) },
+                    extract,
+                )
+            }
+            (false, true) => {
+                patch.extend(quote! {
+                    optionize::Optionized::patch(self.#optionized_field, &mut subject.#original_field);
+                });
+                merge.extend(quote! {
+                    optionize::Optionized::merge(&mut self.#optionized_field, other.#optionized_field);
+                });
+                (
+                    quote! {
+                        <#ty as optionize::Optionized>::optionize(subject.#original_field)
+                    },
+                    quote! {
+                        optionize::Upgradable::upgrade(self.#optionized_field).map_err(#map_err)?
+                    },
+                )
+            }
+            (false, false) => {
+                patch.extend(quote! {
+                    subject.#original_field = self.#optionized_field;
+                });
+                merge.extend(quote! {
+                    self.#optionized_field = other.#optionized_field;
+                });
+                (
+                    quote! { subject.#original_field },
+                    quote! { self.#optionized_field },
+                )
+            }
         };
 
         if named {
@@ -316,7 +415,14 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
         #optionized
     };
 
-    let (impl_generics, type_generics, where_clause) = optionized.generics.split_for_impl();
+    let mut generics = optionized.generics.clone();
+    let where_clause = generics.make_where_clause();
+    for (subject_ty, ty) in &nested_types {
+        where_clause
+            .predicates
+            .push(parse_quote! { #ty: optionize::Optionized<Subject = #subject_ty> });
+    }
+    let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
 
     let optionize = match &original.fields {
         syn::Fields::Named(_) => quote! { Self { #optionize } },
@@ -347,13 +453,21 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
         syn::Fields::Unit => quote! { #original_ident },
     };
 
-    let where_clause = if skipped_types.is_empty() {
-        quote! { #where_clause }
-    } else {
-        quote! {
-            where #(#skipped_types: ::core::default::Default),*
-        }
-    };
+    let where_clause = generics.make_where_clause();
+    for (_, ty) in &nested_types {
+        where_clause
+            .predicates
+            .push(parse_quote! { #ty: optionize::Upgradable });
+        where_clause.predicates.push(
+            parse_quote! { <#ty as optionize::Upgradable>::Error: ::std::error::Error + 'static },
+        );
+    }
+    for ty in &skipped_types {
+        where_clause
+            .predicates
+            .push(parse_quote! { #ty: ::core::default::Default });
+    }
+    let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
 
     let mut error = quote! {
         MissingField(&'static str),
@@ -361,8 +475,9 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
     let mut error_display = quote! {
         Self::MissingField(field) => write!(f, "Missing required field for upgrade: {}", field),
     };
+    let mut error_source = proc_macro2::TokenStream::new();
 
-    if renamed {
+    if has_renamed {
         error.extend(quote! {
             MissingRenamedField {
                 original: &'static str,
@@ -378,13 +493,62 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
         });
     }
 
+    if has_nested {
+        error.extend(quote! {
+            NestedError {
+                field: &'static str,
+                source: ::std::boxed::Box<dyn ::std::error::Error + 'static>,
+            },
+        });
+        error_display.extend(quote! {
+            Self::NestedError { field, .. } => write!(
+                f,
+                "Failed to upgrade nested field `{}`",
+                field
+            ),
+        });
+        error_source.extend(quote! {
+            Self::NestedError { source, .. } => ::core::option::Option::Some(&**source),
+        });
+    }
+
+    if has_renamed_nested {
+        error.extend(quote! {
+            RenamedNestedError {
+                original: &'static str,
+                optionized: &'static str,
+                source: ::std::boxed::Box<dyn ::std::error::Error + 'static>,
+            },
+        });
+        error_display.extend(quote! {
+            Self::RenamedNestedError { original, optionized, .. } => write!(
+                f,
+                "Failed to upgrade nested field: optionized field `{}` -> original field `{}`",
+                optionized, original
+            ),
+        });
+        error_source.extend(quote! {
+            Self::RenamedNestedError { source, .. } => ::core::option::Option::Some(&**source),
+        });
+    }
+
+    error_source.extend(quote! {
+        _ => ::core::option::Option::None,
+    });
+
     output.extend(quote! {
-        #[derive(Debug, Clone, PartialEq, Eq)]
+        #[derive(Debug)]
         pub enum #error_ident {
             #error
         }
 
-        impl ::std::error::Error for #error_ident {}
+        impl ::std::error::Error for #error_ident {
+            fn source(&self) -> ::core::option::Option<&(dyn ::std::error::Error + 'static)> {
+                match self {
+                    #error_source
+                }
+            }
+        }
 
         impl ::core::fmt::Display for #error_ident {
             fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {

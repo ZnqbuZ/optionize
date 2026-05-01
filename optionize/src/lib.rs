@@ -5,7 +5,7 @@ pub trait Optionized: Sized {
     fn merge(&mut self, other: Self);
 }
 
-pub trait Optionizable<O: Optionized<Subject = Self>>: Sized {
+pub trait Optionizable<O: Optionized<Subject = Self>>: Sized where (): Sized {
     fn load(&mut self, other: O) {
         other.patch(self);
     }
