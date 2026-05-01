@@ -1,161 +1,64 @@
 use bitflags::bitflags;
+use darling::ast::NestedMeta;
+use darling::util::Override;
+use darling::{FromAttributes, FromMeta};
 use proc_macro::TokenStream;
 use proc_macro2::{Ident, Span};
-use quote::{quote, ToTokens};
+use quote::quote;
 use std::iter::zip;
 use std::mem::take;
-use syn::meta::{parser, ParseNestedMeta};
-use syn::parse::{Parse, Result};
+use syn::parse::Result;
 use syn::punctuated::Punctuated;
-use syn::token::{Comma, Paren};
-use syn::{
-    parse_macro_input, parse_quote, parse_str, Attribute, Error, Expr, Field, GenericArgument, Index, ItemStruct,
-    LitBool, LitStr, Meta, PathArguments, Token, Type,
-};
+use syn::token::Comma;
+use syn::{parse_macro_input, parse_quote, parse_str, Error, Expr, Field, GenericArgument, Index, ItemStruct, Meta, PathArguments, Type, Visibility};
 
-macro_rules! match_meta {
-    (
-        $meta:ident;
-        $( $name:ident => $block:block )*
-    ) => {
-        $(
-            if $meta.path.is_ident(stringify!($name)) {
-                $block
-                return Ok(());
-            }
-        )*
-    };
-}
+#[derive(Debug, Clone)]
+struct MetaList(Vec<Meta>);
 
-macro_rules! match_meta_value {
-    (
-        $meta:ident, $self:ident;
-        $( $name:ident : $ty:path ),* $(,)?
-    ) => {
-        match_meta! {
-            $meta;
-            $(
-                $name => {
-                    $self.$name = Some($meta.value()?.parse::<$ty>()?.value());
+impl FromMeta for MetaList {
+    fn from_list(items: &[NestedMeta]) -> darling::Result<Self> {
+        let mut metas = Vec::with_capacity(items.len());
+        let mut errors = darling::Error::accumulator();
+        for item in items {
+            match item {
+                NestedMeta::Meta(m) => metas.push(m.clone()),
+                NestedMeta::Lit(l) => {
+                    errors.push(darling::Error::unsupported_format("literal").with_span(l))
                 }
-            )*
+            }
         }
-    };
+        errors.finish_with(Self(metas))
+    }
 }
 
-#[derive(Default)]
-struct StructArgs {
-    name: Option<String>,
-    attributes: Option<Vec<Meta>>,
-    partial: bool,
+#[derive(Debug, Default, FromMeta)]
+#[darling(default)]
+struct PartialArgs {
     upgradable: bool,
 }
 
-impl StructArgs {
-    fn parse(&mut self, meta: ParseNestedMeta) -> Result<()> {
-        match_meta_value! {
-            meta, self;
-            name: LitStr,
-        }
-        match_meta! {
-            meta;
-            attributes => {
-                let content;
-                syn::parenthesized!(content in meta.input);
-                self.attributes
-                    .get_or_insert_default()
-                    .extend(content.parse_terminated(Meta::parse, Token![,])?);
-            }
-            partial => {
-                self.partial = true;
-                if meta.input.peek(Paren) {
-                meta.parse_nested_meta(|nested| {
-                    match_meta! {
-                        nested;
-                        upgradable => {
-                            self.upgradable = true;
-                        }
-                    }
-                    Err(nested.error("unrecognized argument"))
-                })?;
-            }
-            }
-        }
-        Err(meta.error("unrecognized argument"))
-    }
+#[derive(Debug, Default, FromMeta)]
+#[darling(default)]
+struct StructArgs {
+    name: Option<String>,
+    attributes: Option<MetaList>,
+    partial: Option<Override<PartialArgs>>,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default, FromMeta)]
+#[darling(default)]
+struct SkipArgs {
+    upgrade: Option<Expr>,
+}
+
+#[derive(Debug, Default, FromAttributes)]
+#[darling(default, attributes(optionize))]
 struct FieldArgs {
     name: Option<String>,
-    attributes: Option<Vec<Meta>>,
+    attributes: Option<MetaList>,
     wrap: Option<bool>,
     nest: Option<String>,
-    skip: bool,
-    upgrade: Option<proc_macro2::TokenStream>,
-}
-
-impl FieldArgs {
-    fn parse(&mut self, meta: ParseNestedMeta) -> Result<()> {
-        match_meta_value! {
-            meta, self;
-            name: LitStr,
-            wrap: LitBool,
-            nest: LitStr,
-        }
-        match_meta! {
-            meta;
-            attributes => {
-                let content;
-                syn::parenthesized!(content in meta.input);
-                self.attributes
-                    .get_or_insert_default()
-                    .extend(content.parse_terminated(Meta::parse, Token![,])?);
-            }
-            skip => {
-                self.skip = true;
-                if meta.input.peek(Paren) {
-                    meta.parse_nested_meta(|nested| {
-                        match_meta! {
-                            nested;
-                            upgrade => {
-                                self.upgrade = Some(nested.value()?.parse::<Expr>()?.to_token_stream());
-                            }
-                        }
-                        Err(nested.error("unrecognized argument"))
-                    })?;
-                }
-            }
-        }
-        Err(meta.error("unrecognized argument"))
-    }
-
-    fn extract(attributes: &mut Vec<Attribute>) -> Result<Self> {
-        let mut this = Self::default();
-        let mut errors = None::<Error>;
-
-        attributes.retain(|attribute| {
-            if !attribute.path().is_ident("optionize") {
-                return true;
-            }
-
-            if let Err(e) = attribute.parse_nested_meta(|meta| this.parse(meta)) {
-                if let Some(errors) = errors.as_mut() {
-                    errors.combine(e);
-                } else {
-                    errors = Some(e);
-                }
-            }
-
-            false
-        });
-
-        if let Some(err) = errors {
-            return Err(err);
-        }
-
-        Ok(this)
-    }
+    skip: Option<Override<SkipArgs>>,
 }
 
 fn is_option(ty: &Type) -> bool {
@@ -184,7 +87,7 @@ fn is_option(ty: &Type) -> bool {
 
 bitflags! {
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct UpgradeErrorBuilder: u8 {
+    struct UpgradeErrorBuilder: u8 {
         const MISSING         = 1 << 0; // 0b0001
         const NESTED          = 1 << 1; // 0b0010
         const MISSING_RENAMED = 1 << 2; // 0b0100
@@ -198,7 +101,7 @@ impl UpgradeErrorBuilder {
         self.insert(Self::from_bits_retain(1 << offset));
     }
 
-    fn build(&self, vis: &syn::Visibility, ident: &Ident) -> proc_macro2::TokenStream {
+    fn build(&self, vis: &Visibility, ident: &Ident) -> proc_macro2::TokenStream {
         let mut error = Vec::new();
         let mut display = Vec::new();
         let mut source = Vec::new();
@@ -310,7 +213,7 @@ struct FieldMeta {
     wrap: bool,
     nest: bool,
     skip: bool,
-    upgrade: proc_macro2::TokenStream,
+    upgrade: Expr,
     local: Ident,
 }
 
@@ -324,7 +227,7 @@ impl Default for FieldMeta {
             wrap: false,
             nest: false,
             skip: false,
-            upgrade: quote! { ::core::default::Default::default() },
+            upgrade: parse_quote! { ::core::default::Default::default() },
             local: Ident::new("_", Span::call_site()),
         }
     }
@@ -357,7 +260,13 @@ impl StructMeta {
                 }
             };
 
-            if args.skip {
+            let (skip, upgrade) = match args.skip {
+                Some(Override::Inherit) => (true, None),
+                Some(Override::Explicit(s)) => (true, s.upgrade),
+                None => (false, None),
+            };
+
+            if skip {
                 if !partial {
                     return Err(Error::new_spanned(
                         &field,
@@ -371,7 +280,7 @@ impl StructMeta {
                     ..Default::default()
                 };
 
-                if let Some(upgrade) = args.upgrade {
+                if let Some(upgrade) = upgrade {
                     field.upgrade = upgrade;
                 }
 
@@ -439,33 +348,40 @@ impl StructMeta {
 
 pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
     let struct_args = {
-        let mut struct_args = StructArgs::default();
-        let parser = parser(|meta| struct_args.parse(meta));
-        parse_macro_input!(args with parser);
-        struct_args
+        let struct_args = match NestedMeta::parse_meta_list(args.into()) {
+            Ok(v) => v,
+            Err(e) => return darling::Error::from(e).write_errors().into(),
+        };
+
+        match StructArgs::from_list(&struct_args) {
+            Ok(v) => v,
+            Err(e) => return e.write_errors().into(),
+        }
+    };
+
+    let (partial, upgradable) = match &struct_args.partial {
+        Some(Override::Inherit) => (true, false),
+        Some(Override::Explicit(p)) => (true, p.upgradable),
+        None => (false, false),
     };
 
     let mut original = parse_macro_input!(input as ItemStruct);
 
     let field_args = {
         let mut field_args = Vec::with_capacity(original.fields.len());
-        let mut errors: Option<Error> = None;
+        let mut errors = darling::Error::accumulator();
 
         for field in original.fields.iter_mut() {
-            match FieldArgs::extract(&mut field.attrs) {
-                Ok(a) => field_args.push(a),
-                Err(e) => {
-                    if let Some(ref mut errors) = errors {
-                        errors.combine(e);
-                    } else {
-                        errors = Some(e);
-                    }
-                }
+            if let Some(parsed) = errors.handle(FieldArgs::from_attributes(&field.attrs)) {
+                field_args.push(parsed);
             }
+            field
+                .attrs
+                .retain(|attr| !attr.path().is_ident("optionize"));
         }
 
-        if let Some(e) = errors {
-            return e.to_compile_error().into();
+        if let Err(err) = errors.finish() {
+            return err.write_errors().into();
         }
 
         field_args
@@ -484,6 +400,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
 
     if let Some(attributes) = struct_args.attributes {
         optionized.attrs = attributes
+            .0
             .into_iter()
             .map(|meta| parse_quote! { #[#meta] })
             .collect();
@@ -498,7 +415,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
         syn::Fields::Unit => return Default::default(),
     };
 
-    let meta = match StructMeta::extract(fields, field_args, struct_args.partial) {
+    let meta = match StructMeta::extract(fields, field_args, partial) {
         Ok(meta) => meta,
         Err(e) => return e.to_compile_error().into(),
     };
@@ -593,7 +510,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
         }
     });
 
-    if !struct_args.partial || struct_args.upgradable {
+    if !partial || upgradable {
         let destructure = if fields.is_empty() {
             quote! { let _ = self; }
         } else {
