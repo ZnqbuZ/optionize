@@ -15,6 +15,7 @@ use syn::{
     parse, parse_quote, parse_str, Error, Expr, Field, GenericArgument, Index, ItemStruct, Meta,
     PathArguments, Type, Visibility,
 };
+use syn::spanned::Spanned;
 
 #[derive(Debug, Clone)]
 struct MetaList(Vec<Meta>);
@@ -62,7 +63,7 @@ struct FieldArgs {
     name: Option<String>,
     attributes: Option<MetaList>,
     wrap: Option<bool>,
-    nest: Option<String>,
+    nest: Option<Type>,
     skip: Option<Override<SkipArgs>>,
 }
 
@@ -267,7 +268,7 @@ impl StructMeta {
             let original_field = match ident {
                 Some(ident) => quote! { #ident },
                 None => {
-                    let index = Index::from(i);
+                    let index = Index { index: i as u32, span: field.ty.span() };
                     quote! { #index }
                 }
             };
@@ -319,20 +320,17 @@ impl StructMeta {
             };
 
             let (ty, nest) = if let Some(nest) = &args.nest {
-                let nest = nest.replace("{}", &quote!(#ty).to_string());
-                let nest_ty = parse_str::<Type>(&nest)
-                    .map_err(|e| Error::new_spanned(ty, format!("invalid nest type: {}", e)))?;
-                this.nest.push((ty.clone(), nest_ty.clone()));
-                (nest_ty, true)
+                this.nest.push((ty.clone(), nest.clone()));
+                (nest, true)
             } else {
-                (ty.clone(), false)
+                (ty, false)
             };
 
-            let wrap = args.wrap.unwrap_or_else(|| !is_option(&ty));
+            let wrap = args.wrap.unwrap_or_else(|| !is_option(ty));
             field.ty = if wrap {
                 parse_quote! { Option<#ty> }
             } else {
-                ty
+                ty.clone()
             };
 
             let local = field
