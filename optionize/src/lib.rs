@@ -18,5 +18,5 @@ impl<T, O> Optionizable<O> for T where O: Optionized<Subject = T> {}
 
 pub trait Upgradable: Optionized {
     type Error;
-    fn upgrade(self) -> Result<Self::Subject, Self::Error>;
+    fn upgrade(self) -> Result<Self::Subject, (Self::Error, Self)>;
 }
