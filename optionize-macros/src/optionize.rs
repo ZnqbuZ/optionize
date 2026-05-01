@@ -338,14 +338,8 @@ struct StructMeta {
 }
 
 impl StructMeta {
-    fn extract(original: &mut ItemStruct, fields: &mut Punctuated<Field, Comma>) -> Result<Self> {
+    fn extract(fields: &mut Punctuated<Field, Comma>, args: Vec<FieldArgs>) -> Result<Self> {
         let mut this = Self::default();
-
-        let args = original
-            .fields
-            .iter_mut()
-            .map(|field| FieldArgs::extract(&mut field.attrs))
-            .collect::<Result<Vec<_>>>()?;
 
         for (i, (mut field, args)) in zip(take(fields), args).enumerate() {
             let ident = &field.ident;
@@ -431,6 +425,16 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
     let struct_args = parse_macro_input!(args as StructArgs);
     let mut original = parse_macro_input!(input as ItemStruct);
 
+    let field_args = match original
+        .fields
+        .iter_mut()
+        .map(|field| FieldArgs::extract(&mut field.attrs))
+        .collect::<Result<Vec<_>>>()
+    {
+        Ok(args) => args,
+        Err(e) => return e.to_compile_error().into(),
+    };
+
     let mut optionized = original.clone();
 
     optionized.ident = {
@@ -455,7 +459,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
         syn::Fields::Unit => return Default::default(),
     };
 
-    let meta = match StructMeta::extract(&mut original, fields) {
+    let meta = match StructMeta::extract(fields, field_args) {
         Ok(meta) => meta,
         Err(e) => return e.to_compile_error().into(),
     };
