@@ -62,7 +62,9 @@ impl StructArgs {
             attributes => {
                 let content;
                 syn::parenthesized!(content in meta.input);
-                self.attributes.get_or_insert_default().extend(content.parse_terminated(Meta::parse, Token![,])?);
+                self.attributes
+                    .get_or_insert_default()
+                    .extend(content.parse_terminated(Meta::parse, Token![,])?);
             }
             partial => {
                 self.partial = true;
@@ -171,12 +173,13 @@ fn is_option(ty: &Type) -> bool {
         return false;
     };
 
-    segment.ident == "Option" && matches!(
-        &segment.arguments,
-        PathArguments::AngleBracketed(args)
-            if args.args.len() == 1
-                && matches!(args.args.first(), Some(GenericArgument::Type(_)))
-    )
+    segment.ident == "Option"
+        && matches!(
+            &segment.arguments,
+            PathArguments::AngleBracketed(args)
+                if args.args.len() == 1
+                    && matches!(args.args.first(), Some(GenericArgument::Type(_)))
+        )
 }
 
 bitflags! {
@@ -196,9 +199,9 @@ impl UpgradeErrorBuilder {
     }
 
     fn build(&self, vis: &syn::Visibility, ident: &Ident) -> proc_macro2::TokenStream {
-        let mut error = quote! {};
-        let mut display = quote! {};
-        let mut source = proc_macro2::TokenStream::new();
+        let mut error = Vec::new();
+        let mut display = Vec::new();
+        let mut source = Vec::new();
 
         if self.is_empty() {
             return quote! {
@@ -207,83 +210,83 @@ impl UpgradeErrorBuilder {
         }
 
         if self.contains(Self::MISSING) {
-            error.extend(quote! {
+            error.push(quote! {
                 MissingField(&'static str),
             });
-            display.extend(quote! {
+            display.push(quote! {
                 Self::MissingField(field) => write!(f, "Missing required field for upgrade: {}", field),
             });
         }
 
         if self.contains(Self::MISSING_RENAMED) {
-            error.extend(quote! {
+            error.push(quote! {
                 MissingRenamedField {
                     original: &'static str,
                     optionized: &'static str,
                 },
             });
-            display.extend(quote! {
-            Self::MissingRenamedField { original, optionized } => write!(
-                f,
-                "Missing required field for upgrade: optionized field `{}` -> original field `{}`",
-                original, optionized
-            ),
-        });
+            display.push(quote! {
+                Self::MissingRenamedField { original, optionized } => write!(
+                    f,
+                    "Missing required field for upgrade: optionized field `{}` -> original field `{}`",
+                    original, optionized
+                ),
+            });
         }
 
         if self.contains(Self::NESTED) {
-            error.extend(quote! {
+            error.push(quote! {
                 NestedError {
                     field: &'static str,
                     source: ::optionize::__private::alloc::boxed::Box<dyn ::core::error::Error + 'static>,
                 },
             });
-            display.extend(quote! {
+            display.push(quote! {
                 Self::NestedError { field, .. } => write!(
                     f,
                     "Failed to upgrade nest field `{}`",
                     field
                 ),
             });
-            source.extend(quote! {
+            source.push(quote! {
                 Self::NestedError { source, .. } => ::core::option::Option::Some(&**source),
             });
         }
 
         if self.contains(Self::RENAMED_NESTED) {
-            error.extend(quote! {
+            error.push(quote! {
                 RenamedNestedError {
                     original: &'static str,
                     optionized: &'static str,
                     source: ::optionize::__private::alloc::boxed::Box<dyn ::core::error::Error + 'static>,
                 },
             });
-            display.extend(quote! {
+            display.push(quote! {
                 Self::RenamedNestedError { original, optionized, .. } => write!(
                     f,
                     "Failed to upgrade nest field: optionized field `{}` -> original field `{}`",
                     optionized, original
                 ),
             });
-            source.extend(quote! {
+            source.push(quote! {
                 Self::RenamedNestedError { source, .. } => ::core::option::Option::Some(&**source),
             });
         }
 
-        source.extend(quote! {
+        source.push(quote! {
             _ => ::core::option::Option::None,
         });
 
         quote! {
             #[derive(Debug)]
             #vis enum #ident {
-                #error
+                #(#error)*
             }
 
             impl ::core::error::Error for #ident {
                 fn source(&self) -> ::core::option::Option<&(dyn ::core::error::Error + 'static)> {
                     match self {
-                        #source
+                        #(#source)*
                     }
                 }
             }
@@ -291,7 +294,7 @@ impl UpgradeErrorBuilder {
             impl ::core::fmt::Display for #ident {
                 fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
                     match self {
-                        #display
+                        #(#display)*
                     }
                 }
             }
@@ -501,9 +504,9 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
     };
     let fields = meta.fields.iter().filter(|f| !f.skip).collect::<Vec<_>>();
 
-    let mut optionize = quote! {};
-    let mut patch = quote! {};
-    let mut merge = quote! {};
+    let mut optionize = Vec::with_capacity(fields.len());
+    let mut patch = Vec::with_capacity(fields.len());
+    let mut merge = Vec::with_capacity(fields.len());
 
     for field in &fields {
         let FieldMeta {
@@ -516,12 +519,12 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
 
         let optionize_value = match (wrap, nest) {
             (true, true) => {
-                patch.extend(quote! {
+                patch.push(quote! {
                     if let Some(value) = self.#optionized_field {
                         ::optionize::PartialOptionized::patch(value, &mut subject.#original_field);
                     }
                 });
-                merge.extend(quote! {
+                merge.push(quote! {
                     match (&mut self.#optionized_field, other.#optionized_field) {
                         (Some(this), Some(other)) => ::optionize::PartialOptionized::merge(this, other),
                         (None, Some(other)) => self.#optionized_field = Some(other),
@@ -531,12 +534,12 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
                 quote! { ::core::option::Option::Some(::optionize::PartialOptionized::optionize(subject.#original_field)) }
             }
             (true, false) => {
-                patch.extend(quote! {
+                patch.push(quote! {
                     if let Some(value) = self.#optionized_field {
                         subject.#original_field = value;
                     }
                 });
-                merge.extend(quote! {
+                merge.push(quote! {
                     if other.#optionized_field.is_some() {
                         self.#optionized_field = other.#optionized_field;
                     }
@@ -544,28 +547,28 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
                 quote! { ::core::option::Option::Some(subject.#original_field) }
             }
             (false, true) => {
-                patch.extend(quote! { ::optionize::PartialOptionized::patch(self.#optionized_field, &mut subject.#original_field); });
-                merge.extend(quote! { ::optionize::PartialOptionized::merge(&mut self.#optionized_field, other.#optionized_field); });
+                patch.push(quote! { ::optionize::PartialOptionized::patch(self.#optionized_field, &mut subject.#original_field); });
+                merge.push(quote! { ::optionize::PartialOptionized::merge(&mut self.#optionized_field, other.#optionized_field); });
                 quote! { ::optionize::PartialOptionized::optionize(subject.#original_field) }
             }
             (false, false) => {
-                patch.extend(quote! { subject.#original_field = self.#optionized_field; });
-                merge.extend(quote! { self.#optionized_field = other.#optionized_field; });
+                patch.push(quote! { subject.#original_field = self.#optionized_field; });
+                merge.push(quote! { self.#optionized_field = other.#optionized_field; });
                 quote! { subject.#original_field }
             }
         };
 
-        optionize.extend(if named {
+        optionize.push(if named {
             quote! { #optionized_field: #optionize_value, }
         } else {
             quote! { #optionize_value, }
         });
     }
 
-    let mut output = quote! {
+    let mut output = vec![quote! {
         #original
         #optionized
-    };
+    }];
 
     let generics = optionized.generics.clone();
     let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
@@ -576,17 +579,17 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
     let subject = quote! { #original_ident #type_generics };
 
     let optionize = match &original.fields {
-        syn::Fields::Named(_) => quote! { Self { #optionize } },
-        syn::Fields::Unnamed(_) => quote! { Self ( #optionize ) },
+        syn::Fields::Named(_) => quote! { Self { #(#optionize)* } },
+        syn::Fields::Unnamed(_) => quote! { Self ( #(#optionize)* ) },
         syn::Fields::Unit => quote! { Self },
     };
 
-    output.extend(quote! {
+    output.push(quote! {
         impl #impl_generics ::optionize::PartialOptionized for #optionized_ident #type_generics #where_clause {
             type Subject = #subject;
             fn optionize(subject: Self::Subject) -> Self { #optionize }
-            fn patch(self, subject: &mut Self::Subject) { #patch }
-            fn merge(&mut self, other: Self) { #merge }
+            fn patch(self, subject: &mut Self::Subject) { #(#patch)* }
+            fn merge(&mut self, other: Self) { #(#merge)* }
         }
     });
 
@@ -608,9 +611,9 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
         );
         let mut error_builder = UpgradeErrorBuilder::empty();
 
-        let mut past = Vec::new();
+        let mut past = Vec::with_capacity(fields.len());
 
-        let mut upgrade = quote! {};
+        let mut upgrade = Vec::with_capacity(fields.len());
 
         for (i, field) in fields.iter().enumerate() {
             let FieldMeta {
@@ -650,7 +653,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
 
             if *wrap {
                 let this = build(quote! { ::core::option::Option::None });
-                upgrade.extend(quote! {
+                upgrade.push(quote! {
                     let #local = match #local {
                         ::core::option::Option::Some(v) => v,
                         ::core::option::Option::None => return ::core::result::Result::Err((#missing_err, #this)),
@@ -664,7 +667,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
                 } else {
                     quote! { #local }
                 });
-                upgrade.extend(quote! {
+                upgrade.push(quote! {
                     let #local = match ::optionize::Upgradable::upgrade(#local) {
                         ::core::result::Result::Ok(v) => v,
                         ::core::result::Result::Err((_e, #local)) => return ::core::result::Result::Err((#nest_err, #this)),
@@ -684,47 +687,47 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
             });
         }
 
-        output.extend(error_builder.build(&original.vis, &error_ident));
+        output.push(error_builder.build(&original.vis, &error_ident));
 
         let original = {
-            let mut fields = quote! {};
+            let mut fields = Vec::with_capacity(meta.fields.len());
             for field in &meta.fields {
                 let original_field = &field.original_field;
                 if field.skip {
                     let upgrade = &field.upgrade;
                     if named {
-                        fields.extend(quote! { #original_field: #upgrade, });
+                        fields.push(quote! { #original_field: #upgrade, });
                     } else {
-                        fields.extend(quote! { #upgrade, });
+                        fields.push(quote! { #upgrade, });
                     }
                     continue;
                 }
                 let original_value = &field.local;
                 if named {
-                    fields.extend(quote! { #original_field: #original_value, });
+                    fields.push(quote! { #original_field: #original_value, });
                 } else {
-                    fields.extend(quote! { #original_value, });
+                    fields.push(quote! { #original_value, });
                 }
             }
 
             match &original.fields {
-                syn::Fields::Named(_) => quote! { #original_ident { #fields } },
-                syn::Fields::Unnamed(_) => quote! { #original_ident ( #fields ) },
+                syn::Fields::Named(_) => quote! { #original_ident { #(#fields)* } },
+                syn::Fields::Unnamed(_) => quote! { #original_ident ( #(#fields)* ) },
                 syn::Fields::Unit => quote! { #original_ident },
             }
         };
 
-        output.extend(quote! {
+        output.push(quote! {
             impl #impl_generics ::optionize::Upgradable<#subject> for #optionized_ident #type_generics #where_clause {
                 type Error = #error_ident;
                 fn upgrade(self) -> ::core::result::Result<#subject, (Self::Error, Self)> {
                     #destructure
-                    #upgrade
+                    #(#upgrade)*
                     ::core::result::Result::Ok(#original)
                 }
             }
         });
     }
 
-    output.into()
+    quote! { #(#output)* }.into()
 }
