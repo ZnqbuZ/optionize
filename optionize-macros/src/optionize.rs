@@ -21,8 +21,8 @@ macro_rules! bail {
 #[derive(Default)]
 struct StructArgs {
     name: String,
-    upgradable: bool,
     attributes: Option<Vec<Meta>>,
+    upgradable: bool,
 }
 
 impl Parse for StructArgs {
@@ -43,15 +43,6 @@ impl Parse for StructArgs {
                         bail!(nv, "expected string literal");
                     }
                 }
-                Meta::NameValue(nv) if nv.path.is_ident("upgradable") => {
-                    if let Expr::Lit(expr_lit) = &nv.value
-                        && let Lit::Bool(lit_bool) = &expr_lit.lit
-                    {
-                        args.upgradable = lit_bool.value();
-                    } else {
-                        bail!(nv, "expected string literal");
-                    }
-                }
                 Meta::List(meta_list) if meta_list.path.is_ident("attributes") => {
                     let Ok(nest) =
                         meta_list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
@@ -59,6 +50,9 @@ impl Parse for StructArgs {
                         bail!(meta_list, "invalid attributes format");
                     };
                     args.attributes.get_or_insert_default().extend(nest);
+                }
+                Meta::Path(path) if path.is_ident("upgradable") => {
+                    args.upgradable = true;
                 }
                 Meta::Path(path) if let Some(ident) = path.get_ident() => {
                     name = Some(ident.to_string());
@@ -394,9 +388,11 @@ impl StructMeta {
             };
 
             let wrap = args.wrap.unwrap_or_else(|| !is_option(&ty));
-            if wrap {
-                field.ty = parse_quote! { Option<#ty> };
-            }
+            field.ty = if wrap {
+                parse_quote! { Option<#ty> }
+            } else {
+                ty
+            };
 
             let local = field
                 .ident
