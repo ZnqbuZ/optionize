@@ -6,5 +6,5 @@ mod optionize;
 
 #[proc_macro_attribute]
 pub fn optionize(args: TokenStream, input: TokenStream) -> TokenStream {
-    optionize::proc(args, input)
+    optionize::proc(args, input).unwrap_or_else(|e| e.to_compile_error().into())
 }

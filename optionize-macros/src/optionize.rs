@@ -1,32 +1,37 @@
 use darling::ast::NestedMeta;
 use darling::util::Override;
 use darling::{FromAttributes, FromMeta};
+use itertools::Itertools;
 use proc_macro::TokenStream;
-use proc_macro2::{Ident, Span};
-use quote::quote;
+use proc_macro2::Ident;
+use quote::{format_ident, quote};
 use std::collections::HashSet;
 use std::iter::zip;
 use std::mem::take;
 use syn::parse::Result;
 use syn::punctuated::Punctuated;
 use syn::token::Comma;
-use syn::{parse_macro_input, parse_quote, parse_str, Error, Expr, Field, GenericArgument, Index, ItemStruct, Meta, PathArguments, Type, Visibility};
+use syn::{
+    parse, parse_quote, parse_str, Error, Expr, Field, GenericArgument, Index, ItemStruct, Meta,
+    PathArguments, Type, Visibility,
+};
 
 #[derive(Debug, Clone)]
 struct MetaList(Vec<Meta>);
 
 impl FromMeta for MetaList {
     fn from_list(items: &[NestedMeta]) -> darling::Result<Self> {
-        let mut metas = Vec::with_capacity(items.len());
         let mut errors = darling::Error::accumulator();
-        for item in items {
-            match item {
-                NestedMeta::Meta(m) => metas.push(m.clone()),
+        let metas = items
+            .iter()
+            .filter_map(|item| match item {
+                NestedMeta::Meta(m) => Some(m.clone()),
                 NestedMeta::Lit(l) => {
-                    errors.push(darling::Error::unsupported_format("literal").with_span(l))
+                    errors.push(darling::Error::unsupported_format("literal").with_span(l));
+                    None
                 }
-            }
-        }
+            })
+            .collect();
         errors.finish_with(Self(metas))
     }
 }
@@ -93,63 +98,68 @@ enum UpgradeError {
     RenamedNested,
 }
 
-struct UpgradeErrorTokens {
-    variant: proc_macro2::TokenStream,
-    display: proc_macro2::TokenStream,
-    source: Option<proc_macro2::TokenStream>,
-}
-
 impl UpgradeError {
-    fn tokens(&self) -> UpgradeErrorTokens {
+    fn variant(&self) -> proc_macro2::TokenStream {
         match self {
-            Self::Missing => UpgradeErrorTokens {
-                variant: quote! { MissingField(&'static str), },
-                display: quote! { Self::MissingField(field) => write!(f, "Missing required field for upgrade: {}", field), },
-                source: None,
+            Self::Missing => quote! {
+                MissingField(&'static str),
             },
-            Self::Nested => UpgradeErrorTokens {
-                variant: quote! {
-                    NestedError {
-                        field: &'static str,
-                        source: ::optionize::__private::alloc::boxed::Box<dyn ::core::error::Error + 'static>,
-                    },
+            Self::Nested => quote! {
+                NestedError {
+                    field: &'static str,
+                    source: ::optionize::__private::alloc::boxed::Box<dyn ::core::error::Error + 'static>,
                 },
-                display: quote! { Self::NestedError { field, .. } => write!(f, "Failed to upgrade nested field `{}`", field), },
-                source: Some(quote! { Self::NestedError { source, .. } => ::core::option::Option::Some(&**source), }),
             },
-            Self::MissingRenamed => UpgradeErrorTokens {
-                variant: quote! {
-                    MissingRenamedField {
-                        original: &'static str,
-                        optionized: &'static str,
-                    },
+            Self::MissingRenamed => quote! {
+                MissingRenamedField {
+                    original: &'static str,
+                    optionized: &'static str,
                 },
-                display: quote! {
-                    Self::MissingRenamedField { original, optionized } => write!(
-                        f,
-                        "Missing required field for upgrade: optionized field `{}` -> original field `{}`",
-                        original, optionized
-                    ),
-                },
-                source: None,
             },
-            Self::RenamedNested => UpgradeErrorTokens {
-                variant: quote! {
-                    RenamedNestedError {
-                        original: &'static str,
-                        optionized: &'static str,
-                        source: ::optionize::__private::alloc::boxed::Box<dyn ::core::error::Error + 'static>,
-                    },
+            Self::RenamedNested => quote! {
+                RenamedNestedError {
+                    original: &'static str,
+                    optionized: &'static str,
+                    source: ::optionize::__private::alloc::boxed::Box<dyn ::core::error::Error + 'static>,
                 },
-                display: quote! {
-                    Self::RenamedNestedError { original, optionized, .. } => write!(
-                        f,
-                        "Failed to upgrade nested field: optionized field `{}` -> original field `{}`",
-                        optionized, original
-                    ),
-                },
-                source: Some(quote! { Self::RenamedNestedError { source, .. } => ::core::option::Option::Some(&**source), }),
             },
+        }
+    }
+
+    fn display(&self) -> proc_macro2::TokenStream {
+        match self {
+            Self::Missing => quote! {
+                Self::MissingField(field) => write!(f, "Missing required field for upgrade: {}", field),
+            },
+            Self::Nested => quote! {
+                Self::NestedError { field, .. } => write!(f, "Failed to upgrade nested field `{}`", field),
+            },
+            Self::MissingRenamed => quote! {
+                Self::MissingRenamedField { original, optionized } => write!(
+                    f,
+                    "Missing required field for upgrade: optionized field `{}` -> original field `{}`",
+                    original, optionized
+                ),
+            },
+            Self::RenamedNested => quote! {
+                Self::RenamedNestedError { original, optionized, .. } => write!(
+                    f,
+                    "Failed to upgrade nested field: optionized field `{}` -> original field `{}`",
+                    optionized, original
+                ),
+            },
+        }
+    }
+
+    fn source(&self) -> Option<proc_macro2::TokenStream> {
+        match self {
+            Self::Nested => Some(quote! {
+                Self::NestedError { source, .. } => ::core::option::Option::Some(&**source),
+            }),
+            Self::RenamedNested => Some(quote! {
+                Self::RenamedNestedError { source, .. } => ::core::option::Option::Some(&**source),
+            }),
+            _ => None,
         }
     }
 }
@@ -163,36 +173,23 @@ impl UpgradeErrorBuilder {
     fn update(&mut self, renamed: bool, nest: bool) {
         let error = match (renamed, nest) {
             (false, false) => UpgradeError::Missing,
-            (false, true)  => UpgradeError::Nested,
-            (true, false)  => UpgradeError::MissingRenamed,
-            (true, true)   => UpgradeError::RenamedNested,
+            (false, true) => UpgradeError::Nested,
+            (true, false) => UpgradeError::MissingRenamed,
+            (true, true) => UpgradeError::RenamedNested,
         };
         self.errors.insert(error);
     }
 
     fn build(&self, vis: &Visibility, ident: &Ident) -> proc_macro2::TokenStream {
-        let mut variant = Vec::new();
-        let mut display = Vec::new();
-        let mut source = Vec::new();
-
         if self.errors.is_empty() {
             return quote! {
                 #vis type #ident = ::core::convert::Infallible;
             };
         }
 
-        for error in &self.errors {
-            let tokens = error.tokens();
-            variant.push(tokens.variant);
-            display.push(tokens.display);
-            if let Some(s) = tokens.source {
-                source.push(s);
-            }
-        }
-
-        source.push(quote! {
-            _ => ::core::option::Option::None,
-        });
+        let variant = self.errors.iter().map(UpgradeError::variant);
+        let display = self.errors.iter().map(UpgradeError::display);
+        let source = self.errors.iter().filter_map(UpgradeError::source);
 
         quote! {
             #[derive(Debug)]
@@ -204,6 +201,7 @@ impl UpgradeErrorBuilder {
                 fn source(&self) -> ::core::option::Option<&(dyn ::core::error::Error + 'static)> {
                     match self {
                         #(#source)*
+                        _ => ::core::option::Option::None,
                     }
                 }
             }
@@ -242,7 +240,7 @@ impl Default for FieldMeta {
             nest: false,
             skip: false,
             upgrade: parse_quote! { ::core::default::Default::default() },
-            local: Ident::new("_", Span::call_site()),
+            local: format_ident!("_"),
         }
     }
 }
@@ -340,7 +338,7 @@ impl StructMeta {
             let local = field
                 .ident
                 .clone()
-                .unwrap_or_else(|| Ident::new(&format!("_{}", i), Span::call_site()));
+                .unwrap_or_else(|| format_ident!("_{}", i));
 
             this.fields.push(FieldMeta {
                 original_field: original_field.clone(),
@@ -360,17 +358,10 @@ impl StructMeta {
     }
 }
 
-pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
+pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
     let struct_args = {
-        let struct_args = match NestedMeta::parse_meta_list(args.into()) {
-            Ok(v) => v,
-            Err(e) => return darling::Error::from(e).write_errors().into(),
-        };
-
-        match StructArgs::from_list(&struct_args) {
-            Ok(v) => v,
-            Err(e) => return e.write_errors().into(),
-        }
+        let struct_args = NestedMeta::parse_meta_list(args.into())?;
+        StructArgs::from_list(&struct_args)?
     };
 
     let (partial, upgradable) = match &struct_args.partial {
@@ -379,7 +370,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
         None => (false, false),
     };
 
-    let mut original = parse_macro_input!(input as ItemStruct);
+    let mut original = parse::<ItemStruct>(input)?;
 
     let field_args = {
         let mut field_args = Vec::with_capacity(original.fields.len());
@@ -394,11 +385,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
                 .retain(|attr| !attr.path().is_ident("optionize"));
         }
 
-        if let Err(err) = errors.finish() {
-            return err.write_errors().into();
-        }
-
-        field_args
+        errors.finish_with(field_args)?
     };
 
     let mut optionized = original.clone();
@@ -426,13 +413,10 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
     let (fields, named) = match &mut optionized.fields {
         syn::Fields::Named(fields) => (&mut fields.named, true),
         syn::Fields::Unnamed(fields) => (&mut fields.unnamed, false),
-        syn::Fields::Unit => return Default::default(),
+        syn::Fields::Unit => return Ok(Default::default()),
     };
 
-    let meta = match StructMeta::extract(fields, field_args, partial) {
-        Ok(meta) => meta,
-        Err(e) => return e.to_compile_error().into(),
-    };
+    let meta = StructMeta::extract(fields, field_args, partial)?;
     let fields = meta.fields.iter().filter(|f| !f.skip).collect::<Vec<_>>();
 
     let mut optionize = Vec::with_capacity(fields.len());
@@ -660,5 +644,5 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
         });
     }
 
-    quote! { #(#output)* }.into()
+    Ok(quote! { #(#output)* }.into())
 }
