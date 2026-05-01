@@ -1,10 +1,10 @@
-use bitflags::bitflags;
 use darling::ast::NestedMeta;
 use darling::util::Override;
 use darling::{FromAttributes, FromMeta};
 use proc_macro::TokenStream;
 use proc_macro2::{Ident, Span};
 use quote::quote;
+use std::collections::HashSet;
 use std::iter::zip;
 use std::mem::take;
 use syn::parse::Result;
@@ -85,95 +85,109 @@ fn is_option(ty: &Type) -> bool {
         )
 }
 
-bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
-    struct UpgradeErrorBuilder: u8 {
-        const MISSING         = 1 << 0; // 0b0001
-        const NESTED          = 1 << 1; // 0b0010
-        const MISSING_RENAMED = 1 << 2; // 0b0100
-        const RENAMED_NESTED  = 1 << 3; // 0b1000
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum UpgradeError {
+    Missing,
+    Nested,
+    MissingRenamed,
+    RenamedNested,
+}
+
+struct UpgradeErrorTokens {
+    variant: proc_macro2::TokenStream,
+    display: proc_macro2::TokenStream,
+    source: Option<proc_macro2::TokenStream>,
+}
+
+impl UpgradeError {
+    fn tokens(&self) -> UpgradeErrorTokens {
+        match self {
+            Self::Missing => UpgradeErrorTokens {
+                variant: quote! { MissingField(&'static str), },
+                display: quote! { Self::MissingField(field) => write!(f, "Missing required field for upgrade: {}", field), },
+                source: None,
+            },
+            Self::Nested => UpgradeErrorTokens {
+                variant: quote! {
+                    NestedError {
+                        field: &'static str,
+                        source: ::optionize::__private::alloc::boxed::Box<dyn ::core::error::Error + 'static>,
+                    },
+                },
+                display: quote! { Self::NestedError { field, .. } => write!(f, "Failed to upgrade nested field `{}`", field), },
+                source: Some(quote! { Self::NestedError { source, .. } => ::core::option::Option::Some(&**source), }),
+            },
+            Self::MissingRenamed => UpgradeErrorTokens {
+                variant: quote! {
+                    MissingRenamedField {
+                        original: &'static str,
+                        optionized: &'static str,
+                    },
+                },
+                display: quote! {
+                    Self::MissingRenamedField { original, optionized } => write!(
+                        f,
+                        "Missing required field for upgrade: optionized field `{}` -> original field `{}`",
+                        original, optionized
+                    ),
+                },
+                source: None,
+            },
+            Self::RenamedNested => UpgradeErrorTokens {
+                variant: quote! {
+                    RenamedNestedError {
+                        original: &'static str,
+                        optionized: &'static str,
+                        source: ::optionize::__private::alloc::boxed::Box<dyn ::core::error::Error + 'static>,
+                    },
+                },
+                display: quote! {
+                    Self::RenamedNestedError { original, optionized, .. } => write!(
+                        f,
+                        "Failed to upgrade nested field: optionized field `{}` -> original field `{}`",
+                        optionized, original
+                    ),
+                },
+                source: Some(quote! { Self::RenamedNestedError { source, .. } => ::core::option::Option::Some(&**source), }),
+            },
+        }
     }
+}
+
+#[derive(Debug, Clone, Default)]
+struct UpgradeErrorBuilder {
+    errors: HashSet<UpgradeError>,
 }
 
 impl UpgradeErrorBuilder {
     fn update(&mut self, renamed: bool, nest: bool) {
-        let offset = ((renamed as u8) << 1) | (nest as u8);
-        self.insert(Self::from_bits_retain(1 << offset));
+        let error = match (renamed, nest) {
+            (false, false) => UpgradeError::Missing,
+            (false, true)  => UpgradeError::Nested,
+            (true, false)  => UpgradeError::MissingRenamed,
+            (true, true)   => UpgradeError::RenamedNested,
+        };
+        self.errors.insert(error);
     }
 
     fn build(&self, vis: &Visibility, ident: &Ident) -> proc_macro2::TokenStream {
-        let mut error = Vec::new();
+        let mut variant = Vec::new();
         let mut display = Vec::new();
         let mut source = Vec::new();
 
-        if self.is_empty() {
+        if self.errors.is_empty() {
             return quote! {
                 #vis type #ident = ::core::convert::Infallible;
             };
         }
 
-        if self.contains(Self::MISSING) {
-            error.push(quote! {
-                MissingField(&'static str),
-            });
-            display.push(quote! {
-                Self::MissingField(field) => write!(f, "Missing required field for upgrade: {}", field),
-            });
-        }
-
-        if self.contains(Self::MISSING_RENAMED) {
-            error.push(quote! {
-                MissingRenamedField {
-                    original: &'static str,
-                    optionized: &'static str,
-                },
-            });
-            display.push(quote! {
-                Self::MissingRenamedField { original, optionized } => write!(
-                    f,
-                    "Missing required field for upgrade: optionized field `{}` -> original field `{}`",
-                    original, optionized
-                ),
-            });
-        }
-
-        if self.contains(Self::NESTED) {
-            error.push(quote! {
-                NestedError {
-                    field: &'static str,
-                    source: ::optionize::__private::alloc::boxed::Box<dyn ::core::error::Error + 'static>,
-                },
-            });
-            display.push(quote! {
-                Self::NestedError { field, .. } => write!(
-                    f,
-                    "Failed to upgrade nest field `{}`",
-                    field
-                ),
-            });
-            source.push(quote! {
-                Self::NestedError { source, .. } => ::core::option::Option::Some(&**source),
-            });
-        }
-
-        if self.contains(Self::RENAMED_NESTED) {
-            error.push(quote! {
-                RenamedNestedError {
-                    original: &'static str,
-                    optionized: &'static str,
-                    source: ::optionize::__private::alloc::boxed::Box<dyn ::core::error::Error + 'static>,
-                },
-            });
-            display.push(quote! {
-                Self::RenamedNestedError { original, optionized, .. } => write!(
-                    f,
-                    "Failed to upgrade nest field: optionized field `{}` -> original field `{}`",
-                    optionized, original
-                ),
-            });
-            source.push(quote! {
-                Self::RenamedNestedError { source, .. } => ::core::option::Option::Some(&**source),
-            });
+        for error in &self.errors {
+            let tokens = error.tokens();
+            variant.push(tokens.variant);
+            display.push(tokens.display);
+            if let Some(s) = tokens.source {
+                source.push(s);
+            }
         }
 
         source.push(quote! {
@@ -183,7 +197,7 @@ impl UpgradeErrorBuilder {
         quote! {
             #[derive(Debug)]
             #vis enum #ident {
-                #(#error)*
+                #(#variant)*
             }
 
             impl ::core::error::Error for #ident {
@@ -526,7 +540,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
             &format!("{}UpgradeError", optionized_ident),
             optionized_ident.span(),
         );
-        let mut error_builder = UpgradeErrorBuilder::empty();
+        let mut error_builder = UpgradeErrorBuilder::default();
 
         let mut past = Vec::with_capacity(fields.len());
 
