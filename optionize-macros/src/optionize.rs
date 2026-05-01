@@ -170,11 +170,8 @@ fn is_option(ty: &Type) -> bool {
     let Some(segment) = path.path.segments.last() else {
         return false;
     };
-    if segment.ident != "Option" {
-        return false;
-    }
 
-    matches!(
+    segment.ident == "Option" && matches!(
         &segment.arguments,
         PathArguments::AngleBracketed(args)
             if args.args.len() == 1
