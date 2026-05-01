@@ -478,17 +478,17 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
             (true, true) => {
                 patch.extend(quote! {
                     if let Some(value) = self.#optionized_field {
-                        optionize::Optionized::patch(value, &mut subject.#original_field);
+                        optionize::PartialOptionized::patch(value, &mut subject.#original_field);
                     }
                 });
                 merge.extend(quote! {
                     match (&mut self.#optionized_field, other.#optionized_field) {
-                        (Some(this), Some(other)) => optionize::Optionized::merge(this, other),
+                        (Some(this), Some(other)) => optionize::PartialOptionized::merge(this, other),
                         (None, Some(other)) => self.#optionized_field = Some(other),
                         _ => {}
                     }
                 });
-                quote! { ::core::option::Option::Some(optionize::Optionized::optionize(subject.#original_field)) }
+                quote! { ::core::option::Option::Some(optionize::PartialOptionized::optionize(subject.#original_field)) }
             }
             (true, false) => {
                 patch.extend(quote! {
@@ -504,9 +504,9 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
                 quote! { ::core::option::Option::Some(subject.#original_field) }
             }
             (false, true) => {
-                patch.extend(quote! { optionize::Optionized::patch(self.#optionized_field, &mut subject.#original_field); });
-                merge.extend(quote! { optionize::Optionized::merge(&mut self.#optionized_field, other.#optionized_field); });
-                quote! { optionize::Optionized::optionize(subject.#original_field) }
+                patch.extend(quote! { optionize::PartialOptionized::patch(self.#optionized_field, &mut subject.#original_field); });
+                merge.extend(quote! { optionize::PartialOptionized::merge(&mut self.#optionized_field, other.#optionized_field); });
+                quote! { optionize::PartialOptionized::optionize(subject.#original_field) }
             }
             (false, false) => {
                 patch.extend(quote! { subject.#original_field = self.#optionized_field; });
@@ -533,13 +533,15 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
         for (ty, nest_ty) in &meta.nest {
             where_clause
                 .predicates
-                .push(parse_quote! { #nest_ty: optionize::Optionized<Subject = #ty> });
+                .push(parse_quote! { #nest_ty: optionize::PartialOptionized<Subject = #ty> });
         }
         generics.split_for_impl()
     };
 
     let original_ident = &original.ident;
     let optionized_ident = &optionized.ident;
+
+    let subject = quote! { #original_ident #type_generics };
 
     let optionize = match &original.fields {
         syn::Fields::Named(_) => quote! { Self { #optionize } },
@@ -548,8 +550,8 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
     };
 
     output.extend(quote! {
-        impl #impl_generics optionize::Optionized for #optionized_ident #type_generics #where_clause {
-            type Subject = #original_ident #type_generics;
+        impl #impl_generics optionize::PartialOptionized for #optionized_ident #type_generics #where_clause {
+            type Subject = #subject;
             fn optionize(subject: Self::Subject) -> Self { #optionize }
             fn patch(self, subject: &mut Self::Subject) { #patch }
             fn merge(&mut self, other: Self) { #merge }
@@ -559,11 +561,8 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
     if struct_args.upgradable {
         let (impl_generics, type_generics, where_clause) = {
             let where_clause = generics.make_where_clause();
-            for (_, ty) in &meta.nest {
-                where_clause
-                    .predicates
-                    .push(parse_quote! { #ty: optionize::Upgradable });
-                where_clause.predicates.push(parse_quote! { <#ty as optionize::Upgradable>::Error: ::std::error::Error + 'static });
+            for (ty, nest_ty) in &meta.nest {
+                where_clause.predicates.push(parse_quote! { <#nest_ty as optionize::Upgradable<#ty>>::Error: ::std::error::Error + 'static });
             }
             for ty in &meta.skip {
                 where_clause
@@ -698,9 +697,9 @@ pub fn proc(args: TokenStream, input: TokenStream) -> TokenStream {
         };
 
         output.extend(quote! {
-            impl #impl_generics optionize::Upgradable for #optionized_ident #type_generics #where_clause {
+            impl #impl_generics optionize::Upgradable<#subject> for #optionized_ident #type_generics #where_clause {
                 type Error = #error_ident;
-                fn upgrade(self) -> ::core::result::Result<Self::Subject, (Self::Error, Self)> {
+                fn upgrade(self) -> ::core::result::Result<#subject, (Self::Error, Self)> {
                     #destructure
                     #upgrade
                     ::core::result::Result::Ok(#original)

@@ -1,11 +1,11 @@
-pub trait Optionized: Sized {
+pub trait PartialOptionized: Sized {
     type Subject;
     fn optionize(subject: Self::Subject) -> Self;
     fn patch(self, subject: &mut Self::Subject);
     fn merge(&mut self, other: Self);
 }
 
-pub trait Optionizable<O: Optionized<Subject = Self>>: Sized where (): Sized {
+pub trait Optionizable<O: PartialOptionized<Subject = Self>>: Sized where (): Sized {
     fn load(&mut self, other: O) {
         other.patch(self);
     }
@@ -14,9 +14,13 @@ pub trait Optionizable<O: Optionized<Subject = Self>>: Sized where (): Sized {
     }
 }
 
-impl<T, O> Optionizable<O> for T where O: Optionized<Subject = T> {}
+impl<T, O> Optionizable<O> for T where O: PartialOptionized<Subject = T> {}
 
-pub trait Upgradable: Optionized {
+pub trait Upgradable<Subject>: Sized {
     type Error;
-    fn upgrade(self) -> Result<Self::Subject, (Self::Error, Self)>;
+    fn upgrade(self) -> Result<Subject, (Self::Error, Self)>;
 }
+
+pub trait Optionized: PartialOptionized + Upgradable<Self::Subject> {}
+
+impl<O> Optionized for O where O: PartialOptionized + Upgradable<Self::Subject> {}
