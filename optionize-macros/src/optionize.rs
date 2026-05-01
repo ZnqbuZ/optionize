@@ -518,14 +518,11 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
             optionized_ident.span(),
         );
         let mut error_builder = UpgradeErrorBuilder::default();
-
-        let mut past = Vec::with_capacity(fields.len());
-
         let mut upgrade = Vec::with_capacity(fields.len());
 
-        upgrade.push(quote! { let errors = ::optionize::__private::alloc::vec::Vec::new(); });
+        upgrade.push(quote! { let mut errors = ::optionize::__private::alloc::vec::Vec::new(); });
 
-        for (i, field) in fields.iter().enumerate() {
+        for field in &fields {
             let FieldMeta {
                 optionized_field,
                 original_name,
@@ -536,108 +533,169 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
                 ..
             } = field;
 
-            let err_local = format_ident!("err_{}", optionized_name);
-
             let (renamed, missing_err, nest_err) = if original_name == optionized_name {
                 (
                     false,
                     quote! { #error_ident::MissingField(#original_name) },
-                    quote! { #error_ident::NestedError { field: #original_name, source: ::optionize::__private::alloc::boxed::Box::new(#err_local) as _ } },
+                    quote! { |e| #error_ident::NestedError { field: #original_name, source: ::optionize::__private::alloc::boxed::Box::new(e) as _ } },
                 )
             } else {
                 (
                     true,
                     quote! { #error_ident::MissingRenamedField { original: #original_name, optionized: #optionized_name } },
-                    quote! { #error_ident::RenamedNestedError { original: #original_name, optionized: #optionized_name, source: ::optionize::__private::alloc::boxed::Box::new(#err_local) as _ } },
+                    quote! { |e| #error_ident::RenamedNestedError { original: #original_name, optionized: #optionized_name, source: ::optionize::__private::alloc::boxed::Box::new(e) as _ } },
                 )
             };
 
             error_builder.update(renamed, *nest);
 
-            let build = |current: proc_macro2::TokenStream| {
-                let past = &past;
-                if named {
-                    quote! { Self { #(#past)* #optionized_field: #current, ..self } }
-                } else {
-                    let future = fields[(i + 1)..].iter().map(|m| &m.optionized_field);
-                    quote! { Self ( #(#past)* #current #(, self.#future)* ) }
-                }
-            };
-
             upgrade.push(quote! { let #local = self.#optionized_field; });
 
-            if *wrap {
-                let this = build(quote! { ::core::option::Option::None });
-                upgrade.push(quote! {
+            upgrade.push(match (wrap, nest) {
+                (true, true) => quote! {
                     let #local = match #local {
-                        ::core::option::Option::Some(v) => v,
-                        ::core::option::Option::None => return ::core::result::Result::Err((#missing_err, #this)),
+                        ::core::option::Option::Some(v) => match ::optionize::Upgradable::upgrade(v) {
+                            ::core::result::Result::Ok(upgraded) => ::core::result::Result::Ok(upgraded),
+                            ::core::result::Result::Err((e, v)) => {
+                                errors.extend(e.into_iter().map(#nest_err));
+                                ::core::result::Result::Err(::core::option::Option::Some(v))
+                            }
+                        },
+                        ::core::option::Option::None => {
+                            errors.push(#missing_err);
+                            ::core::result::Result::Err(::core::option::Option::None)
+                        }
                     };
-                });
-            }
-
-            if *nest {
-                let this = build(if *wrap {
-                    quote! { ::core::option::Option::Some(#local) }
-                } else {
-                    quote! { #local }
-                });
-                upgrade.push(quote! {
+                },
+                (true, false) => quote! {
+                    let #local = match #local {
+                        ::core::option::Option::Some(v) => ::core::result::Result::Ok(v),
+                        ::core::option::Option::None => {
+                            errors.push(#missing_err);
+                            ::core::result::Result::Err(::core::option::Option::None)
+                        }
+                    };
+                },
+                (false, true) => quote! {
                     let #local = match ::optionize::Upgradable::upgrade(#local) {
-                        ::core::result::Result::Ok(v) => v,
-                        ::core::result::Result::Err((#err_local, #local)) => return ::core::result::Result::Err((#nest_err, #this)),
+                        ::core::result::Result::Ok(v) => ::core::result::Result::Ok(v),
+                        ::core::result::Result::Err((e, v)) => {
+                            errors.extend(e.into_iter().map(#nest_err));
+                            ::core::result::Result::Err(v)
+                        }
                     };
-                });
-            }
-
-            let past_value = if *wrap {
-                quote! { ::core::option::Option::Some(#local) }
-            } else {
-                quote! { #local }
-            };
-            past.push(if named {
-                quote! { #optionized_field: #past_value, }
-            } else {
-                quote! { #past_value, }
+                },
+                (false, false) => quote! {
+                    let #local = ::core::result::Result::Ok(#local);
+                }
             });
         }
 
         output.push(error_builder.build(&original.vis, &error_ident));
 
-        let original = {
-            let mut fields = Vec::with_capacity(meta.fields.len());
+
+        let ok = {
+            let mut ok_fields = Vec::with_capacity(meta.fields.len());
             for field in &meta.fields {
-                let original_field = &field.original_field;
-                if field.skip {
-                    let upgrade = &field.upgrade;
+                let FieldMeta {
+                    original_field,
+                    skip,
+                    upgrade,
+                    local,
+                    ..
+                } = field;
+
+                if *skip {
                     if named {
-                        fields.push(quote! { #original_field: #upgrade, });
+                        ok_fields.push(quote! { #original_field: #upgrade, });
                     } else {
-                        fields.push(quote! { #upgrade, });
+                        ok_fields.push(quote! { #upgrade, });
                     }
                     continue;
                 }
-                let original_value = &field.local;
+
+                let local = quote! { match #local { ::core::result::Result::Ok(v) => v, _ => unreachable!() } };
+
                 if named {
-                    fields.push(quote! { #original_field: #original_value, });
+                    ok_fields.push(quote! { #original_field: #local, });
                 } else {
-                    fields.push(quote! { #original_value, });
+                    ok_fields.push(quote! { #local, });
                 }
             }
 
             match &original.fields {
-                syn::Fields::Named(_) => quote! { #original_ident { #(#fields)* } },
-                syn::Fields::Unnamed(_) => quote! { #original_ident ( #(#fields)* ) },
+                syn::Fields::Named(_) => quote! { #original_ident { #(#ok_fields)* } },
+                syn::Fields::Unnamed(_) => quote! { #original_ident ( #(#ok_fields)* ) },
                 syn::Fields::Unit => quote! { #original_ident },
             }
         };
 
+        let err = {
+            let mut err_fields = Vec::with_capacity(fields.len());
+            for field in &fields {
+                let FieldMeta {
+                    optionized_field,
+                    wrap,
+                    nest,
+                    local,
+                    ..
+                } = field;
+
+                let rollback = match (wrap, nest) {
+                    (true, true) => quote! {
+                        match #local {
+                            ::core::result::Result::Ok(v) => ::core::option::Option::Some(::optionize::Optionizable::downgrade(v)),
+                            ::core::result::Result::Err(v) => v,
+                        }
+                    },
+                    (true, false) => quote! {
+                        match #local {
+                            ::core::result::Result::Ok(v) => ::core::option::Option::Some(v),
+                            ::core::result::Result::Err(v) => v,
+                        }
+                    },
+                    (false, true) => quote! {
+                        match #local {
+                            ::core::result::Result::Ok(v) => ::optionize::Optionizable::downgrade(v),
+                            ::core::result::Result::Err(v) => v,
+                        }
+                    },
+                    (false, false) => quote! {
+                        match #local {
+                            ::core::result::Result::Ok(v) => v,
+                            ::core::result::Result::Err(v) => v,
+                        }
+                    },
+                };
+
+                if named {
+                    err_fields.push(quote! { #optionized_field: #rollback, });
+                } else {
+                    err_fields.push(quote! { #rollback, });
+                }
+            }
+
+            if named {
+                quote! { Self { #(#err_fields)* } }
+            } else {
+                quote! { Self ( #(#err_fields)* ) }
+            }
+        };
+
+        upgrade.push(quote! {
+            if errors.is_empty() {
+                ::core::result::Result::Ok(#ok)
+            } else {
+                ::core::result::Result::Err((errors, #err))
+            }
+        });
+
         output.push(quote! {
+            #[allow(non_snake_case)]
             impl #impl_generics ::optionize::Upgradable<#subject> for #optionized_ident #type_generics #where_clause {
                 type Error = #error_ident;
                 fn upgrade(self) -> ::core::result::Result<#subject, (::optionize::__private::alloc::vec::Vec<Self::Error>, Self)> {
                     #(#upgrade)*
-                    ::core::result::Result::Ok(#original)
                 }
             }
         });
