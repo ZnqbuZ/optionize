@@ -43,7 +43,7 @@ impl<T, O> Optionizable<O> for T where O: PartialOptionized<T> {}
     note = "Ensure the struct `{Self}` is not partial, or is annotated with `#[optionize(partial(upgradable))]`"
 )]
 pub trait Optionized<Subject>: PartialOptionized<Subject> {
-    type UpgradeErrors: IntoIterator;
+    type UpgradeErrors: IntoIterator<Item: Error + Send + Sync + 'static>;
     fn upgrade(self) -> Result<Subject, (Self::UpgradeErrors, Self)>;
 }
 
