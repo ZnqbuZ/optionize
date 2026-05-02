@@ -55,13 +55,32 @@ struct SkipArgs {
 }
 
 #[derive(Debug, Default, FromAttributes)]
-#[darling(default, attributes(optionize))]
+#[darling(default, attributes(optionize), and_then = "FieldArgs::validate")]
 struct FieldArgs {
     name: Option<String>,
     attributes: Option<MetaList>,
     wrap: Option<bool>,
     nest: Option<Type>,
     skip: Option<Override<SkipArgs>>,
+}
+
+impl FieldArgs {
+    fn validate(self) -> darling::Result<Self> {
+        if self.skip.is_some() {
+            let mut errors = darling::Error::accumulator();
+
+            if self.wrap.is_some() {
+                errors.push(darling::Error::custom("`wrap` cannot be used with `skip`"));
+            }
+            if self.nest.is_some() {
+                errors.push(darling::Error::custom("`nest` cannot be used with `skip`"));
+            }
+
+            return errors.finish_with(self);
+        }
+
+        Ok(self)
+    }
 }
 
 fn is_option(ty: &Type) -> bool {
@@ -547,7 +566,9 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
         let mut errors = darling::Error::accumulator();
 
         for field in original.fields.iter_mut() {
-            if let Some(parsed) = errors.handle(FieldArgs::from_attributes(&field.attrs)) {
+            if let Some(parsed) = errors
+                .handle(FieldArgs::from_attributes(&field.attrs).map_err(|e| e.with_span(&field)))
+            {
                 field_args.push(parsed);
             }
             field
