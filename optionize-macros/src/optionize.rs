@@ -98,7 +98,7 @@ struct FieldArgs {
     _attributes: Vec<MetaList>,
     #[darling(skip)]
     attributes: Option<Vec<Attribute>>,
-    wrap: Option<LitBool>,
+    flatten: SpannedValue<bool>,
     nest: Option<Type>,
     skip: Option<SpannedValue<Override<SkipArgs>>>,
 }
@@ -110,11 +110,11 @@ impl FieldArgs {
         if let Some(skip) = &self.skip {
             let skip = skip.span();
 
-            if let Some(wrap) = &self.wrap {
-                let wrap = wrap.span;
+            if *self.flatten {
+                let flatten = self.flatten.span();
                 errors.push(
-                    Error::custom("`wrap` cannot be used with `skip`")
-                        .with_span(&skip.join(wrap).unwrap_or(wrap)),
+                    Error::custom("`flatten` cannot be used with `skip`")
+                        .with_span(&skip.join(flatten).unwrap_or(flatten)),
                 );
             }
             if let Some(nest) = &self.nest {
@@ -321,9 +321,7 @@ impl FieldIr {
                 (None, ty)
             };
 
-            let wrap = args.wrap.as_ref()
-                .map(LitBool::value)
-                .unwrap_or(true);
+            let wrap = !*args.flatten;
             field.ty = if wrap {
                 pqs! { ty.span() => Option<#ty> }
             } else {
