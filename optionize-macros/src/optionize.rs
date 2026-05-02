@@ -1,8 +1,7 @@
 use darling::ast::NestedMeta;
 use darling::util::Override;
 use darling::{FromAttributes, FromMeta};
-use proc_macro::TokenStream;
-use proc_macro2::Ident;
+use proc_macro2::{Ident, TokenStream};
 use quote::{format_ident, quote};
 use std::iter::zip;
 use std::mem::take;
@@ -10,10 +9,7 @@ use syn::parse::Result;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::token::Comma;
-use syn::{
-    parse, parse_quote, Error, Expr, Field, GenericArgument, Index, ItemStruct, Meta, PathArguments,
-    Type,
-};
+use syn::{parse2, parse_quote, Error, Expr, Field, GenericArgument, Index, ItemStruct, Meta, PathArguments, Type};
 
 #[derive(Debug, Default)]
 struct MetaList(Vec<Meta>);
@@ -90,8 +86,8 @@ fn is_option(ty: &Type) -> bool {
 }
 
 struct FieldMeta {
-    original_field: proc_macro2::TokenStream,
-    optionized_field: proc_macro2::TokenStream,
+    original_field: TokenStream,
+    optionized_field: TokenStream,
     original_name: String,
     optionized_name: String,
     wrap: bool,
@@ -235,7 +231,7 @@ impl StructMeta {
 
 pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
     let struct_args = {
-        let struct_args = NestedMeta::parse_meta_list(args.into())?;
+        let struct_args = NestedMeta::parse_meta_list(args)?;
         StructArgs::from_list(&struct_args)?
     };
 
@@ -245,7 +241,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
         None => (false, false),
     };
 
-    let mut original = parse::<ItemStruct>(input)?;
+    let mut original = parse2::<ItemStruct>(input)?;
 
     let field_args = {
         let mut field_args = Vec::with_capacity(original.fields.len());
@@ -566,5 +562,5 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
         });
     }
 
-    Ok(quote! { #(#output)* }.into())
+    Ok(quote! { #(#output)* })
 }
