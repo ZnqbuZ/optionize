@@ -16,14 +16,13 @@ pub mod __private {
     pub extern crate alloc;
 }
 
-pub trait PartialOptionized: Sized {
-    type Subject;
-    fn optionize(subject: Self::Subject) -> Self;
-    fn patch(self, subject: &mut Self::Subject);
+pub trait PartialOptionized<Subject>: Sized {
+    fn optionize(subject: Subject) -> Self;
+    fn patch(self, subject: &mut Subject);
     fn merge(&mut self, other: Self);
 }
 
-pub trait Optionizable<O: PartialOptionized<Subject = Self>>: Sized {
+pub trait Optionizable<O: PartialOptionized<Self>>: Sized {
     fn load(&mut self, other: O) {
         other.patch(self);
     }
@@ -32,16 +31,16 @@ pub trait Optionizable<O: PartialOptionized<Subject = Self>>: Sized {
     }
 }
 
-impl<T, O> Optionizable<O> for T where O: PartialOptionized<Subject = T> {}
+impl<T, O> Optionizable<O> for T where O: PartialOptionized<T> {}
 
 #[diagnostic::on_unimplemented(
     message = "The type `{Self}` cannot be upgraded to `{Subject}`",
     label = "Nested type lacks upgrade logic",
     note = "Ensure the struct `{Self}` is not partial, or is annotated with `#[optionize(partial(upgradable))]`"
 )]
-pub trait Optionized: PartialOptionized {
+pub trait Optionized<Subject>: PartialOptionized<Subject> {
     type UpgradeErrors: IntoIterator;
-    fn upgrade(self) -> Result<Self::Subject, (Self::UpgradeErrors, Self)>;
+    fn upgrade(self) -> Result<Subject, (Self::UpgradeErrors, Self)>;
 }
 
 #[derive(Debug)]

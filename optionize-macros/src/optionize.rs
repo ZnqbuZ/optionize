@@ -557,10 +557,9 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
     };
 
     output.push(quote! {
-        impl #impl_generics ::optionize::PartialOptionized for #optionized_ident #type_generics #where_clause {
-            type Subject = #subject;
-            fn optionize(subject: Self::Subject) -> Self { #optionize }
-            fn patch(self, subject: &mut Self::Subject) { #(#patches)* }
+        impl #impl_generics ::optionize::PartialOptionized<#subject> for #optionized_ident #type_generics #where_clause {
+            fn optionize(subject: #subject) -> Self { #optionize }
+            fn patch(self, subject: &mut #subject) { #(#patches)* }
             fn merge(&mut self, other: Self) { #(#merges)* }
         }
     });
@@ -592,7 +591,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
 
         output.push(quote! {
             #[allow(non_snake_case)]
-            impl #impl_generics ::optionize::Optionized for #optionized_ident #type_generics #where_clause {
+            impl #impl_generics ::optionize::Optionized<#subject> for #optionized_ident #type_generics #where_clause {
                 type UpgradeErrors = ::optionize::UpgradeErrorCollection;
                 fn upgrade(self) -> ::core::result::Result<#subject, (Self::UpgradeErrors, Self)> {
                     let mut #errors = ::optionize::UpgradeErrorCollection::default();
