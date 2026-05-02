@@ -355,6 +355,7 @@ macro_rules! expand {
 
 struct Optionize<'l> {
     field: &'l FieldIr,
+    subject: &'l Ident,
     named: bool,
 }
 
@@ -368,14 +369,16 @@ impl<'l> ToTokens for Optionize<'l> {
             }
         }
 
+        let subject = self.subject;
+
         let FieldStrategy::Optionize { wrap, nest } = strategy else {
             return;
         };
 
         let mut optionize = if *nest {
-            q! { ::optionize::PartialOptionized::optionize(subject.#original) }
+            q! { ::optionize::PartialOptionized::optionize(#subject.#original) }
         } else {
-            q! { subject.#original }
+            q! { #subject.#original }
         };
 
         if *wrap {
@@ -394,6 +397,7 @@ impl<'l> ToTokens for Optionize<'l> {
 
 struct Patch<'l> {
     field: &'l FieldIr,
+    subject: &'l Ident,
 }
 
 impl<'l> ToTokens for Patch<'l> {
@@ -406,6 +410,8 @@ impl<'l> ToTokens for Patch<'l> {
             }
         }
 
+        let subject = self.subject;
+
         let FieldStrategy::Optionize { wrap, nest } = strategy else {
             return;
         };
@@ -416,9 +422,9 @@ impl<'l> ToTokens for Patch<'l> {
             q! { self.#optionized }
         };
         let mut patch = if *nest {
-            q! { ::optionize::PartialOptionized::patch(#patch, &mut subject.#original); }
+            q! { ::optionize::PartialOptionized::patch(#patch, &mut #subject.#original); }
         } else {
-            q! { subject.#original = #patch; }
+            q! { #subject.#original = #patch; }
         };
         if *wrap {
             patch = q! {
@@ -434,6 +440,7 @@ impl<'l> ToTokens for Patch<'l> {
 
 struct Merge<'l> {
     field: &'l FieldIr,
+    other: &'l Ident,
 }
 
 impl<'l> ToTokens for Merge<'l> {
@@ -445,28 +452,30 @@ impl<'l> ToTokens for Merge<'l> {
             }
         }
 
+        let other = self.other;
+
         let FieldStrategy::Optionize { wrap, nest } = strategy else {
             return;
         };
 
         let merge = match (wrap, nest) {
             (true, true) => q! {
-                match (&mut self.#optionized, other.#optionized) {
+                match (&mut self.#optionized, #other.#optionized) {
                     (Some(this), Some(other)) => ::optionize::PartialOptionized::merge(this, other),
                     (None, Some(other)) => self.#optionized = Some(other),
                     _ => {}
                 }
             },
             (true, false) => q! {
-                if other.#optionized.is_some() {
-                    self.#optionized = other.#optionized;
+                if #other.#optionized.is_some() {
+                    self.#optionized = #other.#optionized;
                 }
             },
             (false, true) => q! {
-                ::optionize::PartialOptionized::merge(&mut self.#optionized, other.#optionized);
+                ::optionize::PartialOptionized::merge(&mut self.#optionized, #other.#optionized);
             },
             (false, false) => q! {
-                self.#optionized = other.#optionized;
+                self.#optionized = #other.#optionized;
             },
         };
 
@@ -658,10 +667,26 @@ impl<'l> ToTokens for UpgradeErr<'l> {
     }
 }
 
+enum StructStyle {
+    Named,
+    Unnamed,
+    Unit,
+}
+
 pub fn derive(input: TokenStream) -> Result<TokenStream> {
     let original = parse2::<DeriveInput>(input)?;
     let _span = original.span();
     span!(_span);
+
+    macro_rules! construct {
+        ($style:expr, [$($ty:tt)+] $($fields:tt)*) => {
+            match $style {
+                StructStyle::Named => q! { $($ty)* { $($fields)* } },
+                StructStyle::Unnamed => q! { $($ty)* ( $($fields)* ) },
+                StructStyle::Unit => q! { $($ty)* },
+            }
+        };
+    }
 
     let struct_args = StructArgs::from_attributes(&original.attrs)?;
 
@@ -673,11 +698,11 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
 
     let mut optionized = original.clone();
 
-    let (fields, named) = match &mut optionized.data {
+    let (style, fields) = match &mut optionized.data {
         Data::Struct(data) => match &mut data.fields {
-            syn::Fields::Named(fields) => (&mut fields.named, true),
-            syn::Fields::Unnamed(fields) => (&mut fields.unnamed, false),
-            syn::Fields::Unit => return Ok(Default::default()),
+            syn::Fields::Named(fields) => (StructStyle::Named, &mut fields.named),
+            syn::Fields::Unnamed(fields) => (StructStyle::Unnamed, &mut fields.unnamed),
+            syn::Fields::Unit => (StructStyle::Unit, &mut Default::default()),
         },
         _ => {
             return Err(
@@ -685,6 +710,7 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
             );
         }
     };
+    let named = matches!(style, StructStyle::Named);
 
     let field_args = {
         let mut field_args = Vec::with_capacity(fields.len());
@@ -733,43 +759,46 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
     let mut output = vec![q! { #optionized }];
 
     let generics = optionized.generics;
-    let original = original.ident;
-    let optionized = optionized.ident;
+    let original = &original.ident;
+    let optionized = &optionized.ident;
 
     let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
-    let subject = q! { #original #type_generics };
+    #[allow(non_snake_case)]
+    let Subject = q! { #original #type_generics };
+    let subject = &format_ident!("subject");
 
     let optionize = {
-        let optionizes = optionized_fields
-            .iter()
-            .map(|field| Optionize { field, named });
-        if named {
-            q! { Self { #(#optionizes)* } }
-        } else {
-            q! { Self ( #(#optionizes)* ) }
-        }
+        let optionizes = optionized_fields.iter().map(|field| Optionize {
+            field,
+            subject,
+            named,
+        });
+        construct!(style, [Self] #(#optionizes)* )
     };
-    let patches = optionized_fields.iter().map(|field| Patch { field });
-    let merges = optionized_fields.iter().map(|field| Merge { field });
+    let patches = optionized_fields
+        .iter()
+        .map(|field| Patch { field, subject });
+    let other = &format_ident!("other");
+    let merges = optionized_fields.iter().map(|field| Merge { field, other });
 
     output.push(q! {
-        impl #impl_generics ::optionize::PartialOptionized<#subject> for #optionized #type_generics #where_clause {
-            fn optionize(subject: #subject) -> Self { #optionize }
-            fn patch(self, subject: &mut #subject) { #(#patches)* }
-            fn merge(&mut self, other: Self) { #(#merges)* }
+        impl #impl_generics ::optionize::PartialOptionized<#Subject> for #optionized #type_generics #where_clause {
+            fn optionize(#subject: #Subject) -> Self { #optionize }
+            fn patch(self, #subject: &mut #Subject) { #(#patches)* }
+            fn merge(&mut self, #other: Self) { #(#merges)* }
         }
     });
 
     if !partial || upgradable {
-        let failed = format_ident!("failed");
-        let errors = format_ident!("errors");
+        let failed = &format_ident!("failed");
+        let errors = &format_ident!("errors");
 
         let upgrades = optionized_fields.iter().map(|field| Upgrade {
             field,
-            original: &original,
-            optionized: &optionized,
-            failed: &failed,
-            errors: &errors,
+            original,
+            optionized,
+            failed,
+            errors,
         });
 
         let ok = {
@@ -777,11 +806,7 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
                 .iter()
                 .map(|field| UpgradeOk { field, named });
 
-            if named {
-                q! { #original { #(#oks)* } }
-            } else {
-                q! { #original ( #(#oks)* ) }
-            }
+            construct!(style, [#original] #(#oks)*)
         };
 
         let err = {
@@ -789,18 +814,14 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
                 .iter()
                 .map(|field| UpgradeErr { field, named });
 
-            if named {
-                q! { Self { #(#errs)* } }
-            } else {
-                q! { Self ( #(#errs)* ) }
-            }
+            construct!(style, [Self] #(#errs)*)
         };
 
         output.push(q! {
             #[allow(non_snake_case)]
-            impl #impl_generics ::optionize::Optionized<#subject> for #optionized #type_generics #where_clause {
+            impl #impl_generics ::optionize::Optionized<#Subject> for #optionized #type_generics #where_clause {
                 type UpgradeErrors = ::optionize::UpgradeErrorCollection;
-                fn upgrade(self) -> ::core::result::Result<#subject, (Self::UpgradeErrors, Self)> {
+                fn upgrade(self) -> ::core::result::Result<#Subject, (Self::UpgradeErrors, Self)> {
                     let mut #failed = false;
                     let mut #errors = ::optionize::UpgradeErrorCollection::default();
                     #(#upgrades)*
