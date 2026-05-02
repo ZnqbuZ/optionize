@@ -610,7 +610,7 @@ impl<'l> ToTokens for UpgradeOk<'l> {
                 }
             }
             FieldStrategy::Optionize { .. } => {
-                let local = q! { unsafe { ::core::result::Result::unwrap_unchecked(#local) } };
+                let local = q! { ::core::result::Result::unwrap(#local) };
 
                 if self.named {
                     q! { #original: #local, }
@@ -645,7 +645,7 @@ impl<'l> ToTokens for UpgradeErr<'l> {
 
         let mut ok = q! { v };
         if *nest {
-            ok = q! { ::optionize::Optionizable::downgrade(#ok) };
+            ok = q! { ::optionize::PartialOptionized::optionize(#ok) };
         }
         if *wrap {
             ok = q! { ::core::option::Option::Some(#ok) };
@@ -765,29 +765,32 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
     let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
     #[allow(non_snake_case)]
     let Subject = q! { #original #type_generics };
-    let subject = &format_ident!("subject");
 
-    let optionize = {
-        let optionizes = optionized_fields.iter().map(|field| Optionize {
-            field,
-            subject,
-            named,
+    {
+        let subject = &format_ident!("subject");
+
+        let optionize = {
+            let optionizes = optionized_fields.iter().map(|field| Optionize {
+                field,
+                subject,
+                named,
+            });
+            construct!(style, [Self] #(#optionizes)* )
+        };
+        let patches = optionized_fields
+            .iter()
+            .map(|field| Patch { field, subject });
+        let other = &format_ident!("other");
+        let merges = optionized_fields.iter().map(|field| Merge { field, other });
+
+        output.push(q! {
+            impl #impl_generics ::optionize::PartialOptionized<#Subject> for #optionized #type_generics #where_clause {
+                fn optionize(#subject: #Subject) -> Self { #optionize }
+                fn patch(self, #subject: &mut #Subject) { #(#patches)* }
+                fn merge(&mut self, #other: Self) { #(#merges)* }
+            }
         });
-        construct!(style, [Self] #(#optionizes)* )
-    };
-    let patches = optionized_fields
-        .iter()
-        .map(|field| Patch { field, subject });
-    let other = &format_ident!("other");
-    let merges = optionized_fields.iter().map(|field| Merge { field, other });
-
-    output.push(q! {
-        impl #impl_generics ::optionize::PartialOptionized<#Subject> for #optionized #type_generics #where_clause {
-            fn optionize(#subject: #Subject) -> Self { #optionize }
-            fn patch(self, #subject: &mut #Subject) { #(#patches)* }
-            fn merge(&mut self, #other: Self) { #(#merges)* }
-        }
-    });
+    }
 
     if !partial || upgradable {
         let failed = &format_ident!("failed");
