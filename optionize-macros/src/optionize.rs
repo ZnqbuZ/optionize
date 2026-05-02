@@ -13,8 +13,8 @@ use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::token::{Bracket, Comma, Pound};
 use syn::{
-    parse2, parse_quote_spanned as pqs, parse_str, AttrStyle, Attribute, Data, DeriveInput, Expr, Field, Fields,
-    GenericArgument, Index, LitBool, LitStr, Meta, PathArguments, Type,
+    parse2, parse_quote_spanned as pqs, parse_str, AttrStyle, Attribute, Data, DeriveInput, Expr, Field, Fields
+    , Index, LitBool, LitStr, Meta, Type,
 };
 
 // region args
@@ -142,30 +142,6 @@ fn format(pattern: &str, ident: &Ident) -> Result<Ident> {
     let new = format!("r#{}", pattern.replace("{}", old));
     parse_str::<Ident>(&new)
         .map_err(|_| Error::custom(format!("`{}` is not a valid identifier", new)).with_span(ident))
-}
-
-fn is_option(ty: &Type) -> bool {
-    let path = match ty {
-        Type::Path(path) => path,
-        Type::Paren(ty) => return is_option(&ty.elem),
-        _ => return false,
-    };
-
-    if path.qself.is_some() {
-        return false;
-    }
-
-    let Some(segment) = path.path.segments.last() else {
-        return false;
-    };
-
-    segment.ident == "Option"
-        && matches!(
-            &segment.arguments,
-            PathArguments::AngleBracketed(args)
-                if args.args.len() == 1
-                    && matches!(args.args.first(), Some(GenericArgument::Type(_)))
-        )
 }
 
 fn is_optionize(attr: &Attribute) -> bool {
@@ -345,11 +321,9 @@ impl FieldIr {
                 (None, ty)
             };
 
-            let wrap = args
-                .wrap
-                .as_ref()
+            let wrap = args.wrap.as_ref()
                 .map(LitBool::value)
-                .unwrap_or_else(|| !is_option(ty));
+                .unwrap_or(true);
             field.ty = if wrap {
                 pqs! { ty.span() => Option<#ty> }
             } else {
@@ -469,7 +443,7 @@ impl<'l> ToTokens for Patch<'l> {
         };
         if *wrap {
             patch = q! {
-                if let Some(v) = self.#optionized {
+                if let ::core::option::Option::Some(v) = self.#optionized {
                     #patch
                 }
             }
