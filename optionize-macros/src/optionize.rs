@@ -117,6 +117,113 @@ impl Default for FieldMeta {
 }
 
 impl FieldMeta {
+    fn extract(
+        fields: &mut Punctuated<Field, Comma>,
+        args: Vec<FieldArgs>,
+        partial: bool,
+    ) -> Result<Vec<Self>> {
+        let mut this = Vec::new();
+        let mut skipped = 0;
+
+        for (i, (mut field, args)) in zip(take(fields), args).enumerate() {
+            let ident = &field.ident;
+            let ty = &field.ty;
+
+            let original_field = match ident {
+                Some(ident) => quote! { #ident },
+                None => {
+                    let index = Index {
+                        index: i as u32,
+                        span: field.ty.span(),
+                    };
+                    quote! { #index }
+                }
+            };
+
+            let (skip, upgrade) = match args.skip {
+                Some(Override::Inherit) => (true, None),
+                Some(Override::Explicit(s)) => (true, s.upgrade),
+                None => (false, None),
+            };
+
+            if skip {
+                if !partial {
+                    return Err(Error::new_spanned(
+                        &field,
+                        "`skip` attribute is only allowed when `partial` is specified",
+                    ));
+                }
+
+                let mut field = FieldMeta {
+                    original_field,
+                    skip: true,
+                    ..Default::default()
+                };
+
+                if let Some(upgrade) = upgrade {
+                    field.upgrade = upgrade;
+                }
+
+                skipped += 1;
+                this.push(field);
+                continue;
+            }
+
+            if let Some(name) = args.name {
+                let ident = ident
+                    .as_ref()
+                    .ok_or_else(|| Error::new_spanned(ty, "cannot rename an unnamed field"))?;
+                let name = name.replace("{}", &ident.to_string());
+                let ident = Ident::new(&name, ident.span());
+                field.ident = Some(ident.clone());
+            }
+
+            let optionized_field = match &field.ident {
+                Some(ident) => quote! { #ident },
+                None => {
+                    let index = Index::from(i - skipped);
+                    quote! { #index }
+                }
+            };
+
+            let (ty, nest) = if let Some(nest) = &args.nest {
+                (nest, true)
+            } else {
+                (ty, false)
+            };
+
+            let wrap = args.wrap.unwrap_or_else(|| !is_option(ty));
+            field.ty = if wrap {
+                parse_quote! { Option<#ty> }
+            } else {
+                ty.clone()
+            };
+
+            let local = format_ident!(
+                "v_{}",
+                field
+                    .ident
+                    .clone()
+                    .unwrap_or_else(|| format_ident!("{}", i))
+            );
+
+            this.push(FieldMeta {
+                original_field: original_field.clone(),
+                optionized_field: optionized_field.clone(),
+                original_name: original_field.to_string(),
+                optionized_name: optionized_field.to_string(),
+                wrap,
+                nest,
+                local,
+                ..Default::default()
+            });
+
+            fields.push(field);
+        }
+
+        Ok(this)
+    }
+
     fn patch(&self) -> TokenStream {
         let Self {
             original_field,
@@ -332,133 +439,17 @@ impl FieldMeta {
             ok = quote! { ::core::option::Option::Some(#ok) };
         }
         let rollback = quote! {
-                match #local {
-                    ::core::result::Result::Ok(v) => #ok,
-                    ::core::result::Result::Err(v) => v,
-                }
-            };
+            match #local {
+                ::core::result::Result::Ok(v) => #ok,
+                ::core::result::Result::Err(v) => v,
+            }
+        };
 
         if named {
             quote! { #optionized_field: #rollback, }
         } else {
             quote! { #rollback, }
         }
-    }
-}
-
-#[derive(Default)]
-struct StructMeta {
-    fields: Vec<FieldMeta>,
-    skip: Vec<Type>,
-    nest: Vec<(Type, Type)>,
-}
-
-impl StructMeta {
-    fn extract(
-        fields: &mut Punctuated<Field, Comma>,
-        args: Vec<FieldArgs>,
-        partial: bool,
-    ) -> Result<Self> {
-        let mut this = Self::default();
-
-        for (i, (mut field, args)) in zip(take(fields), args).enumerate() {
-            let ident = &field.ident;
-            let ty = &field.ty;
-
-            let original_field = match ident {
-                Some(ident) => quote! { #ident },
-                None => {
-                    let index = Index {
-                        index: i as u32,
-                        span: field.ty.span(),
-                    };
-                    quote! { #index }
-                }
-            };
-
-            let (skip, upgrade) = match args.skip {
-                Some(Override::Inherit) => (true, None),
-                Some(Override::Explicit(s)) => (true, s.upgrade),
-                None => (false, None),
-            };
-
-            if skip {
-                if !partial {
-                    return Err(Error::new_spanned(
-                        &field,
-                        "`skip` attribute is only allowed when `partial` is specified",
-                    ));
-                }
-
-                let mut field = FieldMeta {
-                    original_field,
-                    skip: true,
-                    ..Default::default()
-                };
-
-                if let Some(upgrade) = upgrade {
-                    field.upgrade = upgrade;
-                }
-
-                this.skip.push(ty.clone());
-                this.fields.push(field);
-                continue;
-            }
-
-            if let Some(name) = args.name {
-                let ident = ident
-                    .as_ref()
-                    .ok_or_else(|| Error::new_spanned(ty, "cannot rename an unnamed field"))?;
-                let name = name.replace("{}", &ident.to_string());
-                let ident = Ident::new(&name, ident.span());
-                field.ident = Some(ident.clone());
-            }
-
-            let optionized_field = match &field.ident {
-                Some(ident) => quote! { #ident },
-                None => {
-                    let index = Index::from(i - this.skip.len());
-                    quote! { #index }
-                }
-            };
-
-            let (ty, nest) = if let Some(nest) = &args.nest {
-                this.nest.push((ty.clone(), nest.clone()));
-                (nest, true)
-            } else {
-                (ty, false)
-            };
-
-            let wrap = args.wrap.unwrap_or_else(|| !is_option(ty));
-            field.ty = if wrap {
-                parse_quote! { Option<#ty> }
-            } else {
-                ty.clone()
-            };
-
-            let local = format_ident!(
-                "v_{}",
-                field
-                    .ident
-                    .clone()
-                    .unwrap_or_else(|| format_ident!("{}", i))
-            );
-
-            this.fields.push(FieldMeta {
-                original_field: original_field.clone(),
-                optionized_field: optionized_field.clone(),
-                original_name: original_field.to_string(),
-                optionized_name: optionized_field.to_string(),
-                wrap,
-                nest,
-                local,
-                ..Default::default()
-            });
-
-            fields.push(field);
-        }
-
-        Ok(this)
     }
 }
 
@@ -520,14 +511,17 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
         syn::Fields::Unit => return Ok(Default::default()),
     };
 
-    let meta = StructMeta::extract(fields, field_args, partial)?;
-    let fields = meta.fields.iter().filter(|f| !f.skip).collect::<Vec<_>>();
+    let original_fields = FieldMeta::extract(fields, field_args, partial)?;
+    let optionized_fields = original_fields
+        .iter()
+        .filter(|f| !f.skip)
+        .collect::<Vec<_>>();
 
-    let (optionizes, patches, merges) = fields.iter().fold(
+    let (optionizes, patches, merges) = optionized_fields.iter().fold(
         (
-            Vec::with_capacity(fields.len()),
-            Vec::with_capacity(fields.len()),
-            Vec::with_capacity(fields.len()),
+            Vec::with_capacity(optionized_fields.len()),
+            Vec::with_capacity(optionized_fields.len()),
+            Vec::with_capacity(optionized_fields.len()),
         ),
         |(mut optionizes, mut patches, mut merges), field| {
             optionizes.push(field.optionize(named));
@@ -567,10 +561,12 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
     if !partial || upgradable {
         let errors = format_ident!("errors");
 
-        let upgrades = fields.iter().map(|f| f.upgrade(original_ident, optionized_ident, &errors));
+        let upgrades = optionized_fields
+            .iter()
+            .map(|f| f.upgrade(original_ident, optionized_ident, &errors));
 
         let ok = {
-            let oks = meta.fields.iter().map(|f| f.ok(named));
+            let oks = original_fields.iter().map(|f| f.ok(named));
 
             match &original.fields {
                 syn::Fields::Named(_) => quote! { #original_ident { #(#oks)* } },
@@ -580,7 +576,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
         };
 
         let err = {
-            let errs = fields.iter().map(|f| f.err(named));
+            let errs = optionized_fields.iter().map(|f| f.err(named));
 
             if named {
                 quote! { Self { #(#errs)* } }
