@@ -1,31 +1,32 @@
+use proc_macro2::Span;
 use darling::ast::NestedMeta;
-use darling::util::Override;
+use darling::util::{Override, SpannedValue};
+use darling::{Error, Result};
 use darling::{FromAttributes, FromMeta};
 use proc_macro2::{Ident, TokenStream};
 use quote::{format_ident, quote, ToTokens};
 use std::iter::zip;
 use std::mem::take;
-use syn::parse::Result;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::token::Comma;
 use syn::{
-    parse2, parse_quote, Error, Expr, Field, GenericArgument, Index, ItemStruct, Meta, PathArguments,
-    Type,
+    parse2, parse_quote, parse_quote_spanned, parse_str, Expr, Field, GenericArgument, Index, ItemStruct, LitBool,
+    LitStr, Meta, PathArguments, Type,
 };
 
 #[derive(Debug, Default)]
 struct MetaList(Vec<Meta>);
 
 impl FromMeta for MetaList {
-    fn from_list(items: &[NestedMeta]) -> darling::Result<Self> {
-        let mut errors = darling::Error::accumulator();
+    fn from_list(items: &[NestedMeta]) -> Result<Self> {
+        let mut errors = Error::accumulator();
         let metas = items
             .iter()
             .filter_map(|item| match item {
                 NestedMeta::Meta(m) => Some(m.clone()),
                 NestedMeta::Lit(l) => {
-                    errors.push(darling::Error::unsupported_format("literal").with_span(l));
+                    errors.push(Error::unsupported_format("literal").with_span(l));
                     None
                 }
             })
@@ -43,7 +44,7 @@ struct PartialArgs {
 #[derive(Debug, Default, FromMeta)]
 #[darling(default)]
 struct StructArgs {
-    name: Option<String>,
+    name: Option<LitStr>,
     attributes: Option<MetaList>,
     partial: Option<Override<PartialArgs>>,
 }
@@ -57,29 +58,35 @@ struct SkipArgs {
 #[derive(Debug, Default, FromAttributes)]
 #[darling(default, attributes(optionize), and_then = "FieldArgs::validate")]
 struct FieldArgs {
-    name: Option<String>,
+    name: Option<LitStr>,
     attributes: Option<MetaList>,
-    wrap: Option<bool>,
+    wrap: Option<LitBool>,
     nest: Option<Type>,
-    skip: Option<Override<SkipArgs>>,
+    skip: Option<SpannedValue<Override<SkipArgs>>>,
 }
 
 impl FieldArgs {
-    fn validate(self) -> darling::Result<Self> {
-        if self.skip.is_some() {
-            let mut errors = darling::Error::accumulator();
+    fn validate(self) -> Result<Self> {
+        let mut errors = Error::accumulator();
 
-            if self.wrap.is_some() {
-                errors.push(darling::Error::custom("`wrap` cannot be used with `skip`"));
-            }
-            if self.nest.is_some() {
-                errors.push(darling::Error::custom("`nest` cannot be used with `skip`"));
-            }
+        if let Some(skip) = &self.skip {
+            let skip = skip.span();
 
-            return errors.finish_with(self);
+            if let Some(wrap) = &self.wrap {
+                errors.push(
+                    Error::custom("`wrap` cannot be used with `skip`")
+                        .with_span(&wrap.span.join(skip).unwrap()),
+                );
+            }
+            if let Some(nest) = &self.nest {
+                errors.push(
+                    Error::custom("`nest` cannot be used with `skip`")
+                        .with_span(&nest.span().join(skip).unwrap()),
+                );
+            }
         }
 
-        Ok(self)
+        errors.finish_with(self)
     }
 }
 
@@ -123,6 +130,7 @@ impl Default for FieldStrategy {
 }
 
 struct FieldIr {
+    span: Span,
     original: TokenStream,
     optionized: TokenStream,
     strategy: FieldStrategy,
@@ -132,6 +140,7 @@ struct FieldIr {
 impl Default for FieldIr {
     fn default() -> Self {
         Self {
+            span: Span::call_site(),
             original: quote! {},
             optionized: quote! {},
             strategy: FieldStrategy::default(),
@@ -146,6 +155,8 @@ impl FieldIr {
         args: Vec<FieldArgs>,
         partial: bool,
     ) -> Result<Vec<Self>> {
+        let mut errors = Error::accumulator();
+
         let mut this = Vec::new();
         let mut skipped = 0;
 
@@ -165,20 +176,26 @@ impl FieldIr {
             };
 
             let (skip, upgrade) = match args.skip {
-                Some(Override::Inherit) => (true, None),
-                Some(Override::Explicit(s)) => (true, s.upgrade),
+                Some(skip) => match skip.into_inner() {
+                    Override::Inherit => (true, None),
+                    Override::Explicit(s) => (true, s.upgrade),
+                },
                 None => (false, None),
             };
 
             if skip {
                 if !partial {
-                    return Err(Error::new_spanned(
-                        &field,
-                        "`skip` attribute is only allowed when `partial` is specified",
-                    ));
+                    errors.push(
+                        Error::custom(
+                            "`skip` attribute is only allowed when `partial` is specified",
+                        )
+                        .with_span(&field),
+                    );
+                    continue;
                 }
 
                 let field = FieldIr {
+                    span: field.span(),
                     original: original_field,
                     strategy: FieldStrategy::Skip {
                         upgrade: upgrade.unwrap_or_else(|| {
@@ -194,18 +211,33 @@ impl FieldIr {
             }
 
             if let Some(name) = args.name {
-                let ident = ident
-                    .as_ref()
-                    .ok_or_else(|| Error::new_spanned(ty, "cannot rename an unnamed field"))?;
-                let name = name.replace("{}", &ident.to_string());
-                let ident = Ident::new(&name, ident.span());
+                let Some(ident) = ident.as_ref() else {
+                    errors.push(
+                        Error::custom("`name` attribute cannot be used on unnamed fields")
+                            .with_span(ty),
+                    );
+                    continue;
+                };
+                let span = name.span();
+                let name = name.value().replace("{}", &ident.to_string());
+                let Ok(mut ident) = parse_str::<Ident>(&name) else {
+                    errors.push(
+                        Error::custom(format!("`{}` is not a valid identifier", name))
+                            .with_span(&span),
+                    );
+                    continue;
+                };
+                ident.set_span(span);
                 field.ident = Some(ident.clone());
             }
 
             let optionized_field = match &field.ident {
                 Some(ident) => quote! { #ident },
                 None => {
-                    let index = Index::from(i - skipped);
+                    let index = Index {
+                        index: (i - skipped) as u32,
+                        span: ty.span(),
+                    };
                     quote! { #index }
                 }
             };
@@ -216,22 +248,25 @@ impl FieldIr {
                 (ty, false)
             };
 
-            let wrap = args.wrap.unwrap_or_else(|| !is_option(ty));
+            let wrap = args
+                .wrap
+                .as_ref()
+                .map(LitBool::value)
+                .unwrap_or_else(|| !is_option(ty));
             field.ty = if wrap {
-                parse_quote! { Option<#ty> }
+                parse_quote_spanned! { ty.span() => Option<#ty> }
             } else {
                 ty.clone()
             };
 
-            let local = format_ident!(
-                "v_{}",
-                field
-                    .ident
-                    .clone()
-                    .unwrap_or_else(|| format_ident!("{}", i))
-            );
+            let local = if let Some(ident) = field.ident.clone() {
+                format_ident!("v_{}", ident, span = ident.span())
+            } else {
+                format_ident!("v_{}", i, span = field.ty.span())
+            };
 
             this.push(FieldIr {
+                span: field.span(),
                 original: original_field.clone(),
                 optionized: optionized_field.clone(),
                 strategy: FieldStrategy::Optionize { wrap, nest },
@@ -241,8 +276,30 @@ impl FieldIr {
             fields.push(field);
         }
 
-        Ok(this)
+        errors.finish_with(this)
     }
+}
+
+macro_rules! expand {
+    ($target:expr => { $($field:ident $(: $bind:pat)?),* $(,)? }) => {
+        expand!(@impl $target, { $($field $(: $bind)?),* }, $)
+    };
+
+    (@impl $target:expr, { $($field:ident $(: $bind:pat)?),* }, $_:tt) => {
+        let FieldIr {
+            span,
+            $(
+                $field $(: $bind)?,
+            )*
+            ..
+        } = $target;
+
+        macro_rules! q {
+            ($_($_ tt:tt)*) => {
+                ::quote::quote_spanned! { *span => $_($_ tt)* }
+            };
+        }
+    };
 }
 
 struct Optionize<'l> {
@@ -252,31 +309,32 @@ struct Optionize<'l> {
 
 impl<'l> ToTokens for Optionize<'l> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        let FieldIr {
-            original,
-            optionized,
-            strategy,
-            ..
-        } = self.field;
+        expand! {
+            self.field => {
+                original,
+                optionized,
+                strategy,
+            }
+        }
 
         let FieldStrategy::Optionize { wrap, nest } = strategy else {
             return;
         };
 
         let mut optionize = if *nest {
-            quote! { ::optionize::PartialOptionized::optionize(subject.#original) }
+            q! { ::optionize::PartialOptionized::optionize(subject.#original) }
         } else {
-            quote! { subject.#original }
+            q! { subject.#original }
         };
 
         if *wrap {
-            optionize = quote! { ::core::option::Option::Some(#optionize) }
+            optionize = q! { ::core::option::Option::Some(#optionize) }
         };
 
         let optionize = if self.named {
-            quote! { #optionized: #optionize, }
+            q! { #optionized: #optionize, }
         } else {
-            quote! { #optionize, }
+            q! { #optionize, }
         };
 
         tokens.extend(optionize);
@@ -289,29 +347,30 @@ struct Patch<'l> {
 
 impl<'l> ToTokens for Patch<'l> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        let FieldIr {
-            original,
-            optionized,
-            strategy,
-            ..
-        } = self.field;
+        expand! {
+            self.field => {
+                original,
+                optionized,
+                strategy,
+            }
+        }
 
         let FieldStrategy::Optionize { wrap, nest } = strategy else {
             return;
         };
 
         let patch = if *wrap {
-            quote! { v }
+            q! { v }
         } else {
-            quote! { self.#optionized }
+            q! { self.#optionized }
         };
         let mut patch = if *nest {
-            quote! { ::optionize::PartialOptionized::patch(#patch, &mut subject.#original); }
+            q! { ::optionize::PartialOptionized::patch(#patch, &mut subject.#original); }
         } else {
-            quote! { subject.#original = #patch; }
+            q! { subject.#original = #patch; }
         };
         if *wrap {
-            patch = quote! {
+            patch = q! {
                 if let Some(v) = self.#optionized {
                     #patch
                 }
@@ -328,33 +387,34 @@ struct Merge<'l> {
 
 impl<'l> ToTokens for Merge<'l> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        let FieldIr {
-            optionized,
-            strategy,
-            ..
-        } = self.field;
+        expand! {
+            self.field => {
+                optionized,
+                strategy,
+            }
+        }
 
         let FieldStrategy::Optionize { wrap, nest } = strategy else {
             return;
         };
 
         let merge = match (wrap, nest) {
-            (true, true) => quote! {
+            (true, true) => q! {
                 match (&mut self.#optionized, other.#optionized) {
                     (Some(this), Some(other)) => ::optionize::PartialOptionized::merge(this, other),
                     (None, Some(other)) => self.#optionized = Some(other),
                     _ => {}
                 }
             },
-            (true, false) => quote! {
+            (true, false) => q! {
                 if other.#optionized.is_some() {
                     self.#optionized = other.#optionized;
                 }
             },
-            (false, true) => quote! {
+            (false, true) => q! {
                 ::optionize::PartialOptionized::merge(&mut self.#optionized, other.#optionized);
             },
-            (false, false) => quote! {
+            (false, false) => q! {
                 self.#optionized = other.#optionized;
             },
         };
@@ -372,13 +432,14 @@ struct Upgrade<'l> {
 
 impl<'l> ToTokens for Upgrade<'l> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        let FieldIr {
-            original,
-            optionized,
-            strategy,
-            local,
-            ..
-        } = self.field;
+        expand! {
+            self.field => {
+                original,
+                optionized,
+                strategy,
+                local,
+            }
+        }
 
         let FieldStrategy::Optionize { wrap, nest } = strategy else {
             return;
@@ -394,7 +455,7 @@ impl<'l> ToTokens for Upgrade<'l> {
                 let original_str = self.original.to_string();
                 let optionized_str = self.optionized.to_string();
 
-                quote! {
+                q! {
                     ::optionize::TypeInfo {
                         original: #original_str,
                         optionized: #optionized_str,
@@ -403,19 +464,19 @@ impl<'l> ToTokens for Upgrade<'l> {
             };
 
             let field = if renamed {
-                quote! { ::optionize::FieldInfo::Identical ( #original_str ) }
+                q! { ::optionize::FieldInfo::Identical ( #original_str ) }
             } else {
-                quote! { ::optionize::FieldInfo::Renamed { original: #original_str, optionized: #optionized_str } }
+                q! { ::optionize::FieldInfo::Renamed { original: #original_str, optionized: #optionized_str } }
             };
 
             (
-                quote! {
+                q! {
                     ::optionize::UpgradeError::MissingField {
                         ty: #ty,
                         field: #field
                     }
                 },
-                quote! {
+                q! {
                     |e| ::optionize::UpgradeError::NestedError {
                         ty: #ty,
                         field: #field,
@@ -427,26 +488,26 @@ impl<'l> ToTokens for Upgrade<'l> {
 
         let errors = self.errors;
 
-        tokens.extend(quote! { let #local = self.#optionized; });
+        tokens.extend(q! { let #local = self.#optionized; });
 
         let mut expr = if *nest {
             let err = if *wrap {
-                quote!(::core::option::Option::Some(v))
+                q!(::core::option::Option::Some(v))
             } else {
-                quote!(v)
+                q!(v)
             };
-            quote! {
+            q! {
                 ::optionize::Optionized::upgrade(#local).map_err(|(e, v)| {
                     #errors.extend(e.into_iter().map(#nest_map_err));
                     #err
                 })
             }
         } else {
-            quote! { ::core::result::Result::Ok(#local) }
+            q! { ::core::result::Result::Ok(#local) }
         };
 
         if *wrap {
-            expr = quote! {
+            expr = q! {
                 match #local {
                     ::core::option::Option::Some(#local) => #expr,
                     ::core::option::Option::None => {
@@ -457,7 +518,7 @@ impl<'l> ToTokens for Upgrade<'l> {
             };
         }
 
-        tokens.extend(quote! { let #local = #expr; });
+        tokens.extend(q! { let #local = #expr; });
     }
 }
 
@@ -468,33 +529,34 @@ struct UpgradeOk<'l> {
 
 impl<'l> ToTokens for UpgradeOk<'l> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        let FieldIr {
-            original,
-            strategy,
-            local,
-            ..
-        } = self.field;
+        expand! {
+            self.field => {
+                original,
+                strategy,
+                local,
+            }
+        }
 
         let ok = match strategy {
             FieldStrategy::Skip { upgrade } => {
                 if self.named {
-                    quote! { #original: #upgrade, }
+                    q! { #original: #upgrade, }
                 } else {
-                    quote! { #upgrade, }
+                    q! { #upgrade, }
                 }
             }
             FieldStrategy::Optionize { .. } => {
-                let local = quote! {
+                let local = q! {
                     match #local {
                         ::core::result::Result::Ok(v) => v,
-                        _ => unreachable!()
+                        _ => ::core::unreachable!()
                     }
                 };
 
                 if self.named {
-                    quote! { #original: #local, }
+                    q! { #original: #local, }
                 } else {
-                    quote! { #local, }
+                    q! { #local, }
                 }
             }
         };
@@ -510,25 +572,26 @@ struct UpgradeErr<'l> {
 
 impl<'l> ToTokens for UpgradeErr<'l> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        let FieldIr {
-            optionized,
-            strategy,
-            local,
-            ..
-        } = self.field;
+        expand! {
+            self.field => {
+                optionized,
+                strategy,
+                local,
+            }
+        }
 
         let FieldStrategy::Optionize { wrap, nest } = strategy else {
             return;
         };
 
-        let mut ok = quote! { v };
+        let mut ok = q! { v };
         if *nest {
-            ok = quote! { ::optionize::Optionizable::downgrade(#ok) };
+            ok = q! { ::optionize::Optionizable::downgrade(#ok) };
         }
         if *wrap {
-            ok = quote! { ::core::option::Option::Some(#ok) };
+            ok = q! { ::core::option::Option::Some(#ok) };
         }
-        let rollback = quote! {
+        let rollback = q! {
             match #local {
                 ::core::result::Result::Ok(v) => #ok,
                 ::core::result::Result::Err(v) => v,
@@ -536,9 +599,9 @@ impl<'l> ToTokens for UpgradeErr<'l> {
         };
 
         let err = if self.named {
-            quote! { #optionized: #rollback, }
+            q! { #optionized: #rollback, }
         } else {
-            quote! { #rollback, }
+            q! { #rollback, }
         };
 
         tokens.extend(err);
@@ -561,7 +624,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
 
     let field_args = {
         let mut field_args = Vec::with_capacity(original.fields.len());
-        let mut errors = darling::Error::accumulator();
+        let mut errors = Error::accumulator();
 
         for field in original.fields.iter_mut() {
             if let Some(parsed) = errors
@@ -581,11 +644,14 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
 
     optionized.ident = {
         let ident = optionized.ident;
-        let name = struct_args
-            .name
-            .unwrap_or_else(|| "{}Optional".to_string())
-            .replace("{}", &ident.to_string());
-        Ident::new(&name, ident.span())
+        let (span, name) = match struct_args.name {
+            Some(name) => (name.span(), name.value().replace("{}", &ident.to_string())),
+            None => (ident.span(), format!("{}Optional", ident)),
+        };
+        let mut ident = parse_str::<Ident>(&name)
+            .map_err(|_| syn::Error::new(span, format!("`{}` is not a valid identifier", name)))?;
+        ident.set_span(span);
+        ident
     };
 
     if let Some(attrs) = struct_args.attributes {
