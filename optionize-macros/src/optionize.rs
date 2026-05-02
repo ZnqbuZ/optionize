@@ -88,15 +88,27 @@ fn is_option(ty: &Type) -> bool {
         )
 }
 
+#[derive(Debug)]
+enum FieldStrategy {
+    Skip { upgrade: Expr },
+    Optionize { wrap: bool, nest: bool },
+}
+
+impl Default for FieldStrategy {
+    fn default() -> Self {
+        Self::Optionize {
+            wrap: true,
+            nest: false,
+        }
+    }
+}
+
 struct FieldMeta {
     original_field: TokenStream,
     optionized_field: TokenStream,
     original_name: String,
     optionized_name: String,
-    wrap: bool,
-    nest: bool,
-    skip: bool,
-    upgrade: Expr,
+    strategy: FieldStrategy,
     local: Ident,
 }
 
@@ -107,10 +119,7 @@ impl Default for FieldMeta {
             optionized_field: quote! {},
             original_name: String::new(),
             optionized_name: String::new(),
-            wrap: false,
-            nest: false,
-            skip: false,
-            upgrade: parse_quote! { ::core::default::Default::default() },
+            strategy: FieldStrategy::default(),
             local: format_ident!("_"),
         }
     }
@@ -154,15 +163,15 @@ impl FieldMeta {
                     ));
                 }
 
-                let mut field = FieldMeta {
+                let field = FieldMeta {
                     original_field,
-                    skip: true,
+                    strategy: FieldStrategy::Skip {
+                        upgrade: upgrade.unwrap_or_else(|| {
+                            parse_quote! { ::core::default::Default::default() }
+                        }),
+                    },
                     ..Default::default()
                 };
-
-                if let Some(upgrade) = upgrade {
-                    field.upgrade = upgrade;
-                }
 
                 skipped += 1;
                 this.push(field);
@@ -212,10 +221,8 @@ impl FieldMeta {
                 optionized_field: optionized_field.clone(),
                 original_name: original_field.to_string(),
                 optionized_name: optionized_field.to_string(),
-                wrap,
-                nest,
+                strategy: FieldStrategy::Optionize { wrap, nest },
                 local,
-                ..Default::default()
             });
 
             fields.push(field);
@@ -228,10 +235,13 @@ impl FieldMeta {
         let Self {
             original_field,
             optionized_field,
-            wrap,
-            nest,
+            strategy,
             ..
         } = self;
+
+        let FieldStrategy::Optionize { wrap, nest } = strategy else {
+            unreachable!();
+        };
 
         let patch = if *wrap {
             quote! { v }
@@ -257,10 +267,13 @@ impl FieldMeta {
     fn merge(&self) -> TokenStream {
         let Self {
             optionized_field,
-            wrap,
-            nest,
+            strategy,
             ..
         } = self;
+
+        let FieldStrategy::Optionize { wrap, nest } = strategy else {
+            unreachable!();
+        };
 
         match (wrap, nest) {
             (true, true) => quote! {
@@ -288,10 +301,13 @@ impl FieldMeta {
         let Self {
             original_field,
             optionized_field,
-            wrap,
-            nest,
+            strategy,
             ..
         } = self;
+
+        let FieldStrategy::Optionize { wrap, nest } = strategy else {
+            unreachable!();
+        };
 
         let mut optionize = if *nest {
             quote! { ::optionize::PartialOptionized::optionize(subject.#original_field) }
@@ -315,11 +331,14 @@ impl FieldMeta {
             optionized_field,
             original_name,
             optionized_name,
-            wrap,
-            nest,
+            strategy,
             local,
             ..
         } = self;
+
+        let FieldStrategy::Optionize { wrap, nest } = strategy else {
+            unreachable!();
+        };
 
         let renamed = original_name == optionized_name;
 
@@ -394,42 +413,47 @@ impl FieldMeta {
     fn ok(&self, named: bool) -> TokenStream {
         let Self {
             original_field,
-            skip,
-            upgrade,
+            strategy,
             local,
             ..
         } = self;
 
-        if *skip {
-            return if named {
-                quote! { #original_field: #upgrade, }
-            } else {
-                quote! { #upgrade, }
-            };
-        }
-
-        let local = quote! {
-            match #local {
-                ::core::result::Result::Ok(v) => v,
-                _ => unreachable!()
+        match strategy {
+            FieldStrategy::Skip { upgrade } => {
+                if named {
+                    quote! { #original_field: #upgrade, }
+                } else {
+                    quote! { #upgrade, }
+                }
             }
-        };
+            FieldStrategy::Optionize { .. } => {
+                let local = quote! {
+                    match #local {
+                        ::core::result::Result::Ok(v) => v,
+                        _ => unreachable!()
+                    }
+                };
 
-        if named {
-            quote! { #original_field: #local, }
-        } else {
-            quote! { #local, }
+                if named {
+                    quote! { #original_field: #local, }
+                } else {
+                    quote! { #local, }
+                }
+            }
         }
     }
 
     fn err(&self, named: bool) -> TokenStream {
         let Self {
             optionized_field,
-            wrap,
-            nest,
+            strategy,
             local,
             ..
         } = self;
+
+        let FieldStrategy::Optionize { wrap, nest } = strategy else {
+            unreachable!();
+        };
 
         let mut ok = quote! { v };
         if *nest {
@@ -514,7 +538,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
     let original_fields = FieldMeta::extract(fields, field_args, partial)?;
     let optionized_fields = original_fields
         .iter()
-        .filter(|f| !f.skip)
+        .filter(|f| matches!(f.strategy, FieldStrategy::Optionize { .. }))
         .collect::<Vec<_>>();
 
     let (optionizes, patches, merges) = optionized_fields.iter().fold(
