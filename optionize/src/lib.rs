@@ -45,7 +45,7 @@ pub trait Optionized: PartialOptionized {
 }
 
 #[derive(Debug)]
-pub enum FieldName {
+pub enum FieldInfo {
     Identical(&'static str),
     Renamed {
         original: &'static str,
@@ -53,7 +53,7 @@ pub enum FieldName {
     },
 }
 
-impl Display for FieldName {
+impl Display for FieldInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Identical(name) => write!(f, "`{}`", name),
@@ -67,15 +67,27 @@ impl Display for FieldName {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TypeInfo {
+    pub original: &'static str,
+    pub optionized: &'static str,
+}
+
+impl Display for TypeInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "`{}` -> `{}`", self.optionized, self.original)
+    }
+}
+
 #[derive(Debug)]
 pub enum UpgradeError {
     MissingField {
-        ty: &'static str,
-        field: FieldName,
+        ty: TypeInfo,
+        field: FieldInfo,
     },
     NestedError {
-        ty: &'static str,
-        field: FieldName,
+        ty: TypeInfo,
+        field: FieldInfo,
         source: Box<dyn Error + Send + Sync + 'static>,
     },
 }
@@ -83,13 +95,24 @@ pub enum UpgradeError {
 impl Display for UpgradeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MissingField { ty, field } => {
-                write!(f, "Missing required field in type `{}`:  {}", ty, field)
-            }
-            Self::NestedError { ty, field, .. } => {
+            Self::MissingField {
+                ty,
+                field,
+            } => {
                 write!(
                     f,
-                    "Failed to upgrade nested field in type `{}`: {}",
+                    "Missing required field when upgrading {}: {}",
+                    ty, field
+                )
+            }
+            Self::NestedError {
+                ty,
+                field,
+                ..
+            } => {
+                write!(
+                    f,
+                    "Failed to upgrade nested field when upgrading {}: {}",
                     ty, field
                 )
             }
@@ -120,7 +143,7 @@ impl Display for UpgradeErrorCollection {
 
         writeln!(f, "Upgrade failed with {} error(s):", self.errors.len())?;
 
-        let mut groups= BTreeMap::<_, Vec<_>>::new();
+        let mut groups = BTreeMap::<_, Vec<_>>::new();
         for error in &self.errors {
             let ty = match error {
                 UpgradeError::MissingField { ty, .. } => *ty,
@@ -131,7 +154,7 @@ impl Display for UpgradeErrorCollection {
 
         let mut groups = groups.into_iter().peekable();
         while let Some((ty, errors)) = groups.next() {
-            writeln!(f, "  [{}]", ty)?;
+            writeln!(f, "  {}", ty)?;
 
             let mut errors = errors.into_iter().peekable();
             while let Some(error) = errors.next() {
