@@ -596,10 +596,10 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
                 fn upgrade(self) -> ::core::result::Result<#subject, (Self::UpgradeErrors, Self)> {
                     let mut #errors = ::optionize::UpgradeErrorCollection::default();
                     #(#upgrades)*
-                    if errors.is_empty() {
+                    if #errors.is_empty() {
                         ::core::result::Result::Ok(#ok)
                     } else {
-                        ::core::result::Result::Err((errors, #err))
+                        ::core::result::Result::Err((#errors, #err))
                     }
                 }
             }
