@@ -419,7 +419,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
             upgrade.push(match (wrap, nest) {
                 (true, true) => quote! {
                     let #local = match #local {
-                        ::core::option::Option::Some(v) => match ::optionize::Upgradable::upgrade(v) {
+                        ::core::option::Option::Some(v) => match ::optionize::Optionized::upgrade(v) {
                             ::core::result::Result::Ok(upgraded) => ::core::result::Result::Ok(upgraded),
                             ::core::result::Result::Err((e, v)) => {
                                 errors.extend(e.into_iter().map(#nest_map_err));
@@ -442,7 +442,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
                     };
                 },
                 (false, true) => quote! {
-                    let #local = match ::optionize::Upgradable::upgrade(#local) {
+                    let #local = match ::optionize::Optionized::upgrade(#local) {
                         ::core::result::Result::Ok(v) => ::core::result::Result::Ok(v),
                         ::core::result::Result::Err((e, v)) => {
                             errors.extend(e.into_iter().map(#nest_map_err));
@@ -507,7 +507,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
                 let rollback = match (wrap, nest) {
                     (true, true) => quote! {
                         match #local {
-                            ::core::result::Result::Ok(v) => ::core::option::Option::Some(::optionize::Optionizable::downgrade(v)),
+                            ::core::result::Result::Ok(v) => ::core::option::Option::Some(::optionize::Optionizable::<>::downgrade(v)),
                             ::core::result::Result::Err(v) => v,
                         }
                     },
@@ -555,9 +555,9 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
 
         output.push(quote! {
             #[allow(non_snake_case)]
-            impl #impl_generics ::optionize::Upgradable<#subject> for #optionized_ident #type_generics #where_clause {
-                type Error = ::optionize::__private::alloc::vec::Vec<::optionize::UpgradeError>;
-                fn upgrade(self) -> ::core::result::Result<#subject, (Self::Error, Self)> {
+            impl #impl_generics ::optionize::Optionized for #optionized_ident #type_generics #where_clause {
+                type UpgradeError = ::optionize::__private::alloc::vec::Vec<::optionize::UpgradeError>;
+                fn upgrade(self) -> ::core::result::Result<#subject, (Self::UpgradeError, Self)> {
                     #(#upgrade)*
                 }
             }

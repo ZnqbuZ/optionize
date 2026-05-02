@@ -37,14 +37,10 @@ impl<T, O> Optionizable<O> for T where O: PartialOptionized<Subject = T> {}
     label = "Nested type lacks upgrade logic",
     note = "Ensure the struct `{Self}` is not partial, or is annotated with `#[optionize(partial(upgradable))]`"
 )]
-pub trait Upgradable<Subject>: Sized {
-    type Error: IntoIterator;
-    fn upgrade(self) -> Result<Subject, (Self::Error, Self)>;
+pub trait Optionized: PartialOptionized {
+    type UpgradeError: IntoIterator;
+    fn upgrade(self) -> Result<Self::Subject, (Self::UpgradeError, Self)>;
 }
-
-pub trait Optionized: PartialOptionized + Upgradable<Self::Subject> {}
-
-impl<O> Optionized for O where O: PartialOptionized + Upgradable<Self::Subject> {}
 
 #[derive(Debug)]
 pub enum FieldName {
