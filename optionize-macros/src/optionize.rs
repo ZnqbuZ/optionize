@@ -4,7 +4,7 @@ use darling::{Error, Result};
 use darling::{FromAttributes, FromMeta};
 use proc_macro2::Span;
 use proc_macro2::{Ident, TokenStream};
-use quote::{ToTokens, format_ident, quote_spanned as qs};
+use quote::{format_ident, quote_spanned as qs, ToTokens};
 use std::default::Default;
 use std::iter::zip;
 use std::mem::take;
@@ -12,16 +12,22 @@ use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::token::Comma;
 use syn::{
-    Data, DeriveInput, Expr, Field, GenericArgument, Index, LitBool, LitStr, Meta, PathArguments,
-    Type, parse_quote_spanned as pqs, parse_str, parse2,
+    parse2, parse_quote_spanned as pqs, parse_str, Attribute, Data, DeriveInput, Expr, Field, GenericArgument, Index,
+    LitBool, LitStr, Meta, PathArguments, Type,
 };
 
 #[derive(Debug, Default)]
 struct MetaList(Vec<Meta>);
 
 impl MetaList {
-    fn merge(lists: &mut Vec<Self>) -> Option<Vec<Meta>> {
-        (!lists.is_empty()).then(|| take(lists).into_iter().flat_map(|ml| ml.0).collect())
+    fn merge(lists: &mut Vec<Self>) -> Option<Vec<Attribute>> {
+        (!lists.is_empty()).then(|| {
+            take(lists)
+                .into_iter()
+                .flat_map(|ml| ml.0)
+                .map(|meta| pqs! { meta.span() => #[#meta] })
+                .collect()
+        })
     }
 }
 
@@ -55,7 +61,7 @@ struct StructArgs {
     #[darling(rename = "attrs", multiple)]
     _attributes: Vec<MetaList>,
     #[darling(skip)]
-    attributes: Option<Vec<Meta>>,
+    attributes: Option<Vec<Attribute>>,
     partial: Option<Override<PartialArgs>>,
 }
 
@@ -79,7 +85,7 @@ struct FieldArgs {
     #[darling(rename = "attrs", multiple)]
     _attributes: Vec<MetaList>,
     #[darling(skip)]
-    attributes: Option<Vec<Meta>>,
+    attributes: Option<Vec<Attribute>>,
     wrap: Option<LitBool>,
     nest: Option<Type>,
     skip: Option<SpannedValue<Override<SkipArgs>>>,
@@ -279,6 +285,10 @@ impl FieldIr {
                 field.ident = Some(ident.clone());
             }
 
+            if let Some(attrs) = args.attributes {
+                field.attrs = attrs;
+            }
+
             let optionized_field = match &field.ident {
                 Some(ident) => q! { #ident },
                 None => {
@@ -468,6 +478,7 @@ struct Upgrade<'l> {
     field: &'l FieldIr,
     original: &'l Ident,
     optionized: &'l Ident,
+    failed: &'l Ident,
     errors: &'l Ident,
 }
 
@@ -527,6 +538,7 @@ impl<'l> ToTokens for Upgrade<'l> {
             )
         };
 
+        let failed = self.failed;
         let errors = self.errors;
 
         tokens.extend(q! { let #local = self.#optionized; });
@@ -552,6 +564,7 @@ impl<'l> ToTokens for Upgrade<'l> {
                 match #local {
                     ::core::option::Option::Some(#local) => #expr,
                     ::core::option::Option::None => {
+                        #failed = true;
                         #errors.push(#missing_err);
                         ::core::result::Result::Err(::core::option::Option::None)
                     }
@@ -703,10 +716,7 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
     };
 
     if let Some(attrs) = struct_args.attributes {
-        optionized.attrs = attrs
-            .into_iter()
-            .map(|meta| pqs! { meta.span() => #[#meta] })
-            .collect();
+        optionized.attrs = attrs;
     } else {
         optionized
             .attrs
@@ -750,12 +760,14 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
     });
 
     if !partial || upgradable {
+        let failed = format_ident!("failed");
         let errors = format_ident!("errors");
 
         let upgrades = optionized_fields.iter().map(|field| Upgrade {
             field,
             original: &original,
             optionized: &optionized,
+            failed: &failed,
             errors: &errors,
         });
 
@@ -788,9 +800,10 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
             impl #impl_generics ::optionize::Optionized<#subject> for #optionized #type_generics #where_clause {
                 type UpgradeErrors = ::optionize::UpgradeErrorCollection;
                 fn upgrade(self) -> ::core::result::Result<#subject, (Self::UpgradeErrors, Self)> {
+                    let mut #failed = false;
                     let mut #errors = ::optionize::UpgradeErrorCollection::default();
                     #(#upgrades)*
-                    if #errors.is_empty() {
+                    if !#failed {
                         ::core::result::Result::Ok(#ok)
                     } else {
                         ::core::result::Result::Err((#errors, #err))
