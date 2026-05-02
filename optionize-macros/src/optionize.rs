@@ -9,7 +9,10 @@ use syn::parse::Result;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::token::Comma;
-use syn::{parse2, parse_quote, Error, Expr, Field, GenericArgument, Index, ItemStruct, Meta, PathArguments, Type};
+use syn::{
+    parse2, parse_quote, Error, Expr, Field, GenericArgument, Index, ItemStruct, Meta, PathArguments,
+    Type,
+};
 
 #[derive(Debug, Default)]
 struct MetaList(Vec<Meta>);
@@ -407,53 +410,57 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
                 };
 
                 (
-                    quote! { ::optionize::UpgradeError::MissingField { ty: #ty, field: #field} },
-                    quote! { |e| ::optionize::UpgradeError::NestedError { ty: #ty, field: #field, source: ::optionize::__private::alloc::boxed::Box::new(e) as _ } },
+                    quote! {
+                        ::optionize::UpgradeError::MissingField {
+                            ty: #ty,
+                            field: #field
+                        }
+                    },
+                    quote! {
+                        |e| ::optionize::UpgradeError::NestedError {
+                            ty: #ty,
+                            field: #field,
+                            source: ::optionize::__private::alloc::boxed::Box::new(e) as _
+                        }
+                    },
                 )
             };
 
             upgrade.push(quote! { let #local = self.#optionized_field; });
 
-            upgrade.push(match (wrap, nest) {
-                (true, true) => quote! {
-                    let #local = match #local {
-                        ::core::option::Option::Some(v) => match ::optionize::Optionized::upgrade(v) {
-                            ::core::result::Result::Ok(upgraded) => ::core::result::Result::Ok(upgraded),
-                            ::core::result::Result::Err((e, v)) => {
-                                errors.extend(e.into_iter().map(#nest_map_err));
-                                ::core::result::Result::Err(::core::option::Option::Some(v))
-                            }
-                        },
-                        ::core::option::Option::None => {
-                            errors.push(#missing_err);
-                            ::core::result::Result::Err(::core::option::Option::None)
-                        }
-                    };
-                },
-                (true, false) => quote! {
-                    let #local = match #local {
-                        ::core::option::Option::Some(v) => ::core::result::Result::Ok(v),
-                        ::core::option::Option::None => {
-                            errors.push(#missing_err);
-                            ::core::result::Result::Err(::core::option::Option::None)
-                        }
-                    };
-                },
-                (false, true) => quote! {
-                    let #local = match ::optionize::Optionized::upgrade(#local) {
-                        ::core::result::Result::Ok(v) => ::core::result::Result::Ok(v),
+            let mut expr = if *nest {
+                let err = if *wrap {
+                    quote!(::core::option::Option::Some(v))
+                } else {
+                    quote!(v)
+                };
+                quote! {
+                    match ::optionize::Optionized::upgrade(#local) {
+                        ::core::result::Result::Ok(upgraded) => ::core::result::Result::Ok(upgraded),
                         ::core::result::Result::Err((e, v)) => {
                             errors.extend(e.into_iter().map(#nest_map_err));
-                            ::core::result::Result::Err(v)
+                            ::core::result::Result::Err(#err)
                         }
-                    };
-                },
-                (false, false) => quote! {
-                    let #local = ::core::result::Result::Ok(#local);
+                    }
                 }
-            });
-        }
+            } else {
+                quote! { ::core::result::Result::Ok(#local) }
+            };
 
+            if *wrap {
+                expr = quote! {
+                    match #local {
+                        ::core::option::Option::Some(v) => #expr,
+                        ::core::option::Option::None => {
+                            errors.push(#missing_err);
+                            ::core::result::Result::Err(::core::option::Option::None)
+                        }
+                    }
+                };
+            }
+
+            upgrade.push(quote! { let #local = #expr; });
+        }
 
         let ok = {
             let mut ok_fields = Vec::with_capacity(meta.fields.len());
@@ -475,7 +482,12 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
                     continue;
                 }
 
-                let local = quote! { match #local { ::core::result::Result::Ok(v) => v, _ => unreachable!() } };
+                let local = quote! {
+                    match #local {
+                        ::core::result::Result::Ok(v) => v,
+                        _ => unreachable!()
+                    }
+                };
 
                 if named {
                     ok_fields.push(quote! { #original_field: #local, });
@@ -502,31 +514,18 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
                     ..
                 } = field;
 
-                let rollback = match (wrap, nest) {
-                    (true, true) => quote! {
-                        match #local {
-                            ::core::result::Result::Ok(v) => ::core::option::Option::Some(::optionize::Optionizable::downgrade(v)),
-                            ::core::result::Result::Err(v) => v,
-                        }
-                    },
-                    (true, false) => quote! {
-                        match #local {
-                            ::core::result::Result::Ok(v) => ::core::option::Option::Some(v),
-                            ::core::result::Result::Err(v) => v,
-                        }
-                    },
-                    (false, true) => quote! {
-                        match #local {
-                            ::core::result::Result::Ok(v) => ::optionize::Optionizable::downgrade(v),
-                            ::core::result::Result::Err(v) => v,
-                        }
-                    },
-                    (false, false) => quote! {
-                        match #local {
-                            ::core::result::Result::Ok(v) => v,
-                            ::core::result::Result::Err(v) => v,
-                        }
-                    },
+                let mut ok = quote! { v };
+                if *nest {
+                    ok = quote! { ::optionize::Optionizable::downgrade(#ok) };
+                }
+                if *wrap {
+                    ok = quote! { ::core::option::Option::Some(#ok) };
+                }
+                let rollback = quote! {
+                    match #local {
+                        ::core::result::Result::Ok(v) => #ok,
+                        ::core::result::Result::Err(v) => v,
+                    }
                 };
 
                 if named {
