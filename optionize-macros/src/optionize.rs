@@ -157,14 +157,14 @@ fn is_option(ty: &Type) -> bool {
 #[derive(Debug)]
 enum FieldStrategy {
     Skip { upgrade: Expr },
-    Optionize { wrap: bool, nest: bool },
+    Optionize { wrap: bool, nest: Option<Type> },
 }
 
 impl Default for FieldStrategy {
     fn default() -> Self {
         Self::Optionize {
             wrap: true,
-            nest: false,
+            nest: None,
         }
     }
 }
@@ -310,10 +310,10 @@ impl FieldIr {
                 }
             };
 
-            let (ty, nest) = if let Some(nest) = &args.nest {
-                (nest, true)
+            let (nest, ty) = if let Some(optionized) = &args.nest {
+                (Some(ty.clone()), optionized)
             } else {
-                (ty, false)
+                (None, ty)
             };
 
             let wrap = args
@@ -387,8 +387,8 @@ impl<'l> ToTokens for Optionize<'l> {
             return;
         };
 
-        let mut optionize = if *nest {
-            q! { ::optionize::PartialOptionized::optionize(#subject.#original) }
+        let mut optionize = if let Some(nest) = nest {
+            q! { ::optionize::PartialOptionized::<#nest>::optionize(#subject.#original) }
         } else {
             q! { #subject.#original }
         };
@@ -433,8 +433,8 @@ impl<'l> ToTokens for Patch<'l> {
         } else {
             q! { self.#optionized }
         };
-        let mut patch = if *nest {
-            q! { ::optionize::PartialOptionized::patch(#patch, &mut #subject.#original); }
+        let mut patch = if let Some(nest) = nest {
+            q! { ::optionize::PartialOptionized::<#nest>::patch(#patch, &mut #subject.#original); }
         } else {
             q! { #subject.#original = #patch; }
         };
@@ -471,22 +471,22 @@ impl<'l> ToTokens for Merge<'l> {
         };
 
         let merge = match (wrap, nest) {
-            (true, true) => q! {
+            (true, Some(nest)) => q! {
                 match (&mut self.#optionized, #other.#optionized) {
-                    (Some(this), Some(other)) => ::optionize::PartialOptionized::merge(this, other),
+                    (Some(this), Some(other)) => ::optionize::PartialOptionized::<#nest>::merge(this, other),
                     (None, Some(other)) => self.#optionized = Some(other),
                     _ => {}
                 }
             },
-            (true, false) => q! {
+            (true, None) => q! {
                 if #other.#optionized.is_some() {
                     self.#optionized = #other.#optionized;
                 }
             },
-            (false, true) => q! {
-                ::optionize::PartialOptionized::merge(&mut self.#optionized, #other.#optionized);
+            (false, Some(nest)) => q! {
+                ::optionize::PartialOptionized::<#nest>::merge(&mut self.#optionized, #other.#optionized);
             },
-            (false, false) => q! {
+            (false, None) => q! {
                 self.#optionized = #other.#optionized;
             },
         };
@@ -564,14 +564,14 @@ impl<'l> ToTokens for Upgrade<'l> {
 
         tokens.extend(q! { let #local = self.#optionized; });
 
-        let mut expr = if *nest {
+        let mut expr = if let Some(nest) = nest {
             let err = if *wrap {
                 q!(::core::option::Option::Some(v))
             } else {
                 q!(v)
             };
             q! {
-                ::optionize::Optionized::upgrade(#local).map_err(|(e, v)| {
+                ::optionize::Optionized::<#nest>::upgrade(#local).map_err(|(e, v)| {
                     #failed = true;
                     #errors.extend(e.into_iter().map(#nest_map_err));
                     #err
@@ -656,8 +656,8 @@ impl<'l> ToTokens for UpgradeErr<'l> {
         };
 
         let mut ok = q! { v };
-        if *nest {
-            ok = q! { ::optionize::PartialOptionized::optionize(#ok) };
+        if let Some(nest) = nest {
+            ok = q! { ::optionize::PartialOptionized::<#nest>::optionize(#ok) };
         }
         if *wrap {
             ok = q! { ::core::option::Option::Some(#ok) };
