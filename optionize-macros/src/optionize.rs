@@ -17,6 +17,8 @@ use syn::{
     GenericArgument, Index, LitBool, LitStr, Meta, PathArguments, Type,
 };
 
+// region args
+
 #[derive(Debug, Default)]
 struct MetaList(Vec<Meta>);
 
@@ -130,6 +132,18 @@ impl FieldArgs {
     }
 }
 
+// endregion
+
+// region utils
+
+fn format(pattern: &str, ident: &Ident) -> Result<Ident> {
+    let old = ident.to_string();
+    let old = old.strip_prefix("r#").unwrap_or(&old);
+    let new = format!("r#{}", pattern.replace("{}", old));
+    parse_str::<Ident>(&new)
+        .map_err(|_| Error::custom(format!("`{}` is not a valid identifier", new)).with_span(ident))
+}
+
 fn is_option(ty: &Type) -> bool {
     let path = match ty {
         Type::Path(path) => path,
@@ -153,6 +167,36 @@ fn is_option(ty: &Type) -> bool {
                     && matches!(args.args.first(), Some(GenericArgument::Type(_)))
         )
 }
+
+fn is_optionize(attr: &Attribute) -> bool {
+    attr.path()
+        .segments
+        .last()
+        .is_some_and(|s| s.ident == "optionize")
+}
+
+macro_rules! span {
+    ($span:expr) => {
+        span!(@impl $span, $)
+    };
+
+    (@impl $span:expr, $_:tt) => {
+        #[allow(unused_macros)]
+        macro_rules! q {
+            ($_($_ tt:tt)*) => {
+                qs! { $span => $_($_ tt)* }
+            };
+        }
+        #[allow(unused_macros)]
+        macro_rules! pq {
+            ($_($_ tt:tt)*) => {
+                pqs! { $span => $_($_ tt)* }
+            };
+        }
+    };
+}
+
+//endregion
 
 #[derive(Debug)]
 enum FieldStrategy {
@@ -189,34 +233,18 @@ impl Default for FieldIr {
     }
 }
 
-macro_rules! span {
-    ($span:expr) => {
-        span!(@impl $span, $)
-    };
-
-    (@impl $span:expr, $_:tt) => {
-        #[allow(unused_macros)]
-        macro_rules! q {
-            ($_($_ tt:tt)*) => {
-                qs! { $span => $_($_ tt)* }
-            };
-        }
-        #[allow(unused_macros)]
-        macro_rules! pq {
-            ($_($_ tt:tt)*) => {
-                pqs! { $span => $_($_ tt)* }
-            };
-        }
-    };
-}
-
 impl FieldIr {
-    fn extract(
-        fields: &mut Punctuated<Field, Comma>,
-        args: Vec<FieldArgs>,
-        partial: bool,
-    ) -> Result<Vec<Self>> {
+    fn extract(fields: &mut Punctuated<Field, Comma>, partial: bool) -> Result<Vec<Self>> {
         let mut errors = Error::accumulator();
+
+        let args = fields
+            .iter_mut()
+            .filter_map(|field| {
+                errors.handle(
+                    FieldArgs::from_attributes(&field.attrs).map_err(|e| e.with_span(field)),
+                )
+            })
+            .collect::<Vec<_>>();
 
         let mut this = Vec::new();
         let mut skipped = 0;
@@ -296,6 +324,8 @@ impl FieldIr {
 
             if let Some(attrs) = args.attributes {
                 field.attrs = attrs;
+            } else {
+                field.attrs.retain(|attr| !is_optionize(attr));
             }
 
             let optionized_field = match &field.ident {
@@ -348,7 +378,7 @@ impl FieldIr {
     }
 }
 
-// region Generators
+// region codegen
 
 macro_rules! expand {
     ($target:expr => { $($field:ident $(: $bind:pat)?),* $(,)? }) => {
@@ -686,14 +716,6 @@ enum StructStyle {
     Unit,
 }
 
-fn format(pattern: &str, ident: &Ident) -> Result<Ident> {
-    let old = ident.to_string();
-    let old = old.strip_prefix("r#").unwrap_or(&old);
-    let new = format!("r#{}", pattern.replace("{}", old));
-    parse_str::<Ident>(&new)
-        .map_err(|_| Error::custom(format!("`{}` is not a valid identifier", new)).with_span(ident))
-}
-
 pub fn derive(input: TokenStream) -> Result<TokenStream> {
     let original = parse2::<DeriveInput>(input)?;
     let _span = original.span();
@@ -709,20 +731,31 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
         };
     }
 
-    let struct_args = StructArgs::from_attributes(&original.attrs)?;
+    let args = StructArgs::from_attributes(&original.attrs)?;
 
-    let (partial, upgradable, marked) = match &struct_args.partial {
+    let (partial, upgradable, marked) = match &args.partial {
         Some(Override::Inherit) => (true, false, false),
         Some(Override::Explicit(p)) => (true, p.upgradable, p.marked),
         None => (false, false, false),
     };
 
-    let mut optionized = original.clone();
-    let original = &original.ident;
+    let mut optionized = original;
+    let original = &optionized.ident.clone();
 
-    let (impl_generics, type_generics, where_clause) = optionized.generics.split_for_impl();
-    #[allow(non_snake_case)]
-    let Subject = q! { #original #type_generics };
+    optionized.ident = {
+        let (span, mut ident) = match args.name {
+            Some(name) => (name.span(), format(&name.value(), original)?),
+            None => (original.span(), format("{}Optional", original)?),
+        };
+        ident.set_span(span);
+        ident
+    };
+
+    if let Some(attrs) = args.attributes {
+        optionized.attrs = attrs;
+    } else {
+        optionized.attrs.retain(|attr| !is_optionize(attr));
+    }
 
     let (style, fields) = match &mut optionized.data {
         Data::Struct(data) => match &mut data.fields {
@@ -738,47 +771,15 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
     };
     let named = matches!(style, StructStyle::Named);
 
-    let field_args = {
-        let mut field_args = Vec::with_capacity(fields.len());
-        let mut errors = Error::accumulator();
-
-        for field in fields.iter_mut() {
-            if let Some(parsed) = errors
-                .handle(FieldArgs::from_attributes(&field.attrs).map_err(|e| e.with_span(&field)))
-            {
-                field_args.push(parsed);
-            }
-            field
-                .attrs
-                .retain(|attr| !attr.path().is_ident("optionize"));
-        }
-
-        errors.finish_with(field_args)?
-    };
-
-    optionized.ident = {
-        let ident = optionized.ident;
-        let (span, mut ident) = match struct_args.name {
-            Some(name) => (name.span(), format(&name.value(), &ident)?),
-            None => (ident.span(), format("{}Optional", &ident)?),
-        };
-        ident.set_span(span);
-        ident
-    };
-
-    if let Some(attrs) = struct_args.attributes {
-        optionized.attrs = attrs;
-    } else {
-        optionized
-            .attrs
-            .retain(|attr| !attr.path().is_ident("optionize"));
-    }
-
-    let original_fields = FieldIr::extract(fields, field_args, partial)?;
+    let original_fields = FieldIr::extract(fields, partial)?;
     let optionized_fields = original_fields
         .iter()
         .filter(|f| matches!(f.strategy, FieldStrategy::Optionize { .. }))
         .collect::<Vec<_>>();
+
+    let (impl_generics, type_generics, where_clause) = optionized.generics.split_for_impl();
+    #[allow(non_snake_case)]
+    let Subject = q! { #original #type_generics };
 
     let mut marker = None;
     if marked {
