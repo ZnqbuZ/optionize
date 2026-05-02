@@ -11,9 +11,13 @@ use core::fmt::Display;
 use delegate::delegate;
 use derive_more::{Deref, DerefMut, From, Into, IntoIterator};
 
+pub use optionize_macros::optionized;
+
 #[doc(hidden)]
 pub mod __private {
     pub extern crate alloc;
+
+    pub use optionize_macros::Optionize;
 }
 
 pub trait PartialOptionized<Subject>: Sized {
@@ -94,21 +98,10 @@ pub enum UpgradeError {
 impl Display for UpgradeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MissingField {
-                ty,
-                field,
-            } => {
-                write!(
-                    f,
-                    "Missing required field when upgrading {}: {}",
-                    ty, field
-                )
+            Self::MissingField { ty, field } => {
+                write!(f, "Missing required field when upgrading {}: {}", ty, field)
             }
-            Self::NestedError {
-                ty,
-                field,
-                ..
-            } => {
+            Self::NestedError { ty, field, .. } => {
                 write!(
                     f,
                     "Failed to upgrade nested field when upgrading {}: {}",

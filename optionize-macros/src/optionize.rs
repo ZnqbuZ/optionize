@@ -4,7 +4,7 @@ use darling::{Error, Result};
 use darling::{FromAttributes, FromMeta};
 use proc_macro2::Span;
 use proc_macro2::{Ident, TokenStream};
-use quote::{format_ident, quote_spanned as qs, ToTokens};
+use quote::{ToTokens, format_ident, quote_spanned as qs};
 use std::default::Default;
 use std::iter::zip;
 use std::mem::take;
@@ -12,12 +12,18 @@ use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::token::Comma;
 use syn::{
-    parse2, parse_quote_spanned as pqs, parse_str, Expr, Field, GenericArgument, Index, ItemStruct, LitBool, LitStr,
-    Meta, PathArguments, Type,
+    Data, DeriveInput, Expr, Field, GenericArgument, Index, LitBool, LitStr, Meta, PathArguments,
+    Type, parse_quote_spanned as pqs, parse_str, parse2,
 };
 
 #[derive(Debug, Default)]
 struct MetaList(Vec<Meta>);
+
+impl MetaList {
+    fn merge(lists: &mut Vec<Self>) -> Option<Vec<Meta>> {
+        (!lists.is_empty()).then(|| take(lists).into_iter().flat_map(|ml| ml.0).collect())
+    }
+}
 
 impl FromMeta for MetaList {
     fn from_list(items: &[NestedMeta]) -> Result<Self> {
@@ -42,12 +48,22 @@ struct PartialArgs {
     upgradable: bool,
 }
 
-#[derive(Debug, Default, FromMeta)]
-#[darling(default)]
+#[derive(Debug, Default, FromAttributes)]
+#[darling(default, attributes(optionize), and_then = "Self::finalize")]
 struct StructArgs {
     name: Option<LitStr>,
-    attributes: Option<MetaList>,
+    #[darling(rename = "attrs", multiple)]
+    _attributes: Vec<MetaList>,
+    #[darling(skip)]
+    attributes: Option<Vec<Meta>>,
     partial: Option<Override<PartialArgs>>,
+}
+
+impl StructArgs {
+    fn finalize(mut self) -> Result<Self> {
+        self.attributes = MetaList::merge(&mut self._attributes);
+        Ok(self)
+    }
 }
 
 #[derive(Debug, Default, FromMeta)]
@@ -57,17 +73,20 @@ struct SkipArgs {
 }
 
 #[derive(Debug, Default, FromAttributes)]
-#[darling(default, attributes(optionize), and_then = "FieldArgs::validate")]
+#[darling(default, attributes(optionize), and_then = "Self::finalize")]
 struct FieldArgs {
     name: Option<LitStr>,
-    attributes: Option<MetaList>,
+    #[darling(rename = "attrs", multiple)]
+    _attributes: Vec<MetaList>,
+    #[darling(skip)]
+    attributes: Option<Vec<Meta>>,
     wrap: Option<LitBool>,
     nest: Option<Type>,
     skip: Option<SpannedValue<Override<SkipArgs>>>,
 }
 
 impl FieldArgs {
-    fn validate(self) -> Result<Self> {
+    fn finalize(mut self) -> Result<Self> {
         let mut errors = Error::accumulator();
 
         if let Some(skip) = &self.skip {
@@ -88,6 +107,8 @@ impl FieldArgs {
                 );
             }
         }
+
+        self.attributes = MetaList::merge(&mut self._attributes);
 
         errors.finish_with(self)
     }
@@ -216,7 +237,7 @@ impl FieldIr {
                         Error::custom(
                             "`skip` attribute is only allowed when `partial` is specified",
                         )
-                            .with_span(&field),
+                        .with_span(&field),
                     );
                     continue;
                 }
@@ -623,11 +644,12 @@ impl<'l> ToTokens for UpgradeErr<'l> {
     }
 }
 
-pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
-    let struct_args = {
-        let struct_args = NestedMeta::parse_meta_list(args)?;
-        StructArgs::from_list(&struct_args)?
-    };
+pub fn derive(input: TokenStream) -> Result<TokenStream> {
+    let original = parse2::<DeriveInput>(input)?;
+    let _span = original.span();
+    span!(_span);
+
+    let struct_args = StructArgs::from_attributes(&original.attrs)?;
 
     let (partial, upgradable) = match &struct_args.partial {
         Some(Override::Inherit) => (true, false),
@@ -635,15 +657,26 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
         None => (false, false),
     };
 
-    let mut original = parse2::<ItemStruct>(input)?;
-    let _span = original.span();
-    span!(_span);
+    let mut optionized = original.clone();
+
+    let (fields, named) = match &mut optionized.data {
+        Data::Struct(data) => match &mut data.fields {
+            syn::Fields::Named(fields) => (&mut fields.named, true),
+            syn::Fields::Unnamed(fields) => (&mut fields.unnamed, false),
+            syn::Fields::Unit => return Ok(Default::default()),
+        },
+        _ => {
+            return Err(
+                Error::custom("Optionize can only be derived for structs").with_span(&original)
+            );
+        }
+    };
 
     let field_args = {
-        let mut field_args = Vec::with_capacity(original.fields.len());
+        let mut field_args = Vec::with_capacity(fields.len());
         let mut errors = Error::accumulator();
 
-        for field in original.fields.iter_mut() {
+        for field in fields.iter_mut() {
             if let Some(parsed) = errors
                 .handle(FieldArgs::from_attributes(&field.attrs).map_err(|e| e.with_span(&field)))
             {
@@ -656,8 +689,6 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
 
         errors.finish_with(field_args)?
     };
-
-    let mut optionized = original.clone();
 
     optionized.ident = {
         let ident = optionized.ident;
@@ -673,7 +704,6 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
 
     if let Some(attrs) = struct_args.attributes {
         optionized.attrs = attrs
-            .0
             .into_iter()
             .map(|meta| pqs! { meta.span() => #[#meta] })
             .collect();
@@ -683,22 +713,13 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
             .retain(|attr| !attr.path().is_ident("optionize"));
     }
 
-    let (fields, named) = match &mut optionized.fields {
-        syn::Fields::Named(fields) => (&mut fields.named, true),
-        syn::Fields::Unnamed(fields) => (&mut fields.unnamed, false),
-        syn::Fields::Unit => return Ok(Default::default()),
-    };
-
     let original_fields = FieldIr::extract(fields, field_args, partial)?;
     let optionized_fields = original_fields
         .iter()
         .filter(|f| matches!(f.strategy, FieldStrategy::Optionize { .. }))
         .collect::<Vec<_>>();
 
-    let mut output = vec![q! {
-        #original
-        #optionized
-    }];
+    let mut output = vec![q! { #optionized }];
 
     let generics = optionized.generics;
     let original = original.ident;
@@ -780,4 +801,19 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
     }
 
     Ok(q! { #(#output)* })
+}
+
+#[derive(FromMeta)]
+struct OptionizedArgs {}
+
+pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
+    let args = NestedMeta::parse_meta_list(args)?;
+    let _ = OptionizedArgs::from_list(&args)?;
+
+    let input = qs! { input.span() =>
+        #[derive(::optionize::__private::Optionize)]
+        #input
+    };
+
+    Ok(input)
 }
