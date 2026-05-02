@@ -551,6 +551,7 @@ impl<'l> ToTokens for Upgrade<'l> {
             };
             q! {
                 ::optionize::Optionized::upgrade(#local).map_err(|(e, v)| {
+                    #failed = true;
                     #errors.extend(e.into_iter().map(#nest_map_err));
                     #err
                 })
