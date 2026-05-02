@@ -2,9 +2,13 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 use core::error::Error;
 use core::fmt;
 use core::fmt::Display;
+use delegate::delegate;
+use derive_more::{Deref, DerefMut, From, Into, IntoIterator};
 
 #[doc(hidden)]
 pub mod __private {
@@ -97,6 +101,89 @@ impl Error for UpgradeError {
         match self {
             Self::NestedError { source, .. } => Some(&**source),
             _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Default, From, Into, Deref, DerefMut, IntoIterator)]
+#[into_iterator(owned, ref, ref_mut)]
+pub struct UpgradeErrorCollection {
+    pub errors: Vec<UpgradeError>,
+}
+
+impl Display for UpgradeErrorCollection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.errors.is_empty() {
+            return write!(f, "No upgrade errors");
+        }
+
+        writeln!(f, "Upgrade failed with {} error(s):", self.errors.len())?;
+
+        let mut groups= BTreeMap::<_, Vec<_>>::new();
+        for error in &self.errors {
+            let ty = match error {
+                UpgradeError::MissingField { ty, .. } => *ty,
+                UpgradeError::NestedError { ty, .. } => *ty,
+            };
+            groups.entry(ty).or_default().push(error);
+        }
+
+        let mut groups = groups.into_iter().peekable();
+        while let Some((ty, errors)) = groups.next() {
+            writeln!(f, "  [{}]", ty)?;
+
+            let mut errors = errors.into_iter().peekable();
+            while let Some(error) = errors.next() {
+                let last = groups.peek().is_none() && errors.peek().is_none();
+
+                match error {
+                    UpgradeError::MissingField { field, .. } => {
+                        write!(f, "    - Missing required field: {}", field)?;
+                    }
+                    UpgradeError::NestedError { field, source, .. } => {
+                        writeln!(f, "    - Failed to upgrade nested field: {}", field)?;
+                        write!(f, "      - {}", source)?;
+                    }
+                };
+
+                if !last {
+                    writeln!(f)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl Error for UpgradeErrorCollection {}
+
+impl FromIterator<UpgradeError> for UpgradeErrorCollection {
+    fn from_iter<I: IntoIterator<Item = UpgradeError>>(iter: I) -> Self {
+        iter.into_iter().collect::<Vec<_>>().into()
+    }
+}
+
+impl Extend<UpgradeError> for UpgradeErrorCollection {
+    delegate! {
+        to self.errors {
+            fn extend<T: IntoIterator<Item = UpgradeError>>(&mut self, iter: T);
+        }
+    }
+}
+
+impl AsRef<[UpgradeError]> for UpgradeErrorCollection {
+    delegate! {
+        to self.errors {
+            fn as_ref(&self) -> &[UpgradeError];
+        }
+    }
+}
+
+impl AsMut<[UpgradeError]> for UpgradeErrorCollection {
+    delegate! {
+        to self.errors {
+            fn as_mut(&mut self) -> &mut [UpgradeError];
         }
     }
 }

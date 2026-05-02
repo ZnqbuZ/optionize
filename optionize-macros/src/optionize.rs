@@ -386,7 +386,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
     if !partial || upgradable {
         let mut upgrade = Vec::with_capacity(fields.len());
 
-        upgrade.push(quote! { let mut errors = ::optionize::__private::alloc::vec::Vec::new(); });
+        upgrade.push(quote! { let mut errors = ::optionize::UpgradeErrorCollection::default(); });
 
         let ty = optionized_ident.to_string();
 
@@ -558,7 +558,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
         output.push(quote! {
             #[allow(non_snake_case)]
             impl #impl_generics ::optionize::Optionized for #optionized_ident #type_generics #where_clause {
-                type UpgradeErrors = ::optionize::__private::alloc::vec::Vec<::optionize::UpgradeError>;
+                type UpgradeErrors = ::optionize::UpgradeErrorCollection;
                 fn upgrade(self) -> ::core::result::Result<#subject, (Self::UpgradeErrors, Self)> {
                     #(#upgrade)*
                 }
