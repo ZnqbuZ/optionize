@@ -18,10 +18,7 @@ pub trait PartialOptionized: Sized {
     fn merge(&mut self, other: Self);
 }
 
-pub trait Optionizable<O: PartialOptionized<Subject = Self>>: Sized
-where
-    (): Sized,
-{
+pub trait Optionizable<O: PartialOptionized<Subject = Self>>: Sized {
     fn load(&mut self, other: O) {
         other.patch(self);
     }
@@ -38,8 +35,8 @@ impl<T, O> Optionizable<O> for T where O: PartialOptionized<Subject = T> {}
     note = "Ensure the struct `{Self}` is not partial, or is annotated with `#[optionize(partial(upgradable))]`"
 )]
 pub trait Optionized: PartialOptionized {
-    type UpgradeError: IntoIterator;
-    fn upgrade(self) -> Result<Self::Subject, (Self::UpgradeError, Self)>;
+    type UpgradeErrors: IntoIterator;
+    fn upgrade(self) -> Result<Self::Subject, (Self::UpgradeErrors, Self)>;
 }
 
 #[derive(Debug)]
@@ -67,21 +64,29 @@ impl Display for FieldName {
 
 #[derive(Debug)]
 pub enum UpgradeError {
-    MissingField(FieldName),
-    NestedError {
+    MissingField {
+        ty: &'static str,
         field: FieldName,
-        source: Box<dyn Error + 'static>,
+    },
+    NestedError {
+        ty: &'static str,
+        field: FieldName,
+        source: Box<dyn Error + Send + Sync + 'static>,
     },
 }
 
 impl Display for UpgradeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MissingField(field) => {
-                write!(f, "Missing required field for upgrade: {}", field)
+            Self::MissingField { ty, field } => {
+                write!(f, "Missing required field in type `{}`:  {}", ty, field)
             }
-            Self::NestedError { field, .. } => {
-                write!(f, "Failed to upgrade nested field: {}", field)
+            Self::NestedError { ty, field, .. } => {
+                write!(
+                    f,
+                    "Failed to upgrade nested field in type `{}`: {}",
+                    ty, field
+                )
             }
         }
     }

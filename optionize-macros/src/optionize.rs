@@ -388,6 +388,8 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
 
         upgrade.push(quote! { let mut errors = ::optionize::__private::alloc::vec::Vec::new(); });
 
+        let ty = optionized_ident.to_string();
+
         for field in &fields {
             let FieldMeta {
                 optionized_field,
@@ -409,8 +411,8 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
                 };
 
                 (
-                    quote! { ::optionize::UpgradeError::MissingField(#field) },
-                    quote! { |e| ::optionize::UpgradeError::NestedError { field: #field, source: ::optionize::__private::alloc::boxed::Box::new(e) as _ } },
+                    quote! { ::optionize::UpgradeError::MissingField { ty: #ty, field: #field} },
+                    quote! { |e| ::optionize::UpgradeError::NestedError { ty: #ty, field: #field, source: ::optionize::__private::alloc::boxed::Box::new(e) as _ } },
                 )
             };
 
@@ -507,7 +509,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
                 let rollback = match (wrap, nest) {
                     (true, true) => quote! {
                         match #local {
-                            ::core::result::Result::Ok(v) => ::core::option::Option::Some(::optionize::Optionizable::<>::downgrade(v)),
+                            ::core::result::Result::Ok(v) => ::core::option::Option::Some(::optionize::Optionizable::downgrade(v)),
                             ::core::result::Result::Err(v) => v,
                         }
                     },
@@ -556,8 +558,8 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
         output.push(quote! {
             #[allow(non_snake_case)]
             impl #impl_generics ::optionize::Optionized for #optionized_ident #type_generics #where_clause {
-                type UpgradeError = ::optionize::__private::alloc::vec::Vec<::optionize::UpgradeError>;
-                fn upgrade(self) -> ::core::result::Result<#subject, (Self::UpgradeError, Self)> {
+                type UpgradeErrors = ::optionize::__private::alloc::vec::Vec<::optionize::UpgradeError>;
+                fn upgrade(self) -> ::core::result::Result<#subject, (Self::UpgradeErrors, Self)> {
                     #(#upgrade)*
                 }
             }
