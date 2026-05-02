@@ -588,16 +588,17 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
         Ident::new(&name, ident.span())
     };
 
-    if let Some(attributes) = struct_args.attributes {
-        optionized.attrs = attributes
+    if let Some(attrs) = struct_args.attributes {
+        optionized.attrs = attrs
             .0
             .into_iter()
             .map(|meta| parse_quote! { #[#meta] })
             .collect();
+    } else {
+        optionized
+            .attrs
+            .retain(|attr| !attr.path().is_ident("optionize"));
     }
-    optionized
-        .attrs
-        .retain(|attr| !attr.path().is_ident("optionize"));
 
     let (fields, named) = match &mut optionized.fields {
         syn::Fields::Named(fields) => (&mut fields.named, true),
@@ -611,33 +612,33 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
         .filter(|f| matches!(f.strategy, FieldStrategy::Optionize { .. }))
         .collect::<Vec<_>>();
 
-    let optionizes = optionized_fields
-        .iter()
-        .map(|field| Optionize { field, named });
-    let patches = optionized_fields.iter().map(|field| Patch { field });
-    let merges = optionized_fields.iter().map(|field| Merge { field });
-
     let mut output = vec![quote! {
         #original
         #optionized
     }];
 
-    let generics = optionized.generics.clone();
+    let generics = optionized.generics;
+    let original = original.ident;
+    let optionized = optionized.ident;
+
     let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
+    let subject = quote! { #original #type_generics };
 
-    let original_ident = &original.ident;
-    let optionized_ident = &optionized.ident;
-
-    let subject = quote! { #original_ident #type_generics };
-
-    let optionize = match &original.fields {
-        syn::Fields::Named(_) => quote! { Self { #(#optionizes)* } },
-        syn::Fields::Unnamed(_) => quote! { Self ( #(#optionizes)* ) },
-        syn::Fields::Unit => quote! { Self },
+    let optionize = {
+        let optionizes = optionized_fields
+            .iter()
+            .map(|field| Optionize { field, named });
+        if named {
+            quote! { Self { #(#optionizes)* } }
+        } else {
+            quote! { Self ( #(#optionizes)* ) }
+        }
     };
+    let patches = optionized_fields.iter().map(|field| Patch { field });
+    let merges = optionized_fields.iter().map(|field| Merge { field });
 
     output.push(quote! {
-        impl #impl_generics ::optionize::PartialOptionized<#subject> for #optionized_ident #type_generics #where_clause {
+        impl #impl_generics ::optionize::PartialOptionized<#subject> for #optionized #type_generics #where_clause {
             fn optionize(subject: #subject) -> Self { #optionize }
             fn patch(self, subject: &mut #subject) { #(#patches)* }
             fn merge(&mut self, other: Self) { #(#merges)* }
@@ -649,8 +650,8 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
 
         let upgrades = optionized_fields.iter().map(|field| Upgrade {
             field,
-            original: original_ident,
-            optionized: optionized_ident,
+            original: &original,
+            optionized: &optionized,
             errors: &errors,
         });
 
@@ -659,10 +660,10 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
                 .iter()
                 .map(|field| UpgradeOk { field, named });
 
-            match &original.fields {
-                syn::Fields::Named(_) => quote! { #original_ident { #(#oks)* } },
-                syn::Fields::Unnamed(_) => quote! { #original_ident ( #(#oks)* ) },
-                syn::Fields::Unit => quote! { #original_ident },
+            if named {
+                quote! { #original { #(#oks)* } }
+            } else {
+                quote! { #original ( #(#oks)* ) }
             }
         };
 
@@ -680,7 +681,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
 
         output.push(quote! {
             #[allow(non_snake_case)]
-            impl #impl_generics ::optionize::Optionized<#subject> for #optionized_ident #type_generics #where_clause {
+            impl #impl_generics ::optionize::Optionized<#subject> for #optionized #type_generics #where_clause {
                 type UpgradeErrors = ::optionize::UpgradeErrorCollection;
                 fn upgrade(self) -> ::core::result::Result<#subject, (Self::UpgradeErrors, Self)> {
                     let mut #errors = ::optionize::UpgradeErrorCollection::default();
