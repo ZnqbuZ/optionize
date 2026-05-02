@@ -1,5 +1,3 @@
-extern crate alloc;
-
 use proc_macro::TokenStream;
 
 mod optionize;
