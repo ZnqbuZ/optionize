@@ -5,6 +5,7 @@ use darling::{FromAttributes, FromMeta};
 use proc_macro2::Span;
 use proc_macro2::{Ident, TokenStream};
 use quote::{format_ident, quote_spanned as qs, ToTokens};
+use std::collections::HashSet;
 use std::default::Default;
 use std::iter::zip;
 use std::mem::take;
@@ -12,8 +13,8 @@ use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::token::{Bracket, Comma, Pound};
 use syn::{
-    parse2, parse_quote_spanned as pqs, parse_str, AttrStyle, Attribute, Data, DeriveInput, Expr, Field, GenericArgument,
-    Index, LitBool, LitStr, Meta, PathArguments, Type,
+    parse2, parse_quote_spanned as pqs, parse_str, AttrStyle, Attribute, Data, DeriveInput, Expr, Field, Fields,
+    GenericArgument, Index, LitBool, LitStr, Meta, PathArguments, Type,
 };
 
 #[derive(Debug, Default)]
@@ -60,6 +61,7 @@ impl FromMeta for MetaList {
 #[darling(default)]
 struct PartialArgs {
     upgradable: bool,
+    marked: bool,
 }
 
 #[derive(Debug, Default, FromAttributes)]
@@ -346,6 +348,8 @@ impl FieldIr {
         errors.finish_with(this)
     }
 }
+
+// region Generators
 
 macro_rules! expand {
     ($target:expr => { $($field:ident $(: $bind:pat)?),* $(,)? }) => {
@@ -675,6 +679,8 @@ impl<'l> ToTokens for UpgradeErr<'l> {
     }
 }
 
+// endregion
+
 enum StructStyle {
     Named,
     Unnamed,
@@ -698,23 +704,28 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
 
     let struct_args = StructArgs::from_attributes(&original.attrs)?;
 
-    let (partial, upgradable) = match &struct_args.partial {
-        Some(Override::Inherit) => (true, false),
-        Some(Override::Explicit(p)) => (true, p.upgradable),
-        None => (false, false),
+    let (partial, upgradable, marked) = match &struct_args.partial {
+        Some(Override::Inherit) => (true, false, false),
+        Some(Override::Explicit(p)) => (true, p.upgradable, p.marked),
+        None => (false, false, false),
     };
 
     let mut optionized = original.clone();
+    let original = &original.ident;
+
+    let (impl_generics, type_generics, where_clause) = optionized.generics.split_for_impl();
+    #[allow(non_snake_case)]
+    let Subject = q! { #original #type_generics };
 
     let (style, fields) = match &mut optionized.data {
         Data::Struct(data) => match &mut data.fields {
-            syn::Fields::Named(fields) => (StructStyle::Named, &mut fields.named),
-            syn::Fields::Unnamed(fields) => (StructStyle::Unnamed, &mut fields.unnamed),
-            syn::Fields::Unit => (StructStyle::Unit, &mut Default::default()),
+            Fields::Named(fields) => (StructStyle::Named, &mut fields.named),
+            Fields::Unnamed(fields) => (StructStyle::Unnamed, &mut fields.unnamed),
+            Fields::Unit => (StructStyle::Unit, &mut Default::default()),
         },
         _ => {
             return Err(
-                Error::custom("Optionize can only be derived for structs").with_span(&original)
+                Error::custom("Optionize can only be derived for structs").with_span(&_span)
             );
         }
     };
@@ -764,26 +775,59 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
         .filter(|f| matches!(f.strategy, FieldStrategy::Optionize { .. }))
         .collect::<Vec<_>>();
 
+    let mut marker = None;
+    if marked {
+        match style {
+            StructStyle::Named => {
+                let names = fields
+                    .iter()
+                    .filter_map(|f| f.ident.as_ref())
+                    .map(|i| i.to_string())
+                    .collect::<HashSet<_>>();
+                let mut ident = "_marker".to_owned();
+                while names.contains(&ident) {
+                    ident.insert(0, '_');
+                }
+                let ident = format_ident!("{}", ident);
+                fields.push(pq! {
+                    #[doc(hidden)]
+                    #ident: ::core::marker::PhantomData<#Subject>
+                });
+                marker = Some(ident);
+            }
+            StructStyle::Unnamed => {
+                let marker = pq! {
+                    #[doc(hidden)]
+                    ::core::marker::PhantomData<#Subject>
+                };
+                fields.push(marker);
+            }
+            _ => {}
+        }
+    }
+
     let mut output = vec![q! { #optionized }];
-
-    let generics = optionized.generics;
-    let original = &original.ident;
     let optionized = &optionized.ident;
-
-    let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
-    #[allow(non_snake_case)]
-    let Subject = q! { #original #type_generics };
 
     {
         let subject = &format_ident!("subject");
 
         let optionize = {
-            let optionizes = optionized_fields.iter().map(|field| Optionize {
-                field,
-                subject,
-                named,
+            let optionizes = optionized_fields
+                .iter()
+                .map(|field| Optionize {
+                    field,
+                    subject,
+                    named,
+                });
+            let marker = marked.then(|| {
+                if let Some(marker) = marker {
+                    q! { #marker: ::core::marker::PhantomData, }
+                } else {
+                    q! { ::core::marker::PhantomData }
+                }
             });
-            construct!(style, [Self] #(#optionizes)* )
+            construct!(style, [Self] #(#optionizes)* #marker )
         };
         let patches = optionized_fields
             .iter()
