@@ -10,10 +10,10 @@ use std::iter::zip;
 use std::mem::take;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
-use syn::token::Comma;
+use syn::token::{Bracket, Comma, Pound};
 use syn::{
-    parse2, parse_quote_spanned as pqs, parse_str, Attribute, Data, DeriveInput, Expr, Field, GenericArgument, Index,
-    LitBool, LitStr, Meta, PathArguments, Type,
+    parse2, parse_quote_spanned as pqs, parse_str, AttrStyle, Attribute, Data, DeriveInput, Expr, Field, GenericArgument,
+    Index, LitBool, LitStr, Meta, PathArguments, Type,
 };
 
 #[derive(Debug, Default)]
@@ -25,7 +25,15 @@ impl MetaList {
             take(lists)
                 .into_iter()
                 .flat_map(|ml| ml.0)
-                .map(|meta| pqs! { meta.span() => #[#meta] })
+                .map(|meta| {
+                    let span = meta.span();
+                    Attribute {
+                        pound_token: Pound(span),
+                        style: AttrStyle::Outer,
+                        bracket_token: Bracket(span),
+                        meta,
+                    }
+                })
                 .collect()
         })
     }
