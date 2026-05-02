@@ -283,13 +283,12 @@ impl FieldIr {
                     continue;
                 };
                 let span = name.span();
-                let name = name.value().replace("{}", &ident.to_string());
-                let Ok(mut ident) = parse_str::<Ident>(&name) else {
-                    errors.push(
-                        Error::custom(format!("`{}` is not a valid identifier", name))
-                            .with_span(&span),
-                    );
-                    continue;
+                let mut ident = match format(&name.value(), ident) {
+                    Ok(ident) => ident,
+                    Err(e) => {
+                        errors.push(e);
+                        continue;
+                    }
                 };
                 ident.set_span(span);
                 field.ident = Some(ident.clone());
@@ -687,6 +686,14 @@ enum StructStyle {
     Unit,
 }
 
+fn format(pattern: &str, ident: &Ident) -> Result<Ident> {
+    let old = ident.to_string();
+    let old = old.strip_prefix("r#").unwrap_or(&old);
+    let new = format!("r#{}", pattern.replace("{}", old));
+    parse_str::<Ident>(&new)
+        .map_err(|_| Error::custom(format!("`{}` is not a valid identifier", new)).with_span(ident))
+}
+
 pub fn derive(input: TokenStream) -> Result<TokenStream> {
     let original = parse2::<DeriveInput>(input)?;
     let _span = original.span();
@@ -751,12 +758,10 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
 
     optionized.ident = {
         let ident = optionized.ident;
-        let (span, name) = match struct_args.name {
-            Some(name) => (name.span(), name.value().replace("{}", &ident.to_string())),
-            None => (ident.span(), format!("{}Optional", ident)),
+        let (span, mut ident) = match struct_args.name {
+            Some(name) => (name.span(), format(&name.value(), &ident)?),
+            None => (ident.span(), format("{}Optional", &ident)?),
         };
-        let mut ident = parse_str::<Ident>(&name)
-            .map_err(|_| syn::Error::new(span, format!("`{}` is not a valid identifier", name)))?;
         ident.set_span(span);
         ident
     };
@@ -809,24 +814,24 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
     let mut output = vec![q! { #optionized }];
     let optionized = &optionized.ident;
 
+    let marker = marked.then(|| {
+        if let Some(marker) = marker {
+            q! { #marker: ::core::marker::PhantomData, }
+        } else {
+            q! { ::core::marker::PhantomData }
+        }
+    });
+
     {
         let subject = &format_ident!("subject");
 
         let optionize = {
-            let optionizes = optionized_fields
-                .iter()
-                .map(|field| Optionize {
-                    field,
-                    subject,
-                    named,
-                });
-            let marker = marked.then(|| {
-                if let Some(marker) = marker {
-                    q! { #marker: ::core::marker::PhantomData, }
-                } else {
-                    q! { ::core::marker::PhantomData }
-                }
+            let optionizes = optionized_fields.iter().map(|field| Optionize {
+                field,
+                subject,
+                named,
             });
+
             construct!(style, [Self] #(#optionizes)* #marker )
         };
         let patches = optionized_fields
@@ -869,7 +874,7 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
                 .iter()
                 .map(|field| UpgradeErr { field, named });
 
-            construct!(style, [Self] #(#errs)*)
+            construct!(style, [Self] #(#errs)* #marker)
         };
 
         output.push(q! {
