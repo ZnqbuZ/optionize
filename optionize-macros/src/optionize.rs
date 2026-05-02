@@ -1,18 +1,19 @@
-use proc_macro2::Span;
 use darling::ast::NestedMeta;
 use darling::util::{Override, SpannedValue};
 use darling::{Error, Result};
 use darling::{FromAttributes, FromMeta};
+use proc_macro2::Span;
 use proc_macro2::{Ident, TokenStream};
-use quote::{format_ident, quote, ToTokens};
+use quote::{format_ident, quote_spanned as qs, ToTokens};
+use std::default::Default;
 use std::iter::zip;
 use std::mem::take;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::token::Comma;
 use syn::{
-    parse2, parse_quote, parse_quote_spanned, parse_str, Expr, Field, GenericArgument, Index, ItemStruct, LitBool,
-    LitStr, Meta, PathArguments, Type,
+    parse2, parse_quote_spanned as pqs, parse_str, Expr, Field, GenericArgument, Index, ItemStruct, LitBool, LitStr,
+    Meta, PathArguments, Type,
 };
 
 #[derive(Debug, Default)]
@@ -143,12 +144,33 @@ impl Default for FieldIr {
     fn default() -> Self {
         Self {
             span: Span::call_site(),
-            original: quote! {},
-            optionized: quote! {},
-            strategy: FieldStrategy::default(),
+            original: Default::default(),
+            optionized: Default::default(),
+            strategy: Default::default(),
             local: format_ident!("_"),
         }
     }
+}
+
+macro_rules! span {
+    ($span:expr) => {
+        span!(@impl $span, $)
+    };
+
+    (@impl $span:expr, $_:tt) => {
+        #[allow(unused_macros)]
+        macro_rules! q {
+            ($_($_ tt:tt)*) => {
+                qs! { $span => $_($_ tt)* }
+            };
+        }
+        #[allow(unused_macros)]
+        macro_rules! pq {
+            ($_($_ tt:tt)*) => {
+                pqs! { $span => $_($_ tt)* }
+            };
+        }
+    };
 }
 
 impl FieldIr {
@@ -163,17 +185,20 @@ impl FieldIr {
         let mut skipped = 0;
 
         for (i, (mut field, args)) in zip(take(fields), args).enumerate() {
+            let _span = field.span();
+            span!(_span);
+
             let ident = &field.ident;
             let ty = &field.ty;
 
             let original_field = match ident {
-                Some(ident) => quote! { #ident },
+                Some(ident) => q! { #ident },
                 None => {
                     let index = Index {
                         index: i as u32,
-                        span: field.ty.span(),
+                        span: _span,
                     };
-                    quote! { #index }
+                    q! { #index }
                 }
             };
 
@@ -191,17 +216,17 @@ impl FieldIr {
                         Error::custom(
                             "`skip` attribute is only allowed when `partial` is specified",
                         )
-                        .with_span(&field),
+                            .with_span(&field),
                     );
                     continue;
                 }
 
                 let field = FieldIr {
-                    span: field.span(),
+                    span: _span,
                     original: original_field,
                     strategy: FieldStrategy::Skip {
                         upgrade: upgrade.unwrap_or_else(|| {
-                            parse_quote! { ::core::default::Default::default() }
+                            pq! { ::core::default::Default::default() }
                         }),
                     },
                     ..Default::default()
@@ -234,13 +259,13 @@ impl FieldIr {
             }
 
             let optionized_field = match &field.ident {
-                Some(ident) => quote! { #ident },
+                Some(ident) => q! { #ident },
                 None => {
                     let index = Index {
                         index: (i - skipped) as u32,
-                        span: ty.span(),
+                        span: _span,
                     };
-                    quote! { #index }
+                    q! { #index }
                 }
             };
 
@@ -256,19 +281,20 @@ impl FieldIr {
                 .map(LitBool::value)
                 .unwrap_or_else(|| !is_option(ty));
             field.ty = if wrap {
-                parse_quote_spanned! { ty.span() => Option<#ty> }
+                pqs! { ty.span() => Option<#ty> }
             } else {
                 ty.clone()
             };
 
-            let local = if let Some(ident) = field.ident.clone() {
-                format_ident!("v_{}", ident, span = ident.span())
+            let mut local = if let Some(ident) = field.ident.clone() {
+                format_ident!("v_{}", ident)
             } else {
-                format_ident!("v_{}", i, span = field.ty.span())
+                format_ident!("v_{}", i)
             };
+            local.set_span(_span);
 
             this.push(FieldIr {
-                span: field.span(),
+                span: _span,
                 original: original_field.clone(),
                 optionized: optionized_field.clone(),
                 strategy: FieldStrategy::Optionize { wrap, nest },
@@ -284,10 +310,6 @@ impl FieldIr {
 
 macro_rules! expand {
     ($target:expr => { $($field:ident $(: $bind:pat)?),* $(,)? }) => {
-        expand!(@impl $target, { $($field $(: $bind)?),* }, $)
-    };
-
-    (@impl $target:expr, { $($field:ident $(: $bind:pat)?),* }, $_:tt) => {
         let FieldIr {
             span,
             $(
@@ -296,11 +318,7 @@ macro_rules! expand {
             ..
         } = $target;
 
-        macro_rules! q {
-            ($_($_ tt:tt)*) => {
-                ::quote::quote_spanned! { *span => $_($_ tt)* }
-            };
-        }
+        span!(*span);
     };
 }
 
@@ -548,12 +566,7 @@ impl<'l> ToTokens for UpgradeOk<'l> {
                 }
             }
             FieldStrategy::Optionize { .. } => {
-                let local = q! {
-                    match #local {
-                        ::core::result::Result::Ok(v) => v,
-                        _ => ::core::unreachable!()
-                    }
-                };
+                let local = q! { unsafe { ::core::result::Result::unwrap_unchecked(#local) } };
 
                 if self.named {
                     q! { #original: #local, }
@@ -623,6 +636,8 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
     };
 
     let mut original = parse2::<ItemStruct>(input)?;
+    let _span = original.span();
+    span!(_span);
 
     let field_args = {
         let mut field_args = Vec::with_capacity(original.fields.len());
@@ -660,7 +675,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
         optionized.attrs = attrs
             .0
             .into_iter()
-            .map(|meta| parse_quote! { #[#meta] })
+            .map(|meta| pqs! { meta.span() => #[#meta] })
             .collect();
     } else {
         optionized
@@ -680,7 +695,7 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
         .filter(|f| matches!(f.strategy, FieldStrategy::Optionize { .. }))
         .collect::<Vec<_>>();
 
-    let mut output = vec![quote! {
+    let mut output = vec![q! {
         #original
         #optionized
     }];
@@ -690,22 +705,22 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
     let optionized = optionized.ident;
 
     let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
-    let subject = quote! { #original #type_generics };
+    let subject = q! { #original #type_generics };
 
     let optionize = {
         let optionizes = optionized_fields
             .iter()
             .map(|field| Optionize { field, named });
         if named {
-            quote! { Self { #(#optionizes)* } }
+            q! { Self { #(#optionizes)* } }
         } else {
-            quote! { Self ( #(#optionizes)* ) }
+            q! { Self ( #(#optionizes)* ) }
         }
     };
     let patches = optionized_fields.iter().map(|field| Patch { field });
     let merges = optionized_fields.iter().map(|field| Merge { field });
 
-    output.push(quote! {
+    output.push(q! {
         impl #impl_generics ::optionize::PartialOptionized<#subject> for #optionized #type_generics #where_clause {
             fn optionize(subject: #subject) -> Self { #optionize }
             fn patch(self, subject: &mut #subject) { #(#patches)* }
@@ -729,9 +744,9 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
                 .map(|field| UpgradeOk { field, named });
 
             if named {
-                quote! { #original { #(#oks)* } }
+                q! { #original { #(#oks)* } }
             } else {
-                quote! { #original ( #(#oks)* ) }
+                q! { #original ( #(#oks)* ) }
             }
         };
 
@@ -741,13 +756,13 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
                 .map(|field| UpgradeErr { field, named });
 
             if named {
-                quote! { Self { #(#errs)* } }
+                q! { Self { #(#errs)* } }
             } else {
-                quote! { Self ( #(#errs)* ) }
+                q! { Self ( #(#errs)* ) }
             }
         };
 
-        output.push(quote! {
+        output.push(q! {
             #[allow(non_snake_case)]
             impl #impl_generics ::optionize::Optionized<#subject> for #optionized #type_generics #where_clause {
                 type UpgradeErrors = ::optionize::UpgradeErrorCollection;
@@ -764,5 +779,5 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
         });
     }
 
-    Ok(quote! { #(#output)* })
+    Ok(q! { #(#output)* })
 }
