@@ -73,15 +73,17 @@ impl FieldArgs {
             let skip = skip.span();
 
             if let Some(wrap) = &self.wrap {
+                let wrap = wrap.span;
                 errors.push(
                     Error::custom("`wrap` cannot be used with `skip`")
-                        .with_span(&wrap.span.join(skip).unwrap()),
+                        .with_span(&skip.join(wrap).unwrap_or(wrap)),
                 );
             }
             if let Some(nest) = &self.nest {
+                let nest = nest.span();
                 errors.push(
                     Error::custom("`nest` cannot be used with `skip`")
-                        .with_span(&nest.span().join(skip).unwrap()),
+                        .with_span(&skip.join(nest).unwrap_or(nest)),
                 );
             }
         }
