@@ -166,15 +166,12 @@ impl FieldArgs {
 
 fn format(pattern: &LitStr, ident: &Ident) -> Result<Ident> {
     let span = pattern.span();
-    let ident = format!(
-        "r#{}",
-        pattern.value().replace("{}", &ident.unraw().to_string())
-    );
-    let mut new = parse_str::<Ident>(&ident).map_err(|_| {
+    let ident = pattern.value().replace("{}", &ident.unraw().to_string());
+    let mut ident = parse_str::<Ident>(&ident).map_err(|_| {
         Error::custom(format!("`{}` is not a valid identifier", ident)).with_span(&span)
     })?;
-    new.set_span(span);
-    Ok(new)
+    ident.set_span(span);
+    Ok(ident)
 }
 
 fn is_optionize(attr: &Attribute) -> bool {
