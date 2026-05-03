@@ -976,7 +976,7 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
                 qs! { ident.span() => #ident: ::core::marker::PhantomData, },
                 pqs! { span =>
                     #(#attrs)*
-                    pub #ident: ::core::marker::PhantomData<#Subject>
+                    pub #ident: ::core::marker::PhantomData<fn() -> *const #Subject>
                 },
             )
         } else {
@@ -984,7 +984,7 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
                 qs! { span => ::core::marker::PhantomData, },
                 pqs! { span =>
                     #(#attrs)*
-                    pub ::core::marker::PhantomData<#Subject>
+                    pub ::core::marker::PhantomData<fn() -> *const #Subject>
                 },
             )
         };
