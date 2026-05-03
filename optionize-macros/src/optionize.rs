@@ -4,6 +4,7 @@ use darling::{Error, Result};
 use darling::{FromAttributes, FromMeta};
 use proc_macro2::Span;
 use proc_macro2::{Ident, TokenStream};
+use proc_macro_crate::{crate_name, FoundCrate};
 use quote::{format_ident, quote_spanned as qs, ToTokens};
 use std::collections::HashSet;
 use std::default::Default;
@@ -14,8 +15,8 @@ use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::token::{Bracket, Comma, Pound};
 use syn::{
-    parse2, parse_quote, parse_quote_spanned as pqs, parse_str, AttrStyle, Attribute, Data, DeriveInput, Expr, Field, Fields,
-    Index, LitStr, Meta, Type, WherePredicate,
+    parse2, parse_quote, parse_quote_spanned as pqs, parse_str, AttrStyle, Attribute, Data, DeriveInput, Expr, Field, Fields, Index,
+    LitStr, Meta, Path, Type, WherePredicate,
 };
 
 // region args
@@ -70,6 +71,8 @@ struct PartialArgs {
 #[derive(Debug, Default, FromAttributes)]
 #[darling(default, attributes(optionize), and_then = "Self::finalize")]
 struct StructArgs {
+    #[darling(rename = "crate")]
+    krate: Option<Path>,
     name: Option<LitStr>,
     #[darling(rename = "attrs", multiple)]
     _attributes: Vec<MetaList>,
@@ -157,6 +160,21 @@ fn is_optionize(attr: &Attribute) -> bool {
         .is_some_and(|s| s.ident == "optionize")
 }
 
+fn get_crate(hint: Option<&Path>) -> Path {
+    if let Some(path) = hint {
+        return path.clone();
+    }
+
+    match crate_name("optionize") {
+        Ok(FoundCrate::Itself) => parse_quote! { crate },
+        Ok(FoundCrate::Name(name)) => {
+            let ident = format_ident!("{}", name);
+            parse_quote! { ::#ident }
+        }
+        Err(_) => parse_quote! { ::optionize },
+    }
+}
+
 macro_rules! span {
     ($span:expr) => {
         span!(@impl $span, $)
@@ -196,6 +214,7 @@ impl Default for FieldStrategy {
 }
 
 struct FieldIr {
+    krate: Path,
     ty: Type,
     span: Span,
     original: TokenStream,
@@ -207,6 +226,7 @@ struct FieldIr {
 impl Default for FieldIr {
     fn default() -> Self {
         Self {
+            krate: parse_quote! { crate },
             ty: parse_quote!(()),
             span: Span::call_site(),
             original: Default::default(),
@@ -218,7 +238,11 @@ impl Default for FieldIr {
 }
 
 impl FieldIr {
-    fn extract(fields: &mut Punctuated<Field, Comma>, partial: bool) -> Result<Vec<Self>> {
+    fn extract(
+        fields: &mut Punctuated<Field, Comma>,
+        krate: Path,
+        partial: bool,
+    ) -> Result<Vec<Self>> {
         let mut errors = Error::accumulator();
 
         let args = fields
@@ -264,6 +288,7 @@ impl FieldIr {
                 let original = qs! { span => #original };
 
                 FieldIr {
+                    krate: krate.clone(),
                     ty: ty.clone(),
                     span: _span,
                     original,
@@ -382,6 +407,7 @@ impl FieldIr {
     fn partial_optionized_where(&self) -> Vec<WherePredicate> {
         expand! {
             self => {
+                krate,
                 ty,
                 strategy,
             }
@@ -392,7 +418,7 @@ impl FieldIr {
         } = &strategy
         {
             vec![pq! {
-                #nest: ::optionize::PartialOptionized::<#ty>
+                #nest: #krate::PartialOptionized::<#ty>
             }]
         } else {
             Default::default()
@@ -402,6 +428,7 @@ impl FieldIr {
     fn optionized_where(&self) -> Vec<WherePredicate> {
         expand! {
             self => {
+                krate,
                 ty,
                 strategy,
             }
@@ -413,10 +440,10 @@ impl FieldIr {
         {
             vec![
                 pq! {
-                    #nest: ::optionize::Optionized::<#ty>
+                    #nest: #krate::Optionized::<#ty>
                 },
                 pq! {
-                    <#nest as ::optionize::Optionized::<#ty>>::UpgradeErrors: 'static
+                    <#nest as #krate::Optionized::<#ty>>::UpgradeErrors: 'static
                 },
             ]
         } else {
@@ -435,6 +462,7 @@ impl<'l> ToTokens for Optionize<'l> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         expand! {
             self.field => {
+                krate,
                 ty,
                 original,
                 optionized,
@@ -450,7 +478,7 @@ impl<'l> ToTokens for Optionize<'l> {
         let nest = nest.is_some();
 
         let mut optionize = if nest {
-            q! { ::optionize::PartialOptionized::<#ty>::optionize(#subject.#original) }
+            q! { #krate::PartialOptionized::<#ty>::optionize(#subject.#original) }
         } else {
             q! { #subject.#original }
         };
@@ -478,6 +506,7 @@ impl<'l> ToTokens for Patch<'l> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         expand! {
             self.field => {
+                krate,
                 ty,
                 original,
                 optionized,
@@ -498,7 +527,7 @@ impl<'l> ToTokens for Patch<'l> {
             q! { self.#optionized }
         };
         let mut patch = if nest {
-            q! { ::optionize::PartialOptionized::<#ty>::patch(#patch, &mut #subject.#original); }
+            q! { #krate::PartialOptionized::<#ty>::patch(#patch, &mut #subject.#original); }
         } else {
             q! { #subject.#original = #patch; }
         };
@@ -523,6 +552,7 @@ impl<'l> ToTokens for Merge<'l> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         expand! {
             self.field => {
+                krate,
                 ty,
                 optionized,
                 strategy,
@@ -539,7 +569,7 @@ impl<'l> ToTokens for Merge<'l> {
         let merge = match (wrap, nest) {
             (true, true) => q! {
                 match (&mut self.#optionized, #other.#optionized) {
-                    (Some(this), Some(other)) => ::optionize::PartialOptionized::<#ty>::merge(this, other),
+                    (Some(this), Some(other)) => #krate::PartialOptionized::<#ty>::merge(this, other),
                     (None, Some(other)) => self.#optionized = Some(other),
                     _ => {}
                 }
@@ -550,7 +580,7 @@ impl<'l> ToTokens for Merge<'l> {
                 }
             },
             (false, true) => q! {
-                ::optionize::PartialOptionized::<#ty>::merge(&mut self.#optionized, #other.#optionized);
+                #krate::PartialOptionized::<#ty>::merge(&mut self.#optionized, #other.#optionized);
             },
             (false, false) => q! {
                 self.#optionized = #other.#optionized;
@@ -573,6 +603,7 @@ impl<'l> ToTokens for Upgrade<'l> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         expand! {
             self.field => {
+                krate,
                 ty,
                 original,
                 optionized,
@@ -597,7 +628,7 @@ impl<'l> ToTokens for Upgrade<'l> {
                 let optionized_str = self.optionized.to_string();
 
                 q! {
-                    ::optionize::TypeInfo {
+                    #krate::TypeInfo {
                         original: #original_str,
                         optionized: #optionized_str,
                     }
@@ -605,23 +636,23 @@ impl<'l> ToTokens for Upgrade<'l> {
             };
 
             let field = if renamed {
-                q! { ::optionize::FieldInfo::Identical ( #original_str ) }
+                q! { #krate::FieldInfo::Identical ( #original_str ) }
             } else {
-                q! { ::optionize::FieldInfo::Renamed { original: #original_str, optionized: #optionized_str } }
+                q! { #krate::FieldInfo::Renamed { original: #original_str, optionized: #optionized_str } }
             };
 
             (
                 q! {
-                    ::optionize::UpgradeError::MissingField {
+                    #krate::UpgradeError::MissingField {
                         ty: #ty,
                         field: #field
                     }
                 },
                 q! {
-                    |e| ::optionize::UpgradeError::NestedError {
+                    |e| #krate::UpgradeError::NestedError {
                         ty: #ty,
                         field: #field,
-                        source: ::optionize::__private::alloc::boxed::Box::new(e) as _
+                        source: #krate::__private::alloc::boxed::Box::new(e) as _
                     }
                 },
             )
@@ -639,7 +670,7 @@ impl<'l> ToTokens for Upgrade<'l> {
                 q!(v)
             };
             q! {
-                ::optionize::Optionized::<#ty>::upgrade(#local).map_err(|(e, v)| {
+                #krate::Optionized::<#ty>::upgrade(#local).map_err(|(e, v)| {
                     #failed = true;
                     #errors.extend(::core::iter::IntoIterator::into_iter(e).map(#nest_map_err));
                     #err
@@ -729,6 +760,7 @@ impl<'l> ToTokens for UpgradeErr<'l> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         expand! {
             self.field => {
+                krate,
                 ty,
                 optionized,
                 strategy,
@@ -743,7 +775,7 @@ impl<'l> ToTokens for UpgradeErr<'l> {
 
         let mut ok = q! { v };
         if nest {
-            ok = q! { ::optionize::PartialOptionized::<#ty>::optionize(#ok) };
+            ok = q! { #krate::PartialOptionized::<#ty>::optionize(#ok) };
         }
         if *wrap {
             ok = q! { ::core::option::Option::Some(#ok) };
@@ -790,9 +822,10 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
 
     let args = StructArgs::from_attributes(&original.attrs)?;
 
+    let krate = get_crate(args.krate.as_ref());
+
     let (partial, upgradable, marked) = args
         .partial
-        .as_ref()
         .map(|partial| {
             let (upgradable, marked) = match partial.as_ref() {
                 Override::Explicit(p) => (
@@ -833,7 +866,7 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
     };
     let named = matches!(style, StructStyle::Named);
 
-    let original_fields = FieldIr::extract(fields, partial.is_some())?;
+    let original_fields = FieldIr::extract(fields, krate.clone(), partial.is_some())?;
     let optionized_fields = original_fields
         .iter()
         .filter(|f| matches!(f.strategy, FieldStrategy::Optionize { .. }))
@@ -913,7 +946,7 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
         let merges = optionized_fields.iter().map(|field| Merge { field, other });
 
         output.push(q! {
-            impl #impl_generics ::optionize::PartialOptionized<#Subject> for #optionized #type_generics #where_clause {
+            impl #impl_generics #krate::PartialOptionized<#Subject> for #optionized #type_generics #where_clause {
                 fn optionize(#subject: #Subject) -> Self { #optionize }
                 fn patch(self, #subject: &mut #Subject) { #(#patches)* }
                 fn merge(&mut self, #other: Self) { #(#merges)* }
@@ -966,11 +999,11 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
 
         output.push(qs! { span =>
             #[allow(non_snake_case)]
-            impl #impl_generics ::optionize::Optionized<#Subject> for #optionized #type_generics #where_clause {
-                type UpgradeErrors = ::optionize::UpgradeErrorCollection;
+            impl #impl_generics #krate::Optionized<#Subject> for #optionized #type_generics #where_clause {
+                type UpgradeErrors = #krate::UpgradeErrorCollection;
                 fn upgrade(self) -> ::core::result::Result<#Subject, (Self::UpgradeErrors, Self)> {
                     let mut #failed = false;
-                    let mut #errors = ::optionize::UpgradeErrorCollection::default();
+                    let mut #errors = #krate::UpgradeErrorCollection::default();
                     #(#skips)*
                     #(#upgrades)*
                     if !#failed {
@@ -983,20 +1016,28 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
         });
     }
 
+    println!("{}", q! { #(#output)* });
+
     Ok(q! { #(#output)* })
 }
 
 #[derive(FromMeta)]
-struct OptionizedArgs {}
+struct OptionizedArgs {
+    #[darling(rename = "crate")]
+    krate: Option<Path>,
+}
 
 pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
-    let args = NestedMeta::parse_meta_list(args)?;
-    let _ = OptionizedArgs::from_list(&args)?;
+    let args = OptionizedArgs::from_list(&NestedMeta::parse_meta_list(args)?)?;
+    let krate = get_crate(args.krate.as_ref());
 
-    let input = qs! { input.span() =>
-        #[derive(::optionize::__private::Optionize)]
+    let output = qs! { input.span() =>
+        #[derive(#krate::__private::Optionize)]
+        #[optionize(crate = #krate)]
         #input
     };
 
-    Ok(input)
+    println!("{}", output);
+
+    Ok(output)
 }
