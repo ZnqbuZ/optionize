@@ -112,6 +112,18 @@ struct PartialArgs {
 #[darling(default)]
 struct Crate(Path);
 
+impl Crate {
+    fn infer() -> Self {
+        match crate_name("optionize") {
+            Ok(FoundCrate::Name(name)) => {
+                let name = format_ident!("{}", name);
+                Self(parse_quote! { ::#name })
+            },
+            _ => Default::default(),
+        }
+    }
+}
+
 impl Default for Crate {
     fn default() -> Self {
         Self(parse_quote! { ::optionize })
@@ -121,13 +133,6 @@ impl Default for Crate {
 impl ToTokens for Crate {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         self.0.to_tokens(tokens);
-    }
-}
-
-impl From<String> for Crate {
-    fn from(value: String) -> Self {
-        let krate = format_ident!("{}", value);
-        Self(parse_quote! { ::#krate })
     }
 }
 
@@ -1110,10 +1115,7 @@ struct OptionizedArgs {
 pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
     let args = OptionizedArgs::from_list(&NestedMeta::parse_meta_list(args)?)?;
 
-    let krate = args.krate.unwrap_or_else(|| match crate_name("optionize") {
-        Ok(FoundCrate::Name(name)) => name.into(),
-        _ => Default::default(),
-    });
+    let krate = args.krate.unwrap_or_else(Crate::infer);
 
     let output = qs! { input.span() =>
         #[derive(#krate::__private::Optionize)]
