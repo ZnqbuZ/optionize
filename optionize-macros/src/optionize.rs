@@ -1028,6 +1028,7 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
         let merges = optionized_fields.iter().map(|field| Merge { field, other });
 
         output.push(q! {
+            #[automatically_derived]
             impl #impl_generics #krate::PartialOptionized<#Subject> for #optionized #type_generics #where_clause {
                 #[inline]
                 fn optionize(#subject: #Subject) -> Self { #optionize }
@@ -1084,6 +1085,7 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
 
         output.push(qs! { span =>
             #[allow(non_snake_case)]
+            #[automatically_derived]
             impl #impl_generics #krate::Optionized<#Subject> for #optionized #type_generics #where_clause {
                 type UpgradeErrors = #krate::UpgradeErrorCollection;
                 #[inline]
