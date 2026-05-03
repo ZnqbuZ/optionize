@@ -1029,8 +1029,11 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
 
         output.push(q! {
             impl #impl_generics #krate::PartialOptionized<#Subject> for #optionized #type_generics #where_clause {
+                #[inline]
                 fn optionize(#subject: #Subject) -> Self { #optionize }
+                #[inline]
                 fn patch(self, #subject: &mut #Subject) { #(#patches)* }
+                #[inline]
                 fn merge(&mut self, #other: Self) { #(#merges)* }
             }
         });
@@ -1081,6 +1084,7 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
 
         output.push(qs! { span =>
             #[allow(non_snake_case)]
+            #[inline]
             impl #impl_generics #krate::Optionized<#Subject> for #optionized #type_generics #where_clause {
                 type UpgradeErrors = #krate::UpgradeErrorCollection;
                 fn upgrade(self) -> ::core::result::Result<#Subject, (Self::UpgradeErrors, Self)> {
