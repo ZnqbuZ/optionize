@@ -11,10 +11,11 @@ use std::mem::take;
 use syn::ext::IdentExt;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
-use syn::token::{Bracket, Comma, Paren, Pound};
+use syn::token::{Brace, Bracket, Comma, Paren, Pound};
 use syn::{
-    parse2, parse_quote, parse_quote_spanned as pqs, parse_str, AttrStyle, Attribute, Data, DeriveInput, Expr, Field,
-    Fields, FieldsUnnamed, Index, LitStr, Meta, Path, Type, WherePredicate,
+    parse2, parse_quote, parse_quote_spanned as pqs, parse_str, AttrStyle, Attribute, Data, DeriveInput, Expr,
+    Field, Fields, FieldsNamed, FieldsUnnamed, Index, LitStr, Meta, Path,
+    Type, WherePredicate,
 };
 
 // region args
@@ -93,9 +94,17 @@ struct GeneralArgs {
 
 #[derive(Debug, Default, FromMeta)]
 #[darling(default)]
+struct MarkedArgs {
+    name: Option<Ident>,
+    #[darling(flatten)]
+    attrs: AttributeArgs,
+}
+
+#[derive(Debug, Default, FromMeta)]
+#[darling(default)]
 struct PartialArgs {
     upgradable: SpannedValue<bool>,
-    marked: SpannedValue<bool>,
+    marked: Option<SpannedValue<Override<MarkedArgs>>>,
 }
 
 #[derive(Debug, Default, FromAttributes)]
@@ -125,7 +134,7 @@ struct FieldArgs {
 }
 
 impl FieldArgs {
-    fn finalize(mut self) -> Result<Self> {
+    fn finalize(self) -> Result<Self> {
         let mut errors = Error::accumulator();
 
         if let Some(skip) = &self.skip {
@@ -838,14 +847,12 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
     let (partial, upgradable, marked) = args
         .partial
         .map(|partial| {
-            let (upgradable, marked) = match partial.as_ref() {
-                Override::Explicit(p) => (
-                    p.upgradable.then(|| p.upgradable.span()),
-                    p.marked.then(|| p.marked.span()),
-                ),
+            let span = partial.span();
+            let (upgradable, marked) = match partial.into_inner() {
+                Override::Explicit(p) => (p.upgradable.then(|| p.upgradable.span()), p.marked),
                 _ => Default::default(),
             };
-            (Some(partial.span()), upgradable, marked)
+            (Some(span), upgradable, marked)
         })
         .unwrap_or_default();
 
@@ -872,21 +879,39 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
         }
     };
 
-    let (style, fields) = match &mut data.fields {
-        Fields::Named(fields) => (StructStyle::Named, &mut fields.named),
-        Fields::Unnamed(fields) => (StructStyle::Unnamed, &mut fields.unnamed),
-        fields @ Fields::Unit => {
-            if let Some(span) = marked {
-                *fields = Fields::Unnamed(FieldsUnnamed {
-                    paren_token: Paren(span),
-                    unnamed: Default::default(),
-                });
-            }
-            let Fields::Unnamed(fields) = fields else {
-                unreachable!()
-            };
-            (StructStyle::Unit, &mut fields.unnamed)
-        },
+    let original_style = match &data.fields {
+        Fields::Named(_) => StructStyle::Named,
+        Fields::Unnamed(_) => StructStyle::Unnamed,
+        Fields::Unit => StructStyle::Unit,
+    };
+    let optionized_style = if matches!(original_style, StructStyle::Unit)
+        && let Some(marked) = &marked
+    {
+        let span = marked.span();
+        let punctuated = Default::default();
+        if let Override::Explicit(marked) = marked.as_ref()
+            && marked.name.is_some()
+        {
+            data.fields = Fields::Named(FieldsNamed {
+                brace_token: Brace(span),
+                named: punctuated,
+            });
+            StructStyle::Named
+        } else {
+            data.fields = Fields::Unnamed(FieldsUnnamed {
+                paren_token: Paren(span),
+                unnamed: punctuated,
+            });
+            StructStyle::Unnamed
+        }
+    } else {
+        original_style
+    };
+
+    let fields = match &mut data.fields {
+        Fields::Named(fields) => &mut fields.named,
+        Fields::Unnamed(fields) => &mut fields.unnamed,
+        Fields::Unit => &mut Default::default(),
     };
 
     let original_fields = FieldIr::extract(fields, krate.clone(), partial.is_some())?;
@@ -895,10 +920,15 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
         .filter(|f| matches!(f.strategy, FieldStrategy::Optionize { .. }))
         .collect::<Vec<_>>();
 
-    let mut marker = None;
-    if let Some(span) = marked {
-        match style {
-            StructStyle::Named => {
+    let marker = if let Some(marked) = marked {
+        let span = marked.span();
+        let marked = marked.into_inner().unwrap_or_default();
+
+        let mut attrs = vec![pqs! { span => #[doc(hidden)] }];
+        marked.attrs.patch(&mut attrs);
+
+        let ident = match (original_style, marked.name) {
+            (StructStyle::Named, None) => {
                 let names = fields
                     .iter()
                     .filter_map(|f| f.ident.as_ref())
@@ -908,35 +938,46 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
                 while names.contains(&ident) {
                     ident.insert(0, '_');
                 }
-                let ident = format_ident!("{}", ident, span = span);
-                fields.push(pqs! { span =>
-                    #[doc(hidden)]
+                Some(format_ident!("{}", ident, span = span))
+            }
+            (StructStyle::Unnamed, Some(name)) => {
+                return Err(
+                    Error::custom("`name` attribute cannot be used on unnamed structs")
+                        .with_span(&name),
+                );
+            }
+            (_, Some(name)) => Some(name),
+            _ => None,
+        };
+
+        let (marker, field) = if let Some(ident) = ident {
+            (
+                qs! { ident.span() => #ident: ::core::marker::PhantomData, },
+                pqs! { span =>
+                    #(#attrs)*
                     #ident: ::core::marker::PhantomData<#Subject>
-                });
-                marker = Some(ident);
-            }
-            StructStyle::Unnamed | StructStyle::Unit => {
-                let marker = pqs! { span =>
-                    #[doc(hidden)]
+                },
+            )
+        } else {
+            (
+                qs! { span => ::core::marker::PhantomData, },
+                pqs! { span =>
+                    #(#attrs)*
                     ::core::marker::PhantomData<#Subject>
-                };
-                fields.push(marker);
-            }
-        }
-    }
+                },
+            )
+        };
+
+        fields.push(field);
+        Some(marker)
+    } else {
+        None
+    };
 
     let mut output = vec![q! { #optionized }];
     let optionized = &optionized.ident;
 
-    let marker = marked.map(|span| {
-        if let Some(marker) = marker {
-            qs! { span => #marker: ::core::marker::PhantomData, }
-        } else {
-            qs! { span => ::core::marker::PhantomData }
-        }
-    });
-
-    let named = matches!(style, StructStyle::Named);
+    let named = matches!(original_style, StructStyle::Named);
 
     let mut where_clause = where_clause.cloned().unwrap_or_else(|| pq! { where });
 
@@ -957,12 +998,7 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
                 named,
             });
 
-            let style = match (style, &marker) {
-                (StructStyle::Unit, Some(_)) => StructStyle::Unnamed,
-                (s, _) => s,
-            };
-
-            construct!(style, _span => [Self] #(#optionizes)* #marker )
+            construct!(optionized_style, _span => [Self] #(#optionizes)* #marker )
         };
         let patches = optionized_fields
             .iter()
@@ -1011,7 +1047,7 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
                 .iter()
                 .map(|field| UpgradeOk { field, named });
 
-            construct!(style, span => [#original] #(#oks)*)
+            construct!(original_style, span => [#original] #(#oks)*)
         };
 
         let err = {
@@ -1019,7 +1055,7 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
                 .iter()
                 .map(|field| UpgradeErr { field, named });
 
-            construct!(style, span => [Self] #(#errs)* #marker)
+            construct!(original_style, span => [Self] #(#errs)* #marker)
         };
 
         output.push(qs! { span =>
