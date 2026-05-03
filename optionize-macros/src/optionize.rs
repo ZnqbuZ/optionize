@@ -63,6 +63,7 @@ impl FromMeta for MetaList {
 #[derive(Debug, Default, FromMeta)]
 #[darling(default, and_then = "Self::finalize")]
 struct AttributeArgs {
+    #[doc(hidden)]
     #[darling(rename = "attrs", multiple)]
     _attributes: Vec<MetaList>,
     #[darling(skip)]
@@ -107,14 +108,50 @@ struct PartialArgs {
     marked: Option<SpannedValue<Override<MarkedArgs>>>,
 }
 
+#[derive(Debug, Clone, FromMeta)]
+#[darling(default)]
+struct Crate(Path);
+
+impl Default for Crate {
+    fn default() -> Self {
+        Self(parse_quote! { ::optionize })
+    }
+}
+
+impl ToTokens for Crate {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        self.0.to_tokens(tokens);
+    }
+}
+
+impl From<String> for Crate {
+    fn from(value: String) -> Self {
+        let krate = format_ident!("{}", value);
+        Self(parse_quote! { ::#krate })
+    }
+}
+
 #[derive(Debug, Default, FromAttributes)]
-#[darling(default, attributes(optionize))]
+#[darling(default, attributes(optionize), and_then = "Self::finalize")]
 struct StructArgs {
     #[darling(flatten)]
     general: GeneralArgs,
-    #[darling(rename = "crate")]
-    krate: Option<Path>,
+    #[doc(hidden)]
+    #[darling(rename = "crate", multiple)]
+    _krate: Vec<Crate>,
+    #[darling(skip)]
+    krate: Crate,
     partial: Option<SpannedValue<Override<PartialArgs>>>,
+}
+
+impl StructArgs {
+    fn finalize(mut self) -> Result<Self> {
+        let Some(krate) = self._krate.last() else {
+            return Err(Error::missing_field("crate"));
+        };
+        self.krate = krate.clone();
+        Ok(self)
+    }
 }
 
 #[derive(Debug, Default, FromMeta)]
@@ -181,20 +218,6 @@ fn is_optionize(attr: &Attribute) -> bool {
         .is_some_and(|s| s.ident == "optionize")
 }
 
-fn get_crate(hint: Option<&Path>) -> Path {
-    if let Some(path) = hint {
-        return path.clone();
-    }
-
-    match crate_name("optionize") {
-        Ok(FoundCrate::Name(name)) => {
-            let ident = format_ident!("{}", name);
-            parse_quote! { ::#ident }
-        }
-        _ => parse_quote! { ::optionize },
-    }
-}
-
 macro_rules! span {
     ($span:expr) => {
         span!(@impl $span, $)
@@ -234,7 +257,7 @@ impl Default for FieldStrategy {
 }
 
 struct FieldIr {
-    krate: Path,
+    krate: Crate,
     ty: Type,
     span: Span,
     original: TokenStream,
@@ -246,7 +269,7 @@ struct FieldIr {
 impl Default for FieldIr {
     fn default() -> Self {
         Self {
-            krate: parse_quote! { crate },
+            krate: Default::default(),
             ty: parse_quote!(()),
             span: Span::call_site(),
             original: Default::default(),
@@ -260,7 +283,7 @@ impl Default for FieldIr {
 impl FieldIr {
     fn extract(
         fields: &mut Punctuated<Field, Comma>,
-        krate: Path,
+        krate: Crate,
         partial: bool,
     ) -> Result<Vec<Self>> {
         let mut errors = Error::accumulator();
@@ -839,7 +862,7 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
 
     let args = StructArgs::from_attributes(&original.attrs)?;
 
-    let krate = get_crate(args.krate.as_ref());
+    let krate = args.krate;
 
     let (partial, upgradable, marked) = args
         .partial
@@ -1077,15 +1100,20 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
     Ok(q! { #(#output)* })
 }
 
-#[derive(FromMeta)]
+#[derive(Debug, Default, FromMeta)]
+#[darling(default)]
 struct OptionizedArgs {
     #[darling(rename = "crate")]
-    krate: Option<Path>,
+    krate: Option<Crate>,
 }
 
 pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
     let args = OptionizedArgs::from_list(&NestedMeta::parse_meta_list(args)?)?;
-    let krate = get_crate(args.krate.as_ref());
+
+    let krate = args.krate.unwrap_or_else(|| match crate_name("optionize") {
+        Ok(FoundCrate::Name(name)) => name.into(),
+        _ => Default::default(),
+    });
 
     let output = qs! { input.span() =>
         #[derive(#krate::__private::Optionize)]
