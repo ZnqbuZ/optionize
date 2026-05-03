@@ -1,9 +1,7 @@
 use darling::ast::NestedMeta;
 use darling::util::{Override, SpannedValue};
-use darling::{Error, Result};
-use darling::{FromAttributes, FromMeta};
-use proc_macro2::Span;
-use proc_macro2::{Ident, TokenStream};
+use darling::{Error, FromAttributes, FromMeta, Result};
+use proc_macro2::{Ident, Span, TokenStream};
 use proc_macro_crate::{crate_name, FoundCrate};
 use quote::{format_ident, quote_spanned as qs, ToTokens};
 use std::collections::HashSet;
@@ -13,10 +11,10 @@ use std::mem::take;
 use syn::ext::IdentExt;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
-use syn::token::{Bracket, Comma, Pound};
+use syn::token::{Bracket, Comma, Paren, Pound};
 use syn::{
-    parse2, parse_quote, parse_quote_spanned as pqs, parse_str, AttrStyle, Attribute, Data, DeriveInput, Expr, Field, Fields, Index,
-    LitStr, Meta, Path, Type, WherePredicate,
+    parse2, parse_quote, parse_quote_spanned as pqs, parse_str, AttrStyle, Attribute, Data, DeriveInput, Expr, Field,
+    Fields, FieldsUnnamed, Index, LitStr, Meta, Path, Type, WherePredicate,
 };
 
 // region args
@@ -798,6 +796,7 @@ impl<'l> ToTokens for UpgradeErr<'l> {
 
 // endregion
 
+#[derive(Debug, Clone, Copy)]
 enum StructStyle {
     Named,
     Unnamed,
@@ -851,19 +850,20 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
         optionized.attrs.retain(|attr| !is_optionize(attr));
     }
 
-    let (style, fields) = match &mut optionized.data {
-        Data::Struct(data) => match &mut data.fields {
-            Fields::Named(fields) => (StructStyle::Named, &mut fields.named),
-            Fields::Unnamed(fields) => (StructStyle::Unnamed, &mut fields.unnamed),
-            Fields::Unit => (StructStyle::Unit, &mut Default::default()),
-        },
+    let data = match &mut optionized.data {
+        Data::Struct(data) => data,
         _ => {
             return Err(
                 Error::custom("Optionize can only be derived for structs").with_span(&_span)
             );
         }
     };
-    let named = matches!(style, StructStyle::Named);
+
+    let (style, fields) = match &mut data.fields {
+        Fields::Named(fields) => (StructStyle::Named, &mut fields.named),
+        Fields::Unnamed(fields) => (StructStyle::Unnamed, &mut fields.unnamed),
+        Fields::Unit => (StructStyle::Unit, &mut Default::default()),
+    };
 
     let original_fields = FieldIr::extract(fields, krate.clone(), partial.is_some())?;
     let optionized_fields = original_fields
@@ -895,14 +895,20 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
                 });
                 marker = Some(ident);
             }
-            StructStyle::Unnamed => {
+            StructStyle::Unnamed | StructStyle::Unit => {
                 let marker = pqs! { span =>
                     #[doc(hidden)]
                     ::core::marker::PhantomData<#Subject>
                 };
                 fields.push(marker);
             }
-            _ => {}
+        }
+
+        if matches!(style, StructStyle::Unit) {
+            data.fields = Fields::Unnamed(FieldsUnnamed {
+                paren_token: Paren(optionized.ident.span()),
+                unnamed: take(fields),
+            });
         }
     }
 
@@ -916,6 +922,8 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
             qs! { span => ::core::marker::PhantomData }
         }
     });
+
+    let named = matches!(style, StructStyle::Named);
 
     let mut where_clause = where_clause.cloned().unwrap_or_else(|| pq! { where });
 
@@ -935,6 +943,11 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
                 subject,
                 named,
             });
+
+            let style = match (style, &marker) {
+                (StructStyle::Unit, Some(_)) => StructStyle::Unnamed,
+                (s, _) => s,
+            };
 
             construct!(style, _span => [Self] #(#optionizes)* #marker )
         };
@@ -1015,8 +1028,6 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
         });
     }
 
-    println!("{}", q! { #(#output)* });
-
     Ok(q! { #(#output)* })
 }
 
@@ -1035,8 +1046,6 @@ pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
         #[optionize(crate = #krate)]
         #input
     };
-
-    println!("{}", output);
 
     Ok(output)
 }
