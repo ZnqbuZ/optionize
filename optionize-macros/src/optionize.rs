@@ -519,10 +519,9 @@ impl<'l> ToTokens for Optionize<'l> {
         let FieldStrategy::Optionize { wrap, nest } = strategy else {
             return;
         };
-        let nest = nest.is_some();
 
-        let mut optionize = if nest {
-            q! { #krate::PartialOptionized::<#ty>::optionize(#subject.#original) }
+        let mut optionize = if let Some(nest) = nest {
+            q! { <#nest as #krate::PartialOptionized::<#ty>>::optionize(#subject.#original) }
         } else {
             q! { #subject.#original }
         };
@@ -563,15 +562,14 @@ impl<'l> ToTokens for Patch<'l> {
         let FieldStrategy::Optionize { wrap, nest } = strategy else {
             return;
         };
-        let nest = nest.is_some();
 
         let patch = if *wrap {
             q! { v }
         } else {
             q! { self.#optionized }
         };
-        let mut patch = if nest {
-            q! { #krate::PartialOptionized::<#ty>::patch(#patch, &mut #subject.#original); }
+        let mut patch = if let Some(nest) = nest {
+            q! { <#nest as #krate::PartialOptionized::<#ty>>::patch(#patch, &mut #subject.#original); }
         } else {
             q! { #subject.#original = #patch; }
         };
@@ -608,25 +606,24 @@ impl<'l> ToTokens for Merge<'l> {
         let FieldStrategy::Optionize { wrap, nest } = strategy else {
             return;
         };
-        let nest = nest.is_some();
 
         let merge = match (wrap, nest) {
-            (true, true) => q! {
+            (true, Some(nest)) => q! {
                 match (&mut self.#optionized, #other.#optionized) {
-                    (Some(this), Some(other)) => #krate::PartialOptionized::<#ty>::merge(this, other),
+                    (Some(this), Some(other)) => <#nest as #krate::PartialOptionized::<#ty>>::merge(this, other),
                     (None, Some(other)) => self.#optionized = Some(other),
                     _ => {}
                 }
             },
-            (true, false) => q! {
+            (true, None) => q! {
                 if ::core::option::Option::is_some(&#other.#optionized) {
                     self.#optionized = #other.#optionized;
                 }
             },
-            (false, true) => q! {
-                #krate::PartialOptionized::<#ty>::merge(&mut self.#optionized, #other.#optionized);
+            (false, Some(nest)) => q! {
+                <#nest as #krate::PartialOptionized::<#ty>>::merge(&mut self.#optionized, #other.#optionized);
             },
-            (false, false) => q! {
+            (false, None) => q! {
                 self.#optionized = #other.#optionized;
             },
         };
@@ -659,7 +656,6 @@ impl<'l> ToTokens for Upgrade<'l> {
         let FieldStrategy::Optionize { wrap, nest } = strategy else {
             return;
         };
-        let nest = nest.is_some();
 
         let original_str = original.to_string();
         let optionized_str = optionized.to_string();
@@ -707,14 +703,14 @@ impl<'l> ToTokens for Upgrade<'l> {
 
         tokens.extend(q! { let #local = self.#optionized; });
 
-        let mut expr = if nest {
+        let mut expr = if let Some(nest) = nest {
             let err = if *wrap {
                 q!(::core::option::Option::Some(v))
             } else {
                 q!(v)
             };
             q! {
-                #krate::Optionized::<#ty>::upgrade(#local).map_err(|(e, v)| {
+                <#nest as #krate::Optionized::<#ty>>::upgrade(#local).map_err(|(e, v)| {
                     #failed = true;
                     #errors.extend(::core::iter::IntoIterator::into_iter(e).map(#nest_map_err));
                     #err
@@ -815,11 +811,10 @@ impl<'l> ToTokens for UpgradeErr<'l> {
         let FieldStrategy::Optionize { wrap, nest } = strategy else {
             return;
         };
-        let nest = nest.is_some();
 
         let mut ok = q! { v };
-        if nest {
-            ok = q! { #krate::PartialOptionized::<#ty>::optionize(#ok) };
+        if let Some(nest) = nest {
+            ok = q! { <#nest as #krate::PartialOptionized::<#ty>>::optionize(#ok) };
         }
         if *wrap {
             ok = q! { ::core::option::Option::Some(#ok) };
