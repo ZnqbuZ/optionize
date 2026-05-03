@@ -217,22 +217,30 @@ impl FieldIr {
 
         let args = fields
             .iter_mut()
-            .filter_map(|field| {
-                errors.handle(
-                    FieldArgs::from_attributes(&field.attrs).map_err(|e| e.with_span(field)),
-                )
-            })
+            .filter_map(|field| errors.handle(FieldArgs::from_attributes(&field.attrs)))
             .collect::<Vec<_>>();
 
         let mut this = Vec::new();
         let mut skipped = 0;
 
         for (i, (mut field, args)) in zip(take(fields), args).enumerate() {
-            let _span = field.span();
-            span!(_span);
-
             let ty = field.ty.clone();
             let ident = &field.ident;
+
+            let _span = field
+                .attrs
+                .iter()
+                .filter(|attr| is_optionize(attr))
+                .map(|attr| attr.span())
+                .reduce(|a, s| s.join(a).unwrap_or(a))
+                .unwrap_or_else(|| {
+                    let ty = ty.span();
+                    ident.as_ref().map_or(ty, |ident| {
+                        let ident = ident.span();
+                        ty.join(ident).unwrap_or(ident)
+                    })
+                });
+            span!(_span);
 
             let mut ir = {
                 let mut local = if let Some(ident) = ident.clone() {
@@ -283,7 +291,7 @@ impl FieldIr {
 
                 ir.strategy = FieldStrategy::Skip {
                     upgrade: upgrade.unwrap_or_else(|| {
-                        pq! { ::core::default::Default::default() }
+                        pqs! { ty.span() => ::core::default::Default::default() }
                     }),
                 };
 
@@ -663,13 +671,14 @@ impl<'l> ToTokens for UpgradeSkip<'l> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         expand! {
             self.field => {
+                ty,
                 strategy,
                 local,
             }
         }
 
         if let FieldStrategy::Skip { upgrade } = strategy {
-            tokens.extend(q! { let #local = { #upgrade }; });
+            tokens.extend(q! { let #local: #ty = { #upgrade }; });
         }
     }
 }
