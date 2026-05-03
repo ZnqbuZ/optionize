@@ -1,5 +1,5 @@
 use darling::ast::NestedMeta;
-use darling::util::{Override, SpannedValue};
+use darling::util::{Flag, Override, SpannedValue};
 use darling::{Error, FromAttributes, FromMeta, Result};
 use proc_macro2::{Ident, Span, TokenStream};
 use proc_macro_crate::{crate_name, FoundCrate};
@@ -60,9 +60,37 @@ impl FromMeta for MetaList {
     }
 }
 
+#[derive(Debug, Clone, FromMeta)]
+#[darling(default)]
+struct Crate(Path);
+
+impl Crate {
+    fn infer() -> Self {
+        match crate_name("optionize") {
+            Ok(FoundCrate::Name(name)) => {
+                let name = format_ident!("{}", name);
+                Self(parse_quote! { ::#name })
+            }
+            _ => Default::default(),
+        }
+    }
+}
+
+impl Default for Crate {
+    fn default() -> Self {
+        Self(parse_quote! { ::optionize })
+    }
+}
+
+impl ToTokens for Crate {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        self.0.to_tokens(tokens);
+    }
+}
+
 #[derive(Debug, Default, FromMeta)]
 #[darling(default, and_then = "Self::finalize")]
-struct AttributeArgs {
+struct Attributes {
     #[doc(hidden)]
     #[darling(rename = "attrs", multiple)]
     _attributes: Vec<MetaList>,
@@ -70,7 +98,7 @@ struct AttributeArgs {
     attributes: Option<Vec<Attribute>>,
 }
 
-impl AttributeArgs {
+impl Attributes {
     fn finalize(mut self) -> Result<Self> {
         self.attributes = MetaList::merge(&mut self._attributes);
         Ok(self)
@@ -90,7 +118,13 @@ impl AttributeArgs {
 struct GeneralArgs {
     name: Option<LitStr>,
     #[darling(flatten)]
-    attrs: AttributeArgs,
+    attrs: Attributes,
+}
+
+impl GeneralArgs {
+    fn is_some(&self) -> bool {
+        self.name.is_some() || self.attrs.attributes.is_some()
+    }
 }
 
 #[derive(Debug, Default, FromMeta)]
@@ -98,42 +132,14 @@ struct GeneralArgs {
 struct MarkedArgs {
     name: Option<Ident>,
     #[darling(flatten)]
-    attrs: AttributeArgs,
+    attrs: Attributes,
 }
 
 #[derive(Debug, Default, FromMeta)]
 #[darling(default)]
 struct PartialArgs {
-    upgradable: SpannedValue<bool>,
+    upgradable: Flag,
     marked: Option<SpannedValue<Override<MarkedArgs>>>,
-}
-
-#[derive(Debug, Clone, FromMeta)]
-#[darling(default)]
-struct Crate(Path);
-
-impl Crate {
-    fn infer() -> Self {
-        match crate_name("optionize") {
-            Ok(FoundCrate::Name(name)) => {
-                let name = format_ident!("{}", name);
-                Self(parse_quote! { ::#name })
-            },
-            _ => Default::default(),
-        }
-    }
-}
-
-impl Default for Crate {
-    fn default() -> Self {
-        Self(parse_quote! { ::optionize })
-    }
-}
-
-impl ToTokens for Crate {
-    fn to_tokens(&self, tokens: &mut TokenStream) {
-        self.0.to_tokens(tokens);
-    }
 }
 
 #[derive(Debug, Default, FromAttributes)]
@@ -170,35 +176,25 @@ struct SkipArgs {
 struct FieldArgs {
     #[darling(flatten)]
     general: GeneralArgs,
-    flatten: SpannedValue<bool>,
+    flatten: Flag,
     nest: Option<Type>,
     skip: Option<SpannedValue<Override<SkipArgs>>>,
 }
 
 impl FieldArgs {
     fn finalize(self) -> Result<Self> {
-        let mut errors = Error::accumulator();
-
-        if let Some(skip) = &self.skip {
-            let skip = skip.span();
-
-            if *self.flatten {
-                let flatten = self.flatten.span();
-                errors.push(
-                    Error::custom("`flatten` cannot be used with `skip`")
-                        .with_span(&skip.join(flatten).unwrap_or(flatten)),
-                );
-            }
-            if let Some(nest) = &self.nest {
-                let nest = nest.span();
-                errors.push(
-                    Error::custom("`nest` cannot be used with `skip`")
-                        .with_span(&skip.join(nest).unwrap_or(nest)),
-                );
-            }
+        if let Some(skip) = &self.skip
+            && (self.general.is_some()
+                || self.flatten.is_present()
+                || self.nest.is_some())
+        {
+            return Err(
+                Error::custom("`skip` attribute cannot be combined with other attributes")
+                    .with_span(&skip.span()),
+            );
         }
 
-        errors.finish_with(self)
+        Ok(self)
     }
 }
 
@@ -409,7 +405,7 @@ impl FieldIr {
                 .to_token_stream(),
             };
 
-            let wrap = !*args.flatten;
+            let wrap = !args.flatten.is_present();
             let nest = args.nest;
 
             {
@@ -870,7 +866,7 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
         .map(|partial| {
             let span = partial.span();
             let (upgradable, marked) = match partial.into_inner() {
-                Override::Explicit(p) => (p.upgradable.then(|| p.upgradable.span()), p.marked),
+                Override::Explicit(p) => (p.upgradable.is_present().then(|| p.upgradable.span()), p.marked),
                 _ => Default::default(),
             };
             (Some(span), upgradable, marked)
