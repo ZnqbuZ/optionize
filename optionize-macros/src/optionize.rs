@@ -1,9 +1,9 @@
 use darling::ast::NestedMeta;
 use darling::util::{Flag, Override, SpannedValue};
 use darling::{Error, FromAttributes, FromMeta, Result};
-use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Ident, Span, TokenStream};
-use quote::{ToTokens, format_ident, quote, quote_spanned as qs};
+use proc_macro_crate::{crate_name, FoundCrate};
+use quote::{format_ident, quote, quote_spanned as qs, ToTokens};
 use std::collections::HashSet;
 use std::default::Default;
 use std::iter::zip;
@@ -13,9 +13,9 @@ use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::token::{Brace, Bracket, Comma, Paren, Pound};
 use syn::{
-    AttrStyle, Attribute, Data, DeriveInput, Expr, Field, Fields, FieldsNamed, FieldsUnnamed,
-    Index, LitStr, Meta, Path, Type, WherePredicate, parse_quote, parse_quote_spanned as pqs,
-    parse_str, parse2,
+    parse2, parse_quote, parse_quote_spanned as pqs, parse_str, AttrStyle, Attribute, Data, DeriveInput, Expr,
+    Field, Fields, FieldsNamed, FieldsUnnamed, Index, LitStr, Member, Meta,
+    Path, Type, WherePredicate,
 };
 
 // region args
@@ -209,6 +209,13 @@ fn is_optionize(attr: &Attribute) -> bool {
         .is_some_and(|s| s.ident == "optionize")
 }
 
+fn member_to_string(member: &Member) -> String {
+    match member {
+        Member::Named(ident) => ident.unraw().to_string(),
+        Member::Unnamed(index) => index.index.to_string(),
+    }
+}
+
 macro_rules! span {
     ($span:expr) => {
         span!(@impl $span, $)
@@ -255,8 +262,8 @@ struct FieldIr {
     krate: Crate,
     ty: Type,
     span: Span,
-    original: TokenStream,
-    optionized: TokenStream,
+    original: Member,
+    optionized: Member,
     strategy: FieldStrategy,
     local: Ident,
 }
@@ -267,8 +274,8 @@ impl Default for FieldIr {
             krate: Default::default(),
             ty: parse_quote!(()),
             span: Span::call_site(),
-            original: Default::default(),
-            optionized: Default::default(),
+            original: format_ident!("_").into(),
+            optionized: format_ident!("_").into(),
             strategy: Default::default(),
             local: format_ident!("_"),
         }
@@ -319,10 +326,13 @@ impl FieldIr {
                 };
 
                 let original = match ident {
-                    Some(ident) => ident.to_token_stream(),
-                    None => Index::from(i).to_token_stream(),
+                    Some(ident) => ident.clone().into(),
+                    None => Index {
+                        index: i as u32,
+                        span,
+                    }
+                    .into(),
                 };
-                let original = qs! { span => #original };
 
                 FieldIr {
                     krate: krate.clone(),
@@ -353,7 +363,7 @@ impl FieldIr {
                         Error::custom(
                             "`skip` attribute is only allowed when `partial` is specified",
                         )
-                            .with_span(&span),
+                        .with_span(&span),
                     );
                     continue;
                 }
@@ -390,12 +400,12 @@ impl FieldIr {
             args.general.attrs.patch(&mut field.attrs);
 
             ir.optionized = match &field.ident {
-                Some(ident) => ident.to_token_stream(),
+                Some(ident) => ident.clone().into(),
                 None => Index {
                     index: (i - skipped) as u32,
-                    span: _span,
+                    span,
                 }
-                    .to_token_stream(),
+                .into(),
             };
 
             let wrap = !args.flatten.is_present();
@@ -646,8 +656,8 @@ impl<'l> ToTokens for Validate<'l> {
             return;
         };
 
-        let original_str = original.to_string();
-        let optionized_str = optionized.to_string();
+        let original_str = member_to_string(original);
+        let optionized_str = member_to_string(optionized);
 
         let renamed = original_str == optionized_str;
 
