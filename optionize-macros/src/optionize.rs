@@ -657,13 +657,13 @@ impl<'l> ToTokens for Validate<'l> {
 
         let (missing_err, nest_map_err) = {
             let ty = {
-                let original_str = self.original.to_string();
-                let optionized_str = self.optionized.to_string();
+                let original_ty = self.original.to_string();
+                let optionized_ty = self.optionized.to_string();
 
                 q! {
                     #krate::TypeInfo {
-                        original: #original_str,
-                        optionized: #optionized_str,
+                        original: #original_ty,
+                        optionized: #optionized_ty,
                     }
                 }
             };
@@ -922,8 +922,9 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                 },
             )
         } else {
+            let index = Index { index: fields.len() as u32, span };
             (
-                qs! { span => ::core::marker::PhantomData, },
+                qs! { span => #index: ::core::marker::PhantomData, },
                 pqs! { span =>
                     #(#attrs)*
                     pub ::core::marker::PhantomData<fn() -> *const #Subject>
