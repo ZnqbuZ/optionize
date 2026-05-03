@@ -742,7 +742,9 @@ impl<'l> ToTokens for Upgrade<'l> {
 
         tokens.extend(q! { let #local = self.#optionized; });
         if *wrap {
-            tokens.extend(q! { let #local = unsafe { ::core::option::Option::unwrap_unchecked(#local) }; });
+            tokens.extend(
+                q! { let #local = unsafe { ::core::option::Option::unwrap_unchecked(#local) }; },
+            );
         }
         if let Some(nest) = nest {
             tokens.extend(q! {
@@ -922,7 +924,10 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                 },
             )
         } else {
-            let index = Index { index: fields.len() as u32, span };
+            let index = Index {
+                index: fields.len() as u32,
+                span,
+            };
             (
                 qs! { span => #index: ::core::marker::PhantomData, },
                 pqs! { span =>
@@ -943,15 +948,20 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
 
     let mut where_clause = where_clause.cloned().unwrap_or_else(|| pq! { where });
     let mut clauses = HashSet::new();
+    macro_rules! where_clause_extend {
+        ($map:expr) => {
+            where_clause.predicates.extend(
+                optionized_fields
+                    .iter()
+                    .copied()
+                    .flat_map($map)
+                    .filter(|clause| clauses.insert(clause.to_token_stream().to_string())),
+            )
+        };
+    }
 
     {
-        where_clause.predicates.extend(
-            optionized_fields
-                .iter()
-                .copied()
-                .flat_map(FieldIr::partial_optionized_where)
-                .filter(|clause| clauses.insert(clause.clone())),
-        );
+        where_clause_extend!(&mut FieldIr::partial_optionized_where);
 
         let subject = &format_ident!("subject", span = Span::mixed_site());
 
@@ -988,13 +998,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
     };
 
     if let Some(span) = span {
-        where_clause.predicates.extend(
-            optionized_fields
-                .iter()
-                .copied()
-                .flat_map(FieldIr::optionized_where)
-                .filter(|clause| clauses.insert(clause.clone())),
-        );
+        where_clause_extend!(&mut FieldIr::optionized_where);
 
         let failed = &format_ident!("failed", span = Span::mixed_site());
         let errors = &format_ident!("errors", span = Span::mixed_site());
