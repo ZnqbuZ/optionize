@@ -742,11 +742,11 @@ impl<'l> ToTokens for Upgrade<'l> {
 
         tokens.extend(q! { let #local = self.#optionized; });
         if *wrap {
-            tokens.extend(q! { let #local = ::core::option::Option::unwrap(#local); });
+            tokens.extend(q! { let #local = unsafe { ::core::option::Option::unwrap_unchecked(#local) }; });
         }
         if let Some(nest) = nest {
             tokens.extend(q! {
-                let #local = <#nest as #krate::Optionized::<#ty>>::upgrade_unchecked(#local);
+                let #local = unsafe { <#nest as #krate::Optionized::<#ty>>::upgrade_unchecked(#local) };
             })
         }
     }
@@ -797,7 +797,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         ($style:expr, $span:expr => [$($ty:tt)+] $($fields:tt)*) => {
             match $style {
                 StructStyle::Unit => qs! { $span => $($ty)* },
-                _ => qs! { $span => $($ty)* { $($fields)* } },
+                _ => qs! { $span => #[allow(clippy::init_numbered_fields)] $($ty)* { $($fields)* } },
             }
         };
     }
@@ -941,13 +941,15 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
     let optionized = &optionized.ident;
 
     let mut where_clause = where_clause.cloned().unwrap_or_else(|| pq! { where });
+    let mut clauses = HashSet::new();
 
     {
         where_clause.predicates.extend(
             optionized_fields
                 .iter()
                 .copied()
-                .flat_map(FieldIr::partial_optionized_where),
+                .flat_map(FieldIr::partial_optionized_where)
+                .filter(|clause| clauses.insert(clause.clone())),
         );
 
         let subject = &format_ident!("subject", span = Span::mixed_site());
@@ -989,7 +991,8 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
             optionized_fields
                 .iter()
                 .copied()
-                .flat_map(FieldIr::optionized_where),
+                .flat_map(FieldIr::optionized_where)
+                .filter(|clause| clauses.insert(clause.clone())),
         );
 
         let failed = &format_ident!("failed", span = Span::mixed_site());
@@ -1026,7 +1029,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                     }
                 }
                 #[inline]
-                fn upgrade_unchecked(self) -> #Subject {
+                unsafe fn upgrade_unchecked(self) -> #Subject {
                     #(#skips)*
                     #(#upgrades)*
                     #subject

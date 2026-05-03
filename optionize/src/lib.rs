@@ -45,10 +45,13 @@ impl<T, O> Optionizable<O> for T where O: PartialOptionized<T> {}
 pub trait Optionized<Subject>: PartialOptionized<Subject> {
     type Errors: IntoIterator<Item: core::error::Error + Send + Sync + 'static>;
     fn validate(&self) -> Result<(), Self::Errors>;
-    fn upgrade_unchecked(self) -> Subject;
+    /// # Safety
+    ///
+    /// TODO
+    unsafe fn upgrade_unchecked(self) -> Subject;
     fn upgrade(self) -> Result<Subject, Self::Errors> {
         self.validate()?;
-        Ok(self.upgrade_unchecked())
+        Ok(unsafe { self.upgrade_unchecked() })
     }
 }
 
