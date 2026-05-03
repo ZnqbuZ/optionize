@@ -1,6 +1,7 @@
 #![no_std]
 
 extern crate alloc;
+extern crate self as optionize;
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;

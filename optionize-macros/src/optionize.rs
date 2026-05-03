@@ -166,12 +166,11 @@ fn get_crate(hint: Option<&Path>) -> Path {
     }
 
     match crate_name("optionize") {
-        Ok(FoundCrate::Itself) => parse_quote! { crate },
         Ok(FoundCrate::Name(name)) => {
             let ident = format_ident!("{}", name);
             parse_quote! { ::#ident }
         }
-        Err(_) => parse_quote! { ::optionize },
+        _ => parse_quote! { ::optionize },
     }
 }
 
