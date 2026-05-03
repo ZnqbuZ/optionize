@@ -1,4 +1,3 @@
-use crate::optionize;
 use darling::ast::NestedMeta;
 use darling::util::{Flag, Override, SpannedValue};
 use darling::{Error, FromAttributes, FromMeta, Result};
@@ -18,6 +17,7 @@ use syn::{
     Index, LitStr, Meta, Path, Type, WherePredicate, parse_quote, parse_quote_spanned as pqs,
     parse_str, parse2,
 };
+
 // region args
 
 #[derive(Debug, Default)]
@@ -111,6 +111,13 @@ impl Attributes {
             attrs.retain(|attr| !is_optionize(attr));
         }
     }
+}
+
+#[derive(Debug, Default, FromMeta)]
+#[darling(default)]
+struct OptionizedArgs {
+    #[darling(rename = "crate")]
+    krate: Option<Crate>,
 }
 
 #[derive(Debug, Default, FromMeta)]
@@ -225,6 +232,10 @@ macro_rules! span {
 
 //endregion
 
+// region codegen
+
+// region ir
+
 #[derive(Debug)]
 enum FieldStrategy {
     Skip { upgrade: Expr },
@@ -301,12 +312,11 @@ impl FieldIr {
             span!(_span);
 
             let mut ir = {
-                let mut local = if let Some(ident) = ident.clone() {
+                let local = if let Some(ident) = ident.clone() {
                     format_ident!("v_{}", ident, span = Span::mixed_site())
                 } else {
                     format_ident!("v_{}", i, span = Span::mixed_site())
                 };
-                local.set_span(_span);
 
                 let original = match ident {
                     Some(ident) => ident.to_token_stream(),
@@ -343,7 +353,7 @@ impl FieldIr {
                         Error::custom(
                             "`skip` attribute is only allowed when `partial` is specified",
                         )
-                        .with_span(&span),
+                            .with_span(&span),
                     );
                     continue;
                 }
@@ -385,7 +395,7 @@ impl FieldIr {
                     index: (i - skipped) as u32,
                     span: _span,
                 }
-                .to_token_stream(),
+                    .to_token_stream(),
             };
 
             let wrap = !args.flatten.is_present();
@@ -410,7 +420,7 @@ impl FieldIr {
     }
 }
 
-// region codegen
+// endregion
 
 macro_rules! expand {
     ($target:expr => { $($field:ident $(: $bind:pat)?),* $(,)? }) => {
@@ -466,7 +476,7 @@ impl FieldIr {
                     #nest: #krate::Optionized::<#ty>
                 },
                 pq! {
-                    <#nest as #krate::Optionized::<#ty>>::UpgradeErrors: 'static
+                    <#nest as #krate::Optionized::<#ty>>::Errors: 'static
                 },
             ]
         } else {
@@ -611,7 +621,7 @@ impl<'l> ToTokens for Merge<'l> {
     }
 }
 
-struct Upgrade<'l> {
+struct Validate<'l> {
     field: &'l FieldIr,
     original: &'l Ident,
     optionized: &'l Ident,
@@ -619,7 +629,7 @@ struct Upgrade<'l> {
     errors: &'l Ident,
 }
 
-impl<'l> ToTokens for Upgrade<'l> {
+impl<'l> ToTokens for Validate<'l> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         expand! {
             self.field => {
@@ -662,13 +672,13 @@ impl<'l> ToTokens for Upgrade<'l> {
 
             (
                 q! {
-                    #krate::UpgradeError::MissingField {
+                    #krate::Error::MissingField {
                         ty: #ty,
                         field: #field
                     }
                 },
                 q! {
-                    |e| #krate::UpgradeError::NestedError {
+                    |e| #krate::Error::NestedError {
                         ty: #ty,
                         field: #field,
                         source: #krate::__private::alloc::boxed::Box::new(e) as _
@@ -680,39 +690,63 @@ impl<'l> ToTokens for Upgrade<'l> {
         let failed = self.failed;
         let errors = self.errors;
 
-        tokens.extend(q! { let #local = self.#optionized; });
+        tokens.extend(q! { let #local = &self.#optionized; });
 
-        let mut expr = if let Some(nest) = nest {
-            let err = if *wrap {
-                q!(::core::option::Option::Some(v))
-            } else {
-                q!(v)
-            };
+        let validate = nest.as_ref().map(|nest| {
             q! {
-                <#nest as #krate::Optionized::<#ty>>::upgrade(#local).map_err(|(e, v)| {
+                if let ::core::result::Result::Err(e) = <#nest as #krate::Optionized::<#ty>>::validate(#local) {
                     #failed = true;
                     #errors.extend(::core::iter::IntoIterator::into_iter(e).map(#nest_map_err));
-                    #err
-                })
+                }
+            }
+        });
+
+        let validate = if *wrap {
+            q! {
+                if let ::core::option::Option::Some(#local) = #local {
+                    #validate
+                } else {
+                    #failed = true;
+                    #errors.push(#missing_err);
+                }
             }
         } else {
-            q! { ::core::result::Result::Ok(#local) }
+            q! { #validate }
         };
 
-        if *wrap {
-            expr = q! {
-                match #local {
-                    ::core::option::Option::Some(#local) => #expr,
-                    ::core::option::Option::None => {
-                        #failed = true;
-                        #errors.push(#missing_err);
-                        ::core::result::Result::Err(::core::option::Option::None)
-                    }
-                }
-            };
+        tokens.extend(validate);
+    }
+}
+
+struct Upgrade<'l> {
+    field: &'l FieldIr,
+}
+
+impl<'l> ToTokens for Upgrade<'l> {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        expand! {
+            self.field => {
+                krate,
+                ty,
+                optionized,
+                strategy,
+                local,
+            }
         }
 
-        tokens.extend(q! { let #local = #expr; });
+        let FieldStrategy::Optionize { wrap, nest } = strategy else {
+            return;
+        };
+
+        tokens.extend(q! { let #local = self.#optionized; });
+        if *wrap {
+            tokens.extend(q! { let #local = ::core::option::Option::unwrap(#local); });
+        }
+        if let Some(nest) = nest {
+            tokens.extend(q! {
+                let #local = <#nest as #krate::Optionized::<#ty>>::upgrade_unchecked(#local);
+            })
+        }
     }
 }
 
@@ -736,83 +770,27 @@ impl<'l> ToTokens for UpgradeSkip<'l> {
     }
 }
 
-struct UpgradeOk<'l> {
+struct UpgradeField<'l> {
     field: &'l FieldIr,
     named: bool,
 }
 
-impl<'l> ToTokens for UpgradeOk<'l> {
+impl<'l> ToTokens for UpgradeField<'l> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         expand! {
             self.field => {
                 original,
-                strategy,
                 local,
             }
         }
 
-        let local = match strategy {
-            FieldStrategy::Skip { .. } => {
-                q! { #local }
-            }
-            FieldStrategy::Optionize { .. } => {
-                q! { ::core::result::Result::unwrap_or_else(#local, |_| ::core::unreachable!()) }
-            }
-        };
-
-        let ok = if self.named {
+        let field = if self.named {
             q! { #original: #local, }
         } else {
             q! { #local, }
         };
 
-        tokens.extend(ok);
-    }
-}
-
-struct UpgradeErr<'l> {
-    field: &'l FieldIr,
-    named: bool,
-}
-
-impl<'l> ToTokens for UpgradeErr<'l> {
-    fn to_tokens(&self, tokens: &mut TokenStream) {
-        expand! {
-            self.field => {
-                krate,
-                ty,
-                optionized,
-                strategy,
-                local,
-            }
-        }
-
-        let FieldStrategy::Optionize { wrap, nest } = strategy else {
-            return;
-        };
-
-        let v = format_ident!("v");
-        let mut ok = q! { #v };
-        if let Some(nest) = nest {
-            ok = q! { <#nest as #krate::PartialOptionized::<#ty>>::optionize(#ok) };
-        }
-        if *wrap {
-            ok = q! { ::core::option::Option::Some(#ok) };
-        }
-        let rollback = q! {
-            match #local {
-                ::core::result::Result::Ok(#v) => #ok,
-                ::core::result::Result::Err(#v) => #v,
-            }
-        };
-
-        let err = if self.named {
-            q! { #optionized: #rollback, }
-        } else {
-            q! { #rollback, }
-        };
-
-        tokens.extend(err);
+        tokens.extend(field);
     }
 }
 
@@ -1037,9 +1015,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         let failed = &format_ident!("failed", span = Span::mixed_site());
         let errors = &format_ident!("errors", span = Span::mixed_site());
 
-        let skips = original_fields.iter().map(|field| UpgradeSkip { field });
-
-        let upgrades = optionized_fields.iter().map(|field| Upgrade {
+        let validates = optionized_fields.iter().map(|field| Validate {
             field,
             original,
             optionized,
@@ -1047,51 +1023,42 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
             errors,
         });
 
-        let ok = {
-            let oks = original_fields
+        let skips = original_fields.iter().map(|field| UpgradeSkip { field });
+        let upgrades = optionized_fields.iter().map(|field| Upgrade { field });
+        let subject = {
+            let fields = original_fields
                 .iter()
-                .map(|field| UpgradeOk { field, named });
-
-            construct!(original_style, span => [#original] #(#oks)*)
-        };
-
-        let err = {
-            let errs = optionized_fields
-                .iter()
-                .map(|field| UpgradeErr { field, named });
-
-            construct!(optionized_style, span => [Self] #(#errs)* #marker)
+                .map(|field| UpgradeField { field, named });
+            construct!(original_style, span => [#original] #(#fields)*)
         };
 
         output.push(qs! { span =>
             #[allow(non_snake_case)]
             #[automatically_derived]
             impl #impl_generics #krate::Optionized<#Subject> for #optionized #type_generics #where_clause {
-                type UpgradeErrors = #krate::UpgradeErrorCollection;
+                type Errors = #krate::ErrorCollection;
                 #[inline]
-                fn upgrade(self) -> ::core::result::Result<#Subject, (Self::UpgradeErrors, Self)> {
+                fn validate(&self) -> ::core::result::Result<(), Self::Errors> {
                     let mut #failed = false;
-                    let mut #errors = #krate::UpgradeErrorCollection::default();
+                    let mut #errors = #krate::ErrorCollection::default();
+                    #(#validates)*
+                    if !#failed {
+                        ::core::result::Result::Ok(())
+                    } else {
+                        ::core::result::Result::Err(#errors)
+                    }
+                }
+                #[inline]
+                fn upgrade_unchecked(self) -> #Subject {
                     #(#skips)*
                     #(#upgrades)*
-                    if !#failed {
-                        ::core::result::Result::Ok(#ok)
-                    } else {
-                        ::core::result::Result::Err((#errors, #err))
-                    }
+                    #subject
                 }
             }
         });
     }
 
     Ok(q! { #(#output)* })
-}
-
-#[derive(Debug, Default, FromMeta)]
-#[darling(default)]
-struct OptionizedArgs {
-    #[darling(rename = "crate")]
-    krate: Option<Crate>,
 }
 
 pub fn proc(args: TokenStream, input: &TokenStream) -> Result<TokenStream> {

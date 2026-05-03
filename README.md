@@ -80,7 +80,7 @@ struct Config {
 
 #### Upgrading from Partial
 
-Optionized structs implement the `Optionized` trait, allowing you to `upgrade()` them back into the full struct. If any required fields are `None`, it returns a detailed `UpgradeErrorCollection`.
+Optionized structs implement the `Optionized` trait, allowing you to `upgrade()` them back into the full struct. If any required fields are `None`, it returns a detailed `ErrorCollection`.
 
 ```rust
 use optionize::Optionized;
