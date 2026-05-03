@@ -60,6 +60,38 @@ impl FromMeta for MetaList {
 }
 
 #[derive(Debug, Default, FromMeta)]
+#[darling(default, and_then = "Self::finalize")]
+struct AttributeArgs {
+    #[darling(rename = "attrs", multiple)]
+    _attributes: Vec<MetaList>,
+    #[darling(skip)]
+    attributes: Option<Vec<Attribute>>,
+}
+
+impl AttributeArgs {
+    fn finalize(mut self) -> Result<Self> {
+        self.attributes = MetaList::merge(&mut self._attributes);
+        Ok(self)
+    }
+
+    fn patch(self, attrs: &mut Vec<Attribute>) {
+        if let Some(attributes) = self.attributes {
+            *attrs = attributes;
+        } else {
+            attrs.retain(|attr| !is_optionize(attr));
+        }
+    }
+}
+
+#[derive(Debug, Default, FromMeta)]
+#[darling(default)]
+struct GeneralArgs {
+    name: Option<LitStr>,
+    #[darling(flatten)]
+    attrs: AttributeArgs,
+}
+
+#[derive(Debug, Default, FromMeta)]
 #[darling(default)]
 struct PartialArgs {
     upgradable: SpannedValue<bool>,
@@ -67,23 +99,13 @@ struct PartialArgs {
 }
 
 #[derive(Debug, Default, FromAttributes)]
-#[darling(default, attributes(optionize), and_then = "Self::finalize")]
+#[darling(default, attributes(optionize))]
 struct StructArgs {
+    #[darling(flatten)]
+    general: GeneralArgs,
     #[darling(rename = "crate")]
     krate: Option<Path>,
-    name: Option<LitStr>,
-    #[darling(rename = "attrs", multiple)]
-    _attributes: Vec<MetaList>,
-    #[darling(skip)]
-    attributes: Option<Vec<Attribute>>,
     partial: Option<SpannedValue<Override<PartialArgs>>>,
-}
-
-impl StructArgs {
-    fn finalize(mut self) -> Result<Self> {
-        self.attributes = MetaList::merge(&mut self._attributes);
-        Ok(self)
-    }
 }
 
 #[derive(Debug, Default, FromMeta)]
@@ -95,11 +117,8 @@ struct SkipArgs {
 #[derive(Debug, Default, FromAttributes)]
 #[darling(default, attributes(optionize), and_then = "Self::finalize")]
 struct FieldArgs {
-    name: Option<LitStr>,
-    #[darling(rename = "attrs", multiple)]
-    _attributes: Vec<MetaList>,
-    #[darling(skip)]
-    attributes: Option<Vec<Attribute>>,
+    #[darling(flatten)]
+    general: GeneralArgs,
     flatten: SpannedValue<bool>,
     nest: Option<Type>,
     skip: Option<SpannedValue<Override<SkipArgs>>>,
@@ -127,8 +146,6 @@ impl FieldArgs {
                 );
             }
         }
-
-        self.attributes = MetaList::merge(&mut self._attributes);
 
         errors.finish_with(self)
     }
@@ -329,7 +346,7 @@ impl FieldIr {
                 continue;
             }
 
-            if let Some(name) = args.name {
+            if let Some(name) = args.general.name {
                 let Some(ident) = ident.as_ref() else {
                     errors.push(
                         Error::custom("`name` attribute cannot be used on unnamed fields")
@@ -347,11 +364,7 @@ impl FieldIr {
                 field.ident = Some(ident);
             }
 
-            if let Some(attrs) = args.attributes {
-                field.attrs = attrs;
-            } else {
-                field.attrs.retain(|attr| !is_optionize(attr));
-            }
+            args.general.attrs.patch(&mut field.attrs);
 
             ir.optionized = match &field.ident {
                 Some(ident) => ident.to_token_stream(),
@@ -839,16 +852,16 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
     let mut optionized = original;
     let original = &optionized.ident.clone();
 
-    optionized.ident = match args.name {
+    optionized.ident = match args.general.name {
         Some(name) => format(&name, original)?,
         None => format(&pqs! { original.span() => "{}Optional"}, original)?,
     };
 
-    if let Some(attrs) = args.attributes {
-        optionized.attrs = attrs;
-    } else {
-        optionized.attrs.retain(|attr| !is_optionize(attr));
-    }
+    args.general.attrs.patch(&mut optionized.attrs);
+
+    let (impl_generics, type_generics, where_clause) = optionized.generics.split_for_impl();
+    #[allow(non_snake_case)]
+    let Subject = q! { #original #type_generics };
 
     let data = match &mut optionized.data {
         Data::Struct(data) => data,
@@ -862,7 +875,18 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
     let (style, fields) = match &mut data.fields {
         Fields::Named(fields) => (StructStyle::Named, &mut fields.named),
         Fields::Unnamed(fields) => (StructStyle::Unnamed, &mut fields.unnamed),
-        Fields::Unit => (StructStyle::Unit, &mut Default::default()),
+        fields @ Fields::Unit => {
+            if let Some(span) = marked {
+                *fields = Fields::Unnamed(FieldsUnnamed {
+                    paren_token: Paren(span),
+                    unnamed: Default::default(),
+                });
+            }
+            let Fields::Unnamed(fields) = fields else {
+                unreachable!()
+            };
+            (StructStyle::Unit, &mut fields.unnamed)
+        },
     };
 
     let original_fields = FieldIr::extract(fields, krate.clone(), partial.is_some())?;
@@ -870,10 +894,6 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
         .iter()
         .filter(|f| matches!(f.strategy, FieldStrategy::Optionize { .. }))
         .collect::<Vec<_>>();
-
-    let (impl_generics, type_generics, where_clause) = optionized.generics.split_for_impl();
-    #[allow(non_snake_case)]
-    let Subject = q! { #original #type_generics };
 
     let mut marker = None;
     if let Some(span) = marked {
@@ -902,13 +922,6 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
                 };
                 fields.push(marker);
             }
-        }
-
-        if matches!(style, StructStyle::Unit) {
-            data.fields = Fields::Unnamed(FieldsUnnamed {
-                paren_token: Paren(optionized.ident.span()),
-                unnamed: take(fields),
-            });
         }
     }
 
