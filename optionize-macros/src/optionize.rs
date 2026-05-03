@@ -4,7 +4,7 @@ use darling::{Error, Result};
 use darling::{FromAttributes, FromMeta};
 use proc_macro2::Span;
 use proc_macro2::{Ident, TokenStream};
-use quote::{ToTokens, format_ident, quote_spanned as qs};
+use quote::{format_ident, quote_spanned as qs, ToTokens};
 use std::collections::HashSet;
 use std::default::Default;
 use std::iter::zip;
@@ -13,8 +13,8 @@ use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::token::{Bracket, Comma, Pound};
 use syn::{
-    AttrStyle, Attribute, Data, DeriveInput, Expr, Field, Fields, Index, LitStr, Meta, Type,
-    WherePredicate, parse_quote, parse_quote_spanned as pqs, parse_str, parse2,
+    parse2, parse_quote, parse_quote_spanned as pqs, parse_str, AttrStyle, Attribute, Data, DeriveInput, Expr, Field, Fields,
+    Index, LitStr, Meta, Type, WherePredicate,
 };
 
 // region args
@@ -231,17 +231,34 @@ impl FieldIr {
             let _span = field.span();
             span!(_span);
 
-            let ident = &field.ident;
             let ty = field.ty.clone();
+            let ident = &field.ident;
 
-            let original_field = match ident {
-                Some(ident) => q! { #ident },
-                None => {
-                    let index = Index {
-                        index: i as u32,
-                        span: _span,
-                    };
-                    q! { #index }
+            let mut ir = {
+                let mut local = if let Some(ident) = ident.clone() {
+                    format_ident!("v_{}", ident)
+                } else {
+                    format_ident!("v_{}", i)
+                };
+                local.set_span(_span);
+
+                let original = match ident {
+                    Some(ident) => q! { #ident },
+                    None => {
+                        let index = Index {
+                            index: i as u32,
+                            span: _span,
+                        };
+                        q! { #index }
+                    }
+                };
+
+                FieldIr {
+                    ty: ty.clone(),
+                    span: _span,
+                    original,
+                    local,
+                    ..Default::default()
                 }
             };
 
@@ -259,25 +276,19 @@ impl FieldIr {
                         Error::custom(
                             "`skip` attribute is only allowed when `partial` is specified",
                         )
-                        .with_span(&field),
+                        .with_span(&_span),
                     );
                     continue;
                 }
 
-                let field = FieldIr {
-                    ty: ty.clone(),
-                    span: _span,
-                    original: original_field,
-                    strategy: FieldStrategy::Skip {
-                        upgrade: upgrade.unwrap_or_else(|| {
-                            pq! { ::core::default::Default::default() }
-                        }),
-                    },
-                    ..Default::default()
+                ir.strategy = FieldStrategy::Skip {
+                    upgrade: upgrade.unwrap_or_else(|| {
+                        pq! { ::core::default::Default::default() }
+                    }),
                 };
 
                 skipped += 1;
-                this.push(field);
+                this.push(ir);
                 continue;
             }
 
@@ -307,7 +318,7 @@ impl FieldIr {
                 field.attrs.retain(|attr| !is_optionize(attr));
             }
 
-            let optionized_field = match &field.ident {
+            ir.optionized = match &field.ident {
                 Some(ident) => q! { #ident },
                 None => {
                     let index = Index {
@@ -330,22 +341,9 @@ impl FieldIr {
                 };
             }
 
-            let mut local = if let Some(ident) = field.ident.clone() {
-                format_ident!("v_{}", ident)
-            } else {
-                format_ident!("v_{}", i)
-            };
-            local.set_span(_span);
+            ir.strategy = FieldStrategy::Optionize { wrap, nest };
 
-            this.push(FieldIr {
-                ty: ty.clone(),
-                span: _span,
-                original: original_field.clone(),
-                optionized: optionized_field.clone(),
-                strategy: FieldStrategy::Optionize { wrap, nest },
-                local,
-            });
-
+            this.push(ir);
             fields.push(field);
         }
 
@@ -657,6 +655,25 @@ impl<'l> ToTokens for Upgrade<'l> {
     }
 }
 
+struct UpgradeSkip<'l> {
+    field: &'l FieldIr,
+}
+
+impl<'l> ToTokens for UpgradeSkip<'l> {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        expand! {
+            self.field => {
+                strategy,
+                local,
+            }
+        }
+
+        if let FieldStrategy::Skip { upgrade } = strategy {
+            tokens.extend(q! { let #local = { #upgrade }; });
+        }
+    }
+}
+
 struct UpgradeOk<'l> {
     field: &'l FieldIr,
     named: bool,
@@ -672,23 +689,19 @@ impl<'l> ToTokens for UpgradeOk<'l> {
             }
         }
 
-        let ok = match strategy {
-            FieldStrategy::Skip { upgrade } => {
-                if self.named {
-                    q! { #original: #upgrade, }
-                } else {
-                    q! { #upgrade, }
-                }
+        let local = match strategy {
+            FieldStrategy::Skip { .. } => {
+                q! { #local }
             }
             FieldStrategy::Optionize { .. } => {
-                let local = q! { ::core::result::Result::unwrap(#local) };
-
-                if self.named {
-                    q! { #original: #local, }
-                } else {
-                    q! { #local, }
-                }
+                q! { ::core::result::Result::unwrap_or_else(#local, |_| ::core::unreachable!()) }
             }
+        };
+
+        let ok = if self.named {
+            q! { #original: #local, }
+        } else {
+            q! { #local, }
         };
 
         tokens.extend(ok);
@@ -902,6 +915,8 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
         let failed = &format_ident!("failed");
         let errors = &format_ident!("errors");
 
+        let skips = original_fields.iter().map(|field| UpgradeSkip { field });
+
         let upgrades = optionized_fields.iter().map(|field| Upgrade {
             field,
             original,
@@ -933,6 +948,7 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
                 fn upgrade(self) -> ::core::result::Result<#Subject, (Self::UpgradeErrors, Self)> {
                     let mut #failed = false;
                     let mut #errors = ::optionize::UpgradeErrorCollection::default();
+                    #(#skips)*
                     #(#upgrades)*
                     if !#failed {
                         ::core::result::Result::Ok(#ok)
