@@ -4,7 +4,7 @@ use darling::{Error, Result};
 use darling::{FromAttributes, FromMeta};
 use proc_macro2::Span;
 use proc_macro2::{Ident, TokenStream};
-use quote::{format_ident, quote_spanned as qs, ToTokens};
+use quote::{format_ident, quote_spanned as qs, IdentFragment, ToTokens};
 use std::collections::HashSet;
 use std::default::Default;
 use std::iter::zip;
@@ -62,8 +62,8 @@ impl FromMeta for MetaList {
 #[derive(Debug, Default, FromMeta)]
 #[darling(default)]
 struct PartialArgs {
-    upgradable: bool,
-    marked: bool,
+    upgradable: SpannedValue<bool>,
+    marked: SpannedValue<bool>,
 }
 
 #[derive(Debug, Default, FromAttributes)]
@@ -74,7 +74,7 @@ struct StructArgs {
     _attributes: Vec<MetaList>,
     #[darling(skip)]
     attributes: Option<Vec<Attribute>>,
-    partial: Option<Override<PartialArgs>>,
+    partial: Option<SpannedValue<Override<PartialArgs>>>,
 }
 
 impl StructArgs {
@@ -226,20 +226,21 @@ impl FieldIr {
         for (i, (mut field, args)) in zip(take(fields), args).enumerate() {
             let ty = field.ty.clone();
             let ident = &field.ident;
+            let span = {
+                let ty = ty.span();
+                ident.as_ref().map_or(ty, |ident| {
+                    let ident = ident.span();
+                    ty.join(ident).unwrap_or(ident)
+                })
+            };
 
             let _span = field
                 .attrs
                 .iter()
                 .filter(|attr| is_optionize(attr))
-                .map(|attr| attr.span())
+                .map(|attr| attr.bracket_token.span.span())
                 .reduce(|a, s| s.join(a).unwrap_or(a))
-                .unwrap_or_else(|| {
-                    let ty = ty.span();
-                    ident.as_ref().map_or(ty, |ident| {
-                        let ident = ident.span();
-                        ty.join(ident).unwrap_or(ident)
-                    })
-                });
+                .unwrap_or(span);
             span!(_span);
 
             let mut ir = {
@@ -251,15 +252,10 @@ impl FieldIr {
                 local.set_span(_span);
 
                 let original = match ident {
-                    Some(ident) => q! { #ident },
-                    None => {
-                        let index = Index {
-                            index: i as u32,
-                            span: _span,
-                        };
-                        q! { #index }
-                    }
+                    Some(ident) => ident.to_token_stream(),
+                    None => Index::from(i).to_token_stream(),
                 };
+                let original = qs! { span => #original };
 
                 FieldIr {
                     ty: ty.clone(),
@@ -271,27 +267,32 @@ impl FieldIr {
             };
 
             let (skip, upgrade) = match args.skip {
-                Some(skip) => match skip.into_inner() {
-                    Override::Inherit => (true, None),
-                    Override::Explicit(s) => (true, s.upgrade),
-                },
-                None => (false, None),
+                Some(skip) => {
+                    let span = skip.span();
+                    let upgrade = if let Override::Explicit(s) = skip.into_inner() {
+                        s.upgrade
+                    } else {
+                        None
+                    };
+                    (Some(span), upgrade)
+                }
+                None => (None, None),
             };
 
-            if skip {
+            if let Some(span) = skip {
                 if !partial {
                     errors.push(
                         Error::custom(
                             "`skip` attribute is only allowed when `partial` is specified",
                         )
-                        .with_span(&_span),
+                        .with_span(&span),
                     );
                     continue;
                 }
 
                 ir.strategy = FieldStrategy::Skip {
                     upgrade: upgrade.unwrap_or_else(|| {
-                        pqs! { ty.span() => ::core::default::Default::default() }
+                        pq! { <#ty as ::core::default::Default>::default() }
                     }),
                 };
 
@@ -301,14 +302,14 @@ impl FieldIr {
             }
 
             if let Some(name) = args.name {
+                let span = name.span();
                 let Some(ident) = ident.as_ref() else {
                     errors.push(
                         Error::custom("`name` attribute cannot be used on unnamed fields")
-                            .with_span(&ty),
+                            .with_span(&span),
                     );
                     continue;
                 };
-                let span = name.span();
                 let mut ident = match format(&name.value(), ident) {
                     Ok(ident) => ident,
                     Err(e) => {
@@ -317,7 +318,7 @@ impl FieldIr {
                     }
                 };
                 ident.set_span(span);
-                field.ident = Some(ident.clone());
+                field.ident = Some(ident);
             }
 
             if let Some(attrs) = args.attributes {
@@ -327,14 +328,12 @@ impl FieldIr {
             }
 
             ir.optionized = match &field.ident {
-                Some(ident) => q! { #ident },
-                None => {
-                    let index = Index {
-                        index: (i - skipped) as u32,
-                        span: _span,
-                    };
-                    q! { #index }
+                Some(ident) => ident.to_token_stream(),
+                None => Index {
+                    index: (i - skipped) as u32,
+                    span: _span,
                 }
+                .to_token_stream(),
             };
 
             let wrap = !*args.flatten;
@@ -343,7 +342,7 @@ impl FieldIr {
             {
                 let ty = nest.as_ref().unwrap_or(&ty);
                 field.ty = if wrap {
-                    pqs! { ty.span() => Option<#ty> }
+                    pq! { ::core::option::Option<#ty> }
                 } else {
                     ty.clone()
                 };
@@ -542,7 +541,7 @@ impl<'l> ToTokens for Merge<'l> {
                 }
             },
             (true, false) => q! {
-                if #other.#optionized.is_some() {
+                if ::core::option::Option::is_some(&#other.#optionized) {
                     self.#optionized = #other.#optionized;
                 }
             },
@@ -638,7 +637,7 @@ impl<'l> ToTokens for Upgrade<'l> {
             q! {
                 ::optionize::Optionized::<#ty>::upgrade(#local).map_err(|(e, v)| {
                     #failed = true;
-                    #errors.extend(e.into_iter().map(#nest_map_err));
+                    #errors.extend(::core::iter::IntoIterator::into_iter(e).map(#nest_map_err));
                     #err
                 })
             }
@@ -776,22 +775,31 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
     span!(_span);
 
     macro_rules! construct {
-        ($style:expr, [$($ty:tt)+] $($fields:tt)*) => {
+        ($style:expr, $span:expr => [$($ty:tt)+] $($fields:tt)*) => {
             match $style {
-                StructStyle::Named => q! { $($ty)* { $($fields)* } },
-                StructStyle::Unnamed => q! { $($ty)* ( $($fields)* ) },
-                StructStyle::Unit => q! { $($ty)* },
+                StructStyle::Named => qs! { $span => $($ty)* { $($fields)* } },
+                StructStyle::Unnamed => qs! { $span => $($ty)* ( $($fields)* ) },
+                StructStyle::Unit => qs! { $span => $($ty)* },
             }
         };
     }
 
     let args = StructArgs::from_attributes(&original.attrs)?;
 
-    let (partial, upgradable, marked) = match &args.partial {
-        Some(Override::Inherit) => (true, false, false),
-        Some(Override::Explicit(p)) => (true, p.upgradable, p.marked),
-        None => (false, false, false),
-    };
+    let (partial, upgradable, marked) = args
+        .partial
+        .as_ref()
+        .map(|partial| {
+            let (upgradable, marked) = match partial.as_ref() {
+                Override::Explicit(p) => (
+                    p.upgradable.then(|| p.upgradable.span()),
+                    p.marked.then(|| p.marked.span()),
+                ),
+                _ => Default::default(),
+            };
+            (Some(partial.span()), upgradable, marked)
+        })
+        .unwrap_or_default();
 
     let mut optionized = original;
     let original = &optionized.ident.clone();
@@ -825,7 +833,7 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
     };
     let named = matches!(style, StructStyle::Named);
 
-    let original_fields = FieldIr::extract(fields, partial)?;
+    let original_fields = FieldIr::extract(fields, partial.is_some())?;
     let optionized_fields = original_fields
         .iter()
         .filter(|f| matches!(f.strategy, FieldStrategy::Optionize { .. }))
@@ -836,7 +844,7 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
     let Subject = q! { #original #type_generics };
 
     let mut marker = None;
-    if marked {
+    if let Some(span) = marked {
         match style {
             StructStyle::Named => {
                 let names = fields
@@ -848,15 +856,15 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
                 while names.contains(&ident) {
                     ident.insert(0, '_');
                 }
-                let ident = format_ident!("{}", ident);
-                fields.push(pq! {
+                let ident = format_ident!("{}", ident, span = span);
+                fields.push(pqs! { span =>
                     #[doc(hidden)]
                     #ident: ::core::marker::PhantomData<#Subject>
                 });
                 marker = Some(ident);
             }
             StructStyle::Unnamed => {
-                let marker = pq! {
+                let marker = pqs! { span =>
                     #[doc(hidden)]
                     ::core::marker::PhantomData<#Subject>
                 };
@@ -869,11 +877,11 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
     let mut output = vec![q! { #optionized }];
     let optionized = &optionized.ident;
 
-    let marker = marked.then(|| {
+    let marker = marked.map(|span| {
         if let Some(marker) = marker {
-            q! { #marker: ::core::marker::PhantomData, }
+            qs! { span => #marker: ::core::marker::PhantomData, }
         } else {
-            q! { ::core::marker::PhantomData }
+            qs! { span => ::core::marker::PhantomData }
         }
     });
 
@@ -896,7 +904,7 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
                 named,
             });
 
-            construct!(style, [Self] #(#optionizes)* #marker )
+            construct!(style, _span => [Self] #(#optionizes)* #marker )
         };
         let patches = optionized_fields
             .iter()
@@ -913,7 +921,13 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
         });
     }
 
-    if !partial || upgradable {
+    let span = if partial.is_none() {
+        Some(_span)
+    } else {
+        upgradable
+    };
+
+    if let Some(span) = span {
         where_clause.predicates.extend(
             optionized_fields
                 .iter()
@@ -939,7 +953,7 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
                 .iter()
                 .map(|field| UpgradeOk { field, named });
 
-            construct!(style, [#original] #(#oks)*)
+            construct!(style, span => [#original] #(#oks)*)
         };
 
         let err = {
@@ -947,10 +961,10 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
                 .iter()
                 .map(|field| UpgradeErr { field, named });
 
-            construct!(style, [Self] #(#errs)* #marker)
+            construct!(style, span => [Self] #(#errs)* #marker)
         };
 
-        output.push(q! {
+        output.push(qs! { span =>
             #[allow(non_snake_case)]
             impl #impl_generics ::optionize::Optionized<#Subject> for #optionized #type_generics #where_clause {
                 type UpgradeErrors = ::optionize::UpgradeErrorCollection;
