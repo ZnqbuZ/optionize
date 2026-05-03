@@ -14,7 +14,7 @@ use syn::spanned::Spanned;
 use syn::token::{Bracket, Comma, Pound};
 use syn::{
     AttrStyle, Attribute, Data, DeriveInput, Expr, Field, Fields, Index, LitStr, Meta, Type,
-    parse_quote, parse_quote_spanned as pqs, parse_str, parse2,
+    WherePredicate, parse_quote, parse_quote_spanned as pqs, parse_str, parse2,
 };
 
 // region args
@@ -367,6 +367,53 @@ macro_rules! expand {
 
         span!(*span);
     };
+}
+
+impl FieldIr {
+    fn partial_optionized_where(&self) -> Vec<WherePredicate> {
+        expand! {
+            self => {
+                ty,
+                strategy,
+            }
+        }
+
+        if let FieldStrategy::Optionize {
+            nest: Some(nest), ..
+        } = &strategy
+        {
+            vec![pq! {
+                #nest: ::optionize::PartialOptionized::<#ty>
+            }]
+        } else {
+            Default::default()
+        }
+    }
+
+    fn optionized_where(&self) -> Vec<WherePredicate> {
+        expand! {
+            self => {
+                ty,
+                strategy,
+            }
+        }
+
+        if let FieldStrategy::Optionize {
+            nest: Some(nest), ..
+        } = &strategy
+        {
+            vec![
+                pq! {
+                    #nest: ::optionize::Optionized::<#ty>
+                },
+                pq! {
+                    <#nest as ::optionize::Optionized::<#ty>>::UpgradeErrors: 'static
+                },
+            ]
+        } else {
+            Default::default()
+        }
+    }
 }
 
 struct Optionize<'l> {
@@ -811,6 +858,13 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
     let mut where_clause = where_clause.cloned().unwrap_or_else(|| pq! { where });
 
     {
+        where_clause.predicates.extend(
+            optionized_fields
+                .iter()
+                .copied()
+                .flat_map(FieldIr::partial_optionized_where),
+        );
+
         let subject = &format_ident!("subject");
 
         let optionize = {
@@ -838,6 +892,13 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
     }
 
     if !partial || upgradable {
+        where_clause.predicates.extend(
+            optionized_fields
+                .iter()
+                .copied()
+                .flat_map(FieldIr::optionized_where),
+        );
+
         let failed = &format_ident!("failed");
         let errors = &format_ident!("errors");
 
