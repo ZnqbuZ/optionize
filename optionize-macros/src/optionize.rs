@@ -319,9 +319,9 @@ impl FieldIr {
 
             let mut ir = {
                 let mut local = if let Some(ident) = ident.clone() {
-                    format_ident!("v_{}", ident)
+                    format_ident!("v_{}", ident, span = Span::mixed_site())
                 } else {
-                    format_ident!("v_{}", i)
+                    format_ident!("v_{}", i, span = Span::mixed_site())
                 };
                 local.set_span(_span);
 
@@ -1006,7 +1006,7 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
                 .flat_map(FieldIr::partial_optionized_where),
         );
 
-        let subject = &format_ident!("subject");
+        let subject = &format_ident!("subject", span = Span::mixed_site());
 
         let optionize = {
             let optionizes = optionized_fields.iter().map(|field| Optionize {
@@ -1020,7 +1020,7 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
         let patches = optionized_fields
             .iter()
             .map(|field| Patch { field, subject });
-        let other = &format_ident!("other");
+        let other = &format_ident!("other", span = Span::mixed_site());
         let merges = optionized_fields.iter().map(|field| Merge { field, other });
 
         output.push(q! {
@@ -1050,8 +1050,8 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
                 .flat_map(FieldIr::optionized_where),
         );
 
-        let failed = &format_ident!("failed");
-        let errors = &format_ident!("errors");
+        let failed = &format_ident!("failed", span = Span::mixed_site());
+        let errors = &format_ident!("errors", span = Span::mixed_site());
 
         let skips = original_fields.iter().map(|field| UpgradeSkip { field });
 
