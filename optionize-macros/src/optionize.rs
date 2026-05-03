@@ -1,10 +1,9 @@
 use darling::ast::NestedMeta;
-use darling::util::{Override, SpannedValue};
-use darling::{Error, Result};
-use darling::{FromAttributes, FromMeta};
-use proc_macro2::Span;
-use proc_macro2::{Ident, TokenStream};
-use quote::{format_ident, quote_spanned as qs, ToTokens};
+use darling::util::{Flag, Override, SpannedValue};
+use darling::{Error, FromAttributes, FromMeta, Result};
+use proc_macro_crate::{FoundCrate, crate_name};
+use proc_macro2::{Ident, Span, TokenStream};
+use quote::{ToTokens, format_ident, quote, quote_spanned as qs};
 use std::collections::HashSet;
 use std::default::Default;
 use std::iter::zip;
@@ -12,10 +11,11 @@ use std::mem::take;
 use syn::ext::IdentExt;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
-use syn::token::{Bracket, Comma, Pound};
+use syn::token::{Brace, Bracket, Comma, Paren, Pound};
 use syn::{
-    parse2, parse_quote, parse_quote_spanned as pqs, parse_str, AttrStyle, Attribute, Data, DeriveInput, Expr, Field, Fields,
-    Index, LitStr, Meta, Type, WherePredicate,
+    AttrStyle, Attribute, Data, DeriveInput, Expr, Field, Fields, FieldsNamed, FieldsUnnamed,
+    Index, LitStr, Member, Meta, Path, Type, WherePredicate, parse_quote,
+    parse_quote_spanned as pqs, parse_str, parse2,
 };
 
 // region args
@@ -60,29 +60,101 @@ impl FromMeta for MetaList {
     }
 }
 
-#[derive(Debug, Default, FromMeta)]
+#[derive(Debug, Clone, FromMeta)]
 #[darling(default)]
-struct PartialArgs {
-    upgradable: SpannedValue<bool>,
-    marked: SpannedValue<bool>,
+struct Crate(Path);
+
+impl Crate {
+    fn infer() -> Self {
+        match crate_name("optionize") {
+            Ok(FoundCrate::Name(name)) => {
+                let name = format_ident!("{}", name);
+                Self(parse_quote! { ::#name })
+            }
+            _ => Default::default(),
+        }
+    }
 }
 
-#[derive(Debug, Default, FromAttributes)]
-#[darling(default, attributes(optionize), and_then = "Self::finalize")]
-struct StructArgs {
-    name: Option<LitStr>,
+impl Default for Crate {
+    fn default() -> Self {
+        Self(parse_quote! { ::optionize })
+    }
+}
+
+impl ToTokens for Crate {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        self.0.to_tokens(tokens);
+    }
+}
+
+#[derive(Debug, Default, FromMeta)]
+#[darling(default, and_then = "Self::finalize")]
+struct Attributes {
+    #[doc(hidden)]
     #[darling(rename = "attrs", multiple)]
     _attributes: Vec<MetaList>,
     #[darling(skip)]
     attributes: Option<Vec<Attribute>>,
-    partial: Option<SpannedValue<Override<PartialArgs>>>,
 }
 
-impl StructArgs {
+impl Attributes {
     fn finalize(mut self) -> Result<Self> {
         self.attributes = MetaList::merge(&mut self._attributes);
         Ok(self)
     }
+
+    fn patch(self, attrs: &mut Vec<Attribute>) {
+        if let Some(attributes) = self.attributes {
+            *attrs = attributes;
+        } else {
+            attrs.retain(|attr| !is_optionize(attr));
+        }
+    }
+}
+
+#[derive(Debug, Default, FromMeta)]
+#[darling(default)]
+struct OptionizedArgs {
+    #[darling(rename = "crate")]
+    krate: Option<Crate>,
+}
+
+#[derive(Debug, Default, FromMeta)]
+#[darling(default)]
+struct GeneralArgs {
+    name: Option<LitStr>,
+    #[darling(flatten)]
+    attrs: Attributes,
+}
+
+impl GeneralArgs {
+    fn is_some(&self) -> bool {
+        self.name.is_some() || self.attrs.attributes.is_some()
+    }
+}
+
+#[derive(Debug, Default, FromMeta)]
+#[darling(default)]
+struct MarkedArgs {
+    name: Option<Ident>,
+    #[darling(flatten)]
+    attrs: Attributes,
+}
+
+#[derive(Debug, Default, FromMeta)]
+#[darling(default)]
+struct PartialArgs {
+    upgradable: Flag,
+    marked: Option<SpannedValue<Override<MarkedArgs>>>,
+}
+
+#[derive(Debug, Default, FromAttributes)]
+#[darling(default, attributes(optionize))]
+struct StructArgs {
+    #[darling(flatten)]
+    general: GeneralArgs,
+    partial: Option<SpannedValue<Override<PartialArgs>>>,
 }
 
 #[derive(Debug, Default, FromMeta)]
@@ -94,42 +166,25 @@ struct SkipArgs {
 #[derive(Debug, Default, FromAttributes)]
 #[darling(default, attributes(optionize), and_then = "Self::finalize")]
 struct FieldArgs {
-    name: Option<LitStr>,
-    #[darling(rename = "attrs", multiple)]
-    _attributes: Vec<MetaList>,
-    #[darling(skip)]
-    attributes: Option<Vec<Attribute>>,
-    flatten: SpannedValue<bool>,
+    #[darling(flatten)]
+    general: GeneralArgs,
+    flatten: Flag,
     nest: Option<Type>,
     skip: Option<SpannedValue<Override<SkipArgs>>>,
 }
 
 impl FieldArgs {
-    fn finalize(mut self) -> Result<Self> {
-        let mut errors = Error::accumulator();
-
-        if let Some(skip) = &self.skip {
-            let skip = skip.span();
-
-            if *self.flatten {
-                let flatten = self.flatten.span();
-                errors.push(
-                    Error::custom("`flatten` cannot be used with `skip`")
-                        .with_span(&skip.join(flatten).unwrap_or(flatten)),
-                );
-            }
-            if let Some(nest) = &self.nest {
-                let nest = nest.span();
-                errors.push(
-                    Error::custom("`nest` cannot be used with `skip`")
-                        .with_span(&skip.join(nest).unwrap_or(nest)),
-                );
-            }
+    fn finalize(self) -> Result<Self> {
+        if let Some(skip) = &self.skip
+            && (self.general.is_some() || self.flatten.is_present() || self.nest.is_some())
+        {
+            return Err(
+                Error::custom("`skip` attribute cannot be combined with other attributes")
+                    .with_span(&skip.span()),
+            );
         }
 
-        self.attributes = MetaList::merge(&mut self._attributes);
-
-        errors.finish_with(self)
+        Ok(self)
     }
 }
 
@@ -139,15 +194,12 @@ impl FieldArgs {
 
 fn format(pattern: &LitStr, ident: &Ident) -> Result<Ident> {
     let span = pattern.span();
-    let ident = format!(
-        "r#{}",
-        pattern.value().replace("{}", &ident.unraw().to_string())
-    );
-    let mut new = parse_str::<Ident>(&ident).map_err(|_| {
+    let ident = pattern.value().replace("{}", &ident.unraw().to_string());
+    let mut ident = parse_str::<Ident>(&ident).map_err(|_| {
         Error::custom(format!("`{}` is not a valid identifier", ident)).with_span(&span)
     })?;
-    new.set_span(span);
-    Ok(new)
+    ident.set_span(span);
+    Ok(ident)
 }
 
 fn is_optionize(attr: &Attribute) -> bool {
@@ -155,6 +207,13 @@ fn is_optionize(attr: &Attribute) -> bool {
         .segments
         .last()
         .is_some_and(|s| s.ident == "optionize")
+}
+
+fn member_to_string(member: &Member) -> String {
+    match member {
+        Member::Named(ident) => ident.unraw().to_string(),
+        Member::Unnamed(index) => index.index.to_string(),
+    }
 }
 
 macro_rules! span {
@@ -180,6 +239,10 @@ macro_rules! span {
 
 //endregion
 
+// region codegen
+
+// region ir
+
 #[derive(Debug)]
 enum FieldStrategy {
     Skip { upgrade: Expr },
@@ -196,10 +259,11 @@ impl Default for FieldStrategy {
 }
 
 struct FieldIr {
+    krate: Crate,
     ty: Type,
     span: Span,
-    original: TokenStream,
-    optionized: TokenStream,
+    original: Member,
+    optionized: Member,
     strategy: FieldStrategy,
     local: Ident,
 }
@@ -207,10 +271,11 @@ struct FieldIr {
 impl Default for FieldIr {
     fn default() -> Self {
         Self {
+            krate: Default::default(),
             ty: parse_quote!(()),
             span: Span::call_site(),
-            original: Default::default(),
-            optionized: Default::default(),
+            original: format_ident!("_").into(),
+            optionized: format_ident!("_").into(),
             strategy: Default::default(),
             local: format_ident!("_"),
         }
@@ -218,7 +283,11 @@ impl Default for FieldIr {
 }
 
 impl FieldIr {
-    fn extract(fields: &mut Punctuated<Field, Comma>, partial: bool) -> Result<Vec<Self>> {
+    fn extract(
+        fields: &mut Punctuated<Field, Comma>,
+        krate: Crate,
+        partial: bool,
+    ) -> Result<Vec<Self>> {
         let mut errors = Error::accumulator();
 
         let args = fields
@@ -250,20 +319,23 @@ impl FieldIr {
             span!(_span);
 
             let mut ir = {
-                let mut local = if let Some(ident) = ident.clone() {
-                    format_ident!("v_{}", ident)
+                let local = if let Some(ident) = ident.clone() {
+                    format_ident!("v_{}", ident, span = Span::mixed_site())
                 } else {
-                    format_ident!("v_{}", i)
+                    format_ident!("v_{}", i, span = Span::mixed_site())
                 };
-                local.set_span(_span);
 
                 let original = match ident {
-                    Some(ident) => ident.to_token_stream(),
-                    None => Index::from(i).to_token_stream(),
+                    Some(ident) => ident.clone().into(),
+                    None => Index {
+                        index: i as u32,
+                        span,
+                    }
+                    .into(),
                 };
-                let original = qs! { span => #original };
 
                 FieldIr {
+                    krate: krate.clone(),
                     ty: ty.clone(),
                     span: _span,
                     original,
@@ -307,7 +379,7 @@ impl FieldIr {
                 continue;
             }
 
-            if let Some(name) = args.name {
+            if let Some(name) = args.general.name {
                 let Some(ident) = ident.as_ref() else {
                     errors.push(
                         Error::custom("`name` attribute cannot be used on unnamed fields")
@@ -325,22 +397,18 @@ impl FieldIr {
                 field.ident = Some(ident);
             }
 
-            if let Some(attrs) = args.attributes {
-                field.attrs = attrs;
-            } else {
-                field.attrs.retain(|attr| !is_optionize(attr));
-            }
+            args.general.attrs.patch(&mut field.attrs);
 
             ir.optionized = match &field.ident {
-                Some(ident) => ident.to_token_stream(),
+                Some(ident) => ident.clone().into(),
                 None => Index {
                     index: (i - skipped) as u32,
-                    span: _span,
+                    span,
                 }
-                .to_token_stream(),
+                .into(),
             };
 
-            let wrap = !*args.flatten;
+            let wrap = !args.flatten.is_present();
             let nest = args.nest;
 
             {
@@ -362,11 +430,12 @@ impl FieldIr {
     }
 }
 
-// region codegen
+// endregion
 
 macro_rules! expand {
     ($target:expr => { $($field:ident $(: $bind:pat)?),* $(,)? }) => {
         let FieldIr {
+            #[allow(unused_variables)]
             span,
             $(
                 $field $(: $bind)?,
@@ -382,6 +451,7 @@ impl FieldIr {
     fn partial_optionized_where(&self) -> Vec<WherePredicate> {
         expand! {
             self => {
+                krate,
                 ty,
                 strategy,
             }
@@ -392,7 +462,7 @@ impl FieldIr {
         } = &strategy
         {
             vec![pq! {
-                #nest: ::optionize::PartialOptionized::<#ty>
+                #nest: #krate::PartialOptionized<#ty>
             }]
         } else {
             Default::default()
@@ -402,6 +472,7 @@ impl FieldIr {
     fn optionized_where(&self) -> Vec<WherePredicate> {
         expand! {
             self => {
+                krate,
                 ty,
                 strategy,
             }
@@ -413,10 +484,10 @@ impl FieldIr {
         {
             vec![
                 pq! {
-                    #nest: ::optionize::Optionized::<#ty>
+                    #nest: #krate::Optionized<#ty>
                 },
                 pq! {
-                    <#nest as ::optionize::Optionized::<#ty>>::UpgradeErrors: 'static
+                    <#nest as #krate::Optionized<#ty>>::Errors: 'static
                 },
             ]
         } else {
@@ -428,13 +499,13 @@ impl FieldIr {
 struct Optionize<'l> {
     field: &'l FieldIr,
     subject: &'l Ident,
-    named: bool,
 }
 
 impl<'l> ToTokens for Optionize<'l> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         expand! {
             self.field => {
+                krate,
                 ty,
                 original,
                 optionized,
@@ -447,10 +518,9 @@ impl<'l> ToTokens for Optionize<'l> {
         let FieldStrategy::Optionize { wrap, nest } = strategy else {
             return;
         };
-        let nest = nest.is_some();
 
-        let mut optionize = if nest {
-            q! { ::optionize::PartialOptionized::<#ty>::optionize(#subject.#original) }
+        let mut optionize = if let Some(nest) = nest {
+            q! { <#nest as #krate::PartialOptionized<#ty>>::optionize(#subject.#original) }
         } else {
             q! { #subject.#original }
         };
@@ -459,13 +529,7 @@ impl<'l> ToTokens for Optionize<'l> {
             optionize = q! { ::core::option::Option::Some(#optionize) }
         };
 
-        let optionize = if self.named {
-            q! { #optionized: #optionize, }
-        } else {
-            q! { #optionize, }
-        };
-
-        tokens.extend(optionize);
+        tokens.extend(q! { #optionized: #optionize, });
     }
 }
 
@@ -478,6 +542,7 @@ impl<'l> ToTokens for Patch<'l> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         expand! {
             self.field => {
+                krate,
                 ty,
                 original,
                 optionized,
@@ -490,15 +555,14 @@ impl<'l> ToTokens for Patch<'l> {
         let FieldStrategy::Optionize { wrap, nest } = strategy else {
             return;
         };
-        let nest = nest.is_some();
 
         let patch = if *wrap {
             q! { v }
         } else {
             q! { self.#optionized }
         };
-        let mut patch = if nest {
-            q! { ::optionize::PartialOptionized::<#ty>::patch(#patch, &mut #subject.#original); }
+        let mut patch = if let Some(nest) = nest {
+            q! { <#nest as #krate::PartialOptionized<#ty>>::patch(#patch, &mut #subject.#original); }
         } else {
             q! { #subject.#original = #patch; }
         };
@@ -523,6 +587,7 @@ impl<'l> ToTokens for Merge<'l> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         expand! {
             self.field => {
+                krate,
                 ty,
                 optionized,
                 strategy,
@@ -534,25 +599,24 @@ impl<'l> ToTokens for Merge<'l> {
         let FieldStrategy::Optionize { wrap, nest } = strategy else {
             return;
         };
-        let nest = nest.is_some();
 
         let merge = match (wrap, nest) {
-            (true, true) => q! {
+            (true, Some(nest)) => q! {
                 match (&mut self.#optionized, #other.#optionized) {
-                    (Some(this), Some(other)) => ::optionize::PartialOptionized::<#ty>::merge(this, other),
-                    (None, Some(other)) => self.#optionized = Some(other),
+                    (::core::option::Option::Some(this), ::core::option::Option::Some(other)) => <#nest as #krate::PartialOptionized<#ty>>::merge(this, other),
+                    (::core::option::Option::None, ::core::option::Option::Some(other)) => self.#optionized = ::core::option::Option::Some(other),
                     _ => {}
                 }
             },
-            (true, false) => q! {
+            (true, None) => q! {
                 if ::core::option::Option::is_some(&#other.#optionized) {
                     self.#optionized = #other.#optionized;
                 }
             },
-            (false, true) => q! {
-                ::optionize::PartialOptionized::<#ty>::merge(&mut self.#optionized, #other.#optionized);
+            (false, Some(nest)) => q! {
+                <#nest as #krate::PartialOptionized<#ty>>::merge(&mut self.#optionized, #other.#optionized);
             },
-            (false, false) => q! {
+            (false, None) => q! {
                 self.#optionized = #other.#optionized;
             },
         };
@@ -561,7 +625,7 @@ impl<'l> ToTokens for Merge<'l> {
     }
 }
 
-struct Upgrade<'l> {
+struct Validate<'l> {
     field: &'l FieldIr,
     original: &'l Ident,
     optionized: &'l Ident,
@@ -569,10 +633,11 @@ struct Upgrade<'l> {
     errors: &'l Ident,
 }
 
-impl<'l> ToTokens for Upgrade<'l> {
+impl<'l> ToTokens for Validate<'l> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         expand! {
             self.field => {
+                krate,
                 ty,
                 original,
                 optionized,
@@ -584,44 +649,43 @@ impl<'l> ToTokens for Upgrade<'l> {
         let FieldStrategy::Optionize { wrap, nest } = strategy else {
             return;
         };
-        let nest = nest.is_some();
 
-        let original_str = original.to_string();
-        let optionized_str = optionized.to_string();
+        let original_str = member_to_string(original);
+        let optionized_str = member_to_string(optionized);
 
         let renamed = original_str == optionized_str;
 
         let (missing_err, nest_map_err) = {
             let ty = {
-                let original_str = self.original.to_string();
-                let optionized_str = self.optionized.to_string();
+                let original_ty = self.original.to_string();
+                let optionized_ty = self.optionized.to_string();
 
                 q! {
-                    ::optionize::TypeInfo {
-                        original: #original_str,
-                        optionized: #optionized_str,
+                    #krate::TypeInfo {
+                        original: #original_ty,
+                        optionized: #optionized_ty,
                     }
                 }
             };
 
             let field = if renamed {
-                q! { ::optionize::FieldInfo::Identical ( #original_str ) }
+                q! { #krate::FieldInfo::Identical ( #original_str ) }
             } else {
-                q! { ::optionize::FieldInfo::Renamed { original: #original_str, optionized: #optionized_str } }
+                q! { #krate::FieldInfo::Renamed { original: #original_str, optionized: #optionized_str } }
             };
 
             (
                 q! {
-                    ::optionize::UpgradeError::MissingField {
+                    #krate::Error::MissingField {
                         ty: #ty,
                         field: #field
                     }
                 },
                 q! {
-                    |e| ::optionize::UpgradeError::NestedError {
+                    |e| #krate::Error::NestedError {
                         ty: #ty,
                         field: #field,
-                        source: ::optionize::__private::alloc::boxed::Box::new(e) as _
+                        source: #krate::__private::alloc::boxed::Box::new(e) as _
                     }
                 },
             )
@@ -630,50 +694,72 @@ impl<'l> ToTokens for Upgrade<'l> {
         let failed = self.failed;
         let errors = self.errors;
 
-        tokens.extend(q! { let #local = self.#optionized; });
+        tokens.extend(q! { let #local = &self.#optionized; });
 
-        let mut expr = if nest {
-            let err = if *wrap {
-                q!(::core::option::Option::Some(v))
-            } else {
-                q!(v)
-            };
+        let validate = nest.as_ref().map(|nest| {
             q! {
-                ::optionize::Optionized::<#ty>::upgrade(#local).map_err(|(e, v)| {
+                if let ::core::result::Result::Err(e) = <#nest as #krate::Optionized<#ty>>::validate(#local) {
                     #failed = true;
                     #errors.extend(::core::iter::IntoIterator::into_iter(e).map(#nest_map_err));
-                    #err
-                })
+                }
+            }
+        });
+
+        let validate = if *wrap {
+            q! {
+                if let ::core::option::Option::Some(#local) = #local {
+                    #validate
+                } else {
+                    #failed = true;
+                    #errors.push(#missing_err);
+                }
             }
         } else {
-            q! { ::core::result::Result::Ok(#local) }
+            q! { #validate }
         };
 
-        if *wrap {
-            expr = q! {
-                match #local {
-                    ::core::option::Option::Some(#local) => #expr,
-                    ::core::option::Option::None => {
-                        #failed = true;
-                        #errors.push(#missing_err);
-                        ::core::result::Result::Err(::core::option::Option::None)
-                    }
-                }
-            };
-        }
-
-        tokens.extend(q! { let #local = #expr; });
+        tokens.extend(validate);
     }
 }
 
-struct UpgradeSkip<'l> {
-    field: &'l FieldIr,
+struct Upgrade<'l>(&'l FieldIr);
+
+impl<'l> ToTokens for Upgrade<'l> {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        expand! {
+            self.0 => {
+                krate,
+                ty,
+                optionized,
+                strategy,
+                local,
+            }
+        }
+
+        let FieldStrategy::Optionize { wrap, nest } = strategy else {
+            return;
+        };
+
+        tokens.extend(q! { let #local = self.#optionized; });
+        if *wrap {
+            tokens.extend(
+                q! { let #local = unsafe { ::core::option::Option::unwrap_unchecked(#local) }; },
+            );
+        }
+        if let Some(nest) = nest {
+            tokens.extend(q! {
+                let #local = unsafe { <#nest as #krate::Optionized<#ty>>::upgrade_unchecked(#local) };
+            })
+        }
+    }
 }
+
+struct UpgradeSkip<'l>(&'l FieldIr);
 
 impl<'l> ToTokens for UpgradeSkip<'l> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         expand! {
-            self.field => {
+            self.0 => {
                 ty,
                 strategy,
                 local,
@@ -686,94 +772,25 @@ impl<'l> ToTokens for UpgradeSkip<'l> {
     }
 }
 
-struct UpgradeOk<'l> {
-    field: &'l FieldIr,
-    named: bool,
-}
+struct UpgradeFieldValue<'l>(&'l FieldIr);
 
-impl<'l> ToTokens for UpgradeOk<'l> {
+impl<'l> ToTokens for UpgradeFieldValue<'l> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        expand! {
-            self.field => {
-                original,
-                strategy,
-                local,
-            }
-        }
-
-        let local = match strategy {
-            FieldStrategy::Skip { .. } => {
-                q! { #local }
-            }
-            FieldStrategy::Optionize { .. } => {
-                q! { ::core::result::Result::unwrap_or_else(#local, |_| ::core::unreachable!()) }
-            }
-        };
-
-        let ok = if self.named {
-            q! { #original: #local, }
-        } else {
-            q! { #local, }
-        };
-
-        tokens.extend(ok);
-    }
-}
-
-struct UpgradeErr<'l> {
-    field: &'l FieldIr,
-    named: bool,
-}
-
-impl<'l> ToTokens for UpgradeErr<'l> {
-    fn to_tokens(&self, tokens: &mut TokenStream) {
-        expand! {
-            self.field => {
-                ty,
-                optionized,
-                strategy,
-                local,
-            }
-        }
-
-        let FieldStrategy::Optionize { wrap, nest } = strategy else {
-            return;
-        };
-        let nest = nest.is_some();
-
-        let mut ok = q! { v };
-        if nest {
-            ok = q! { ::optionize::PartialOptionized::<#ty>::optionize(#ok) };
-        }
-        if *wrap {
-            ok = q! { ::core::option::Option::Some(#ok) };
-        }
-        let rollback = q! {
-            match #local {
-                ::core::result::Result::Ok(v) => #ok,
-                ::core::result::Result::Err(v) => v,
-            }
-        };
-
-        let err = if self.named {
-            q! { #optionized: #rollback, }
-        } else {
-            q! { #rollback, }
-        };
-
-        tokens.extend(err);
+        expand! { self.0 => { original, local } }
+        tokens.extend(q! { #original: #local, });
     }
 }
 
 // endregion
 
+#[derive(Debug, Clone, Copy)]
 enum StructStyle {
     Named,
     Unnamed,
     Unit,
 }
 
-pub fn derive(input: TokenStream) -> Result<TokenStream> {
+fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
     let original = parse2::<DeriveInput>(input)?;
     let _span = original.span();
     span!(_span);
@@ -781,9 +798,8 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
     macro_rules! construct {
         ($style:expr, $span:expr => [$($ty:tt)+] $($fields:tt)*) => {
             match $style {
-                StructStyle::Named => qs! { $span => $($ty)* { $($fields)* } },
-                StructStyle::Unnamed => qs! { $span => $($ty)* ( $($fields)* ) },
                 StructStyle::Unit => qs! { $span => $($ty)* },
+                _ => qs! { $span => #[allow(clippy::init_numbered_fields)] $($ty)* { $($fields)* } },
             }
         };
     }
@@ -792,61 +808,92 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
 
     let (partial, upgradable, marked) = args
         .partial
-        .as_ref()
         .map(|partial| {
-            let (upgradable, marked) = match partial.as_ref() {
+            let span = partial.span();
+            let (upgradable, marked) = match partial.into_inner() {
                 Override::Explicit(p) => (
-                    p.upgradable.then(|| p.upgradable.span()),
-                    p.marked.then(|| p.marked.span()),
+                    p.upgradable.is_present().then(|| p.upgradable.span()),
+                    p.marked,
                 ),
                 _ => Default::default(),
             };
-            (Some(partial.span()), upgradable, marked)
+            (Some(span), upgradable, marked)
         })
         .unwrap_or_default();
 
     let mut optionized = original;
     let original = &optionized.ident.clone();
 
-    optionized.ident = match args.name {
+    optionized.ident = match args.general.name {
         Some(name) => format(&name, original)?,
         None => format(&pqs! { original.span() => "{}Optional"}, original)?,
     };
 
-    if let Some(attrs) = args.attributes {
-        optionized.attrs = attrs;
-    } else {
-        optionized.attrs.retain(|attr| !is_optionize(attr));
-    }
+    args.general.attrs.patch(&mut optionized.attrs);
 
-    let (style, fields) = match &mut optionized.data {
-        Data::Struct(data) => match &mut data.fields {
-            Fields::Named(fields) => (StructStyle::Named, &mut fields.named),
-            Fields::Unnamed(fields) => (StructStyle::Unnamed, &mut fields.unnamed),
-            Fields::Unit => (StructStyle::Unit, &mut Default::default()),
-        },
+    let (impl_generics, type_generics, where_clause) = optionized.generics.split_for_impl();
+    #[allow(non_snake_case)]
+    let Subject = q! { #original #type_generics };
+
+    let data = match &mut optionized.data {
+        Data::Struct(data) => data,
         _ => {
             return Err(
                 Error::custom("Optionize can only be derived for structs").with_span(&_span)
             );
         }
     };
-    let named = matches!(style, StructStyle::Named);
 
-    let original_fields = FieldIr::extract(fields, partial.is_some())?;
+    let original_style = match &data.fields {
+        Fields::Named(_) => StructStyle::Named,
+        Fields::Unnamed(_) => StructStyle::Unnamed,
+        Fields::Unit => StructStyle::Unit,
+    };
+    let optionized_style = if matches!(original_style, StructStyle::Unit)
+        && let Some(marked) = &marked
+    {
+        let span = marked.span();
+        let punctuated = Default::default();
+        if let Override::Explicit(marked) = marked.as_ref()
+            && marked.name.is_some()
+        {
+            data.fields = Fields::Named(FieldsNamed {
+                brace_token: Brace(span),
+                named: punctuated,
+            });
+            StructStyle::Named
+        } else {
+            data.fields = Fields::Unnamed(FieldsUnnamed {
+                paren_token: Paren(span),
+                unnamed: punctuated,
+            });
+            StructStyle::Unnamed
+        }
+    } else {
+        original_style
+    };
+
+    let fields = match &mut data.fields {
+        Fields::Named(fields) => &mut fields.named,
+        Fields::Unnamed(fields) => &mut fields.unnamed,
+        Fields::Unit => &mut Default::default(),
+    };
+
+    let original_fields = FieldIr::extract(fields, krate.clone(), partial.is_some())?;
     let optionized_fields = original_fields
         .iter()
         .filter(|f| matches!(f.strategy, FieldStrategy::Optionize { .. }))
         .collect::<Vec<_>>();
 
-    let (impl_generics, type_generics, where_clause) = optionized.generics.split_for_impl();
-    #[allow(non_snake_case)]
-    let Subject = q! { #original #type_generics };
+    let marker = if let Some(marked) = marked {
+        let span = marked.span();
+        let marked = marked.into_inner().unwrap_or_default();
 
-    let mut marker = None;
-    if let Some(span) = marked {
-        match style {
-            StructStyle::Named => {
+        let mut attrs = vec![pqs! { span => #[doc(hidden)] }];
+        marked.attrs.patch(&mut attrs);
+
+        let ident = match (original_style, marked.name) {
+            (StructStyle::Named, None) => {
                 let names = fields
                     .iter()
                     .filter_map(|f| f.ident.as_ref())
@@ -856,66 +903,89 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
                 while names.contains(&ident) {
                     ident.insert(0, '_');
                 }
-                let ident = format_ident!("{}", ident, span = span);
-                fields.push(pqs! { span =>
-                    #[doc(hidden)]
-                    #ident: ::core::marker::PhantomData<#Subject>
-                });
-                marker = Some(ident);
+                Some(format_ident!("{}", ident, span = span))
             }
-            StructStyle::Unnamed => {
-                let marker = pqs! { span =>
-                    #[doc(hidden)]
-                    ::core::marker::PhantomData<#Subject>
-                };
-                fields.push(marker);
+            (StructStyle::Unnamed, Some(name)) => {
+                return Err(
+                    Error::custom("`name` attribute cannot be used on unnamed structs")
+                        .with_span(&name),
+                );
             }
-            _ => {}
-        }
-    }
+            (_, Some(name)) => Some(name),
+            _ => None,
+        };
+
+        let (marker, field) = if let Some(ident) = ident {
+            (
+                qs! { ident.span() => #ident: ::core::marker::PhantomData, },
+                pqs! { span =>
+                    #(#attrs)*
+                    pub #ident: ::core::marker::PhantomData<fn() -> *const #Subject>
+                },
+            )
+        } else {
+            let index = Index {
+                index: fields.len() as u32,
+                span,
+            };
+            (
+                qs! { span => #index: ::core::marker::PhantomData, },
+                pqs! { span =>
+                    #(#attrs)*
+                    pub ::core::marker::PhantomData<fn() -> *const #Subject>
+                },
+            )
+        };
+
+        fields.push(field);
+        Some(marker)
+    } else {
+        None
+    };
 
     let mut output = vec![q! { #optionized }];
     let optionized = &optionized.ident;
 
-    let marker = marked.map(|span| {
-        if let Some(marker) = marker {
-            qs! { span => #marker: ::core::marker::PhantomData, }
-        } else {
-            qs! { span => ::core::marker::PhantomData }
-        }
-    });
-
     let mut where_clause = where_clause.cloned().unwrap_or_else(|| pq! { where });
+    let mut where_predicates = HashSet::new();
+    macro_rules! where_clause_extend {
+        ($map:expr) => {
+            where_clause.predicates.extend(
+                optionized_fields
+                    .iter()
+                    .copied()
+                    .flat_map($map)
+                    .filter(|p| where_predicates.insert(p.clone())),
+            )
+        };
+    }
 
     {
-        where_clause.predicates.extend(
-            optionized_fields
-                .iter()
-                .copied()
-                .flat_map(FieldIr::partial_optionized_where),
-        );
+        where_clause_extend!(FieldIr::partial_optionized_where);
 
-        let subject = &format_ident!("subject");
+        let subject = &format_ident!("subject", span = Span::mixed_site());
 
         let optionize = {
-            let optionizes = optionized_fields.iter().map(|field| Optionize {
-                field,
-                subject,
-                named,
-            });
+            let optionizes = optionized_fields
+                .iter()
+                .map(|field| Optionize { field, subject });
 
-            construct!(style, _span => [Self] #(#optionizes)* #marker )
+            construct!(optionized_style, _span => [Self] #(#optionizes)* #marker )
         };
         let patches = optionized_fields
             .iter()
             .map(|field| Patch { field, subject });
-        let other = &format_ident!("other");
+        let other = &format_ident!("other", span = Span::mixed_site());
         let merges = optionized_fields.iter().map(|field| Merge { field, other });
 
         output.push(q! {
-            impl #impl_generics ::optionize::PartialOptionized<#Subject> for #optionized #type_generics #where_clause {
+            #[automatically_derived]
+            impl #impl_generics #krate::PartialOptionized<#Subject> for #optionized #type_generics #where_clause {
+                #[inline]
                 fn optionize(#subject: #Subject) -> Self { #optionize }
+                #[inline]
                 fn patch(self, #subject: &mut #Subject) { #(#patches)* }
+                #[inline]
                 fn merge(&mut self, #other: Self) { #(#merges)* }
             }
         });
@@ -928,19 +998,12 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
     };
 
     if let Some(span) = span {
-        where_clause.predicates.extend(
-            optionized_fields
-                .iter()
-                .copied()
-                .flat_map(FieldIr::optionized_where),
-        );
+        where_clause_extend!(FieldIr::optionized_where);
 
-        let failed = &format_ident!("failed");
-        let errors = &format_ident!("errors");
+        let failed = &format_ident!("failed", span = Span::mixed_site());
+        let errors = &format_ident!("errors", span = Span::mixed_site());
 
-        let skips = original_fields.iter().map(|field| UpgradeSkip { field });
-
-        let upgrades = optionized_fields.iter().map(|field| Upgrade {
+        let validates = optionized_fields.iter().map(|field| Validate {
             field,
             original,
             optionized,
@@ -948,36 +1011,33 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
             errors,
         });
 
-        let ok = {
-            let oks = original_fields
-                .iter()
-                .map(|field| UpgradeOk { field, named });
-
-            construct!(style, span => [#original] #(#oks)*)
-        };
-
-        let err = {
-            let errs = optionized_fields
-                .iter()
-                .map(|field| UpgradeErr { field, named });
-
-            construct!(style, span => [Self] #(#errs)* #marker)
+        let skips = original_fields.iter().map(UpgradeSkip);
+        let upgrades = optionized_fields.iter().copied().map(Upgrade);
+        let subject = {
+            let fields = original_fields.iter().map(UpgradeFieldValue);
+            construct!(original_style, span => [#original] #(#fields)*)
         };
 
         output.push(qs! { span =>
-            #[allow(non_snake_case)]
-            impl #impl_generics ::optionize::Optionized<#Subject> for #optionized #type_generics #where_clause {
-                type UpgradeErrors = ::optionize::UpgradeErrorCollection;
-                fn upgrade(self) -> ::core::result::Result<#Subject, (Self::UpgradeErrors, Self)> {
+            #[automatically_derived]
+            impl #impl_generics #krate::Optionized<#Subject> for #optionized #type_generics #where_clause {
+                type Errors = #krate::ErrorCollection;
+                #[inline]
+                fn validate(&self) -> ::core::result::Result<(), Self::Errors> {
                     let mut #failed = false;
-                    let mut #errors = ::optionize::UpgradeErrorCollection::default();
+                    let mut #errors = #krate::ErrorCollection::default();
+                    #(#validates)*
+                    if !#failed {
+                        ::core::result::Result::Ok(())
+                    } else {
+                        ::core::result::Result::Err(#errors)
+                    }
+                }
+                #[inline]
+                unsafe fn upgrade_unchecked(self) -> #Subject {
                     #(#skips)*
                     #(#upgrades)*
-                    if !#failed {
-                        ::core::result::Result::Ok(#ok)
-                    } else {
-                        ::core::result::Result::Err((#errors, #err))
-                    }
+                    #subject
                 }
             }
         });
@@ -986,17 +1046,14 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
     Ok(q! { #(#output)* })
 }
 
-#[derive(FromMeta)]
-struct OptionizedArgs {}
-
-pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
-    let args = NestedMeta::parse_meta_list(args)?;
-    let _ = OptionizedArgs::from_list(&args)?;
-
-    let input = qs! { input.span() =>
-        #[derive(::optionize::__private::Optionize)]
+pub fn proc(args: TokenStream, input: &TokenStream) -> Result<TokenStream> {
+    let args = OptionizedArgs::from_list(&NestedMeta::parse_meta_list(args)?)?;
+    let krate = args.krate.unwrap_or_else(Crate::infer);
+    let output = parse(krate.clone(), input.clone()).unwrap_or_else(|e| e.write_errors());
+    let output = quote! {
+        #[derive(#krate::__private::Optionize)]
         #input
+        #output
     };
-
-    Ok(input)
+    Ok(output)
 }

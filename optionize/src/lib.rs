@@ -1,11 +1,11 @@
 #![no_std]
 
 extern crate alloc;
+extern crate self as optionize;
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use core::error::Error;
 use core::fmt;
 use core::fmt::Display;
 use delegate::delegate;
@@ -43,8 +43,16 @@ impl<T, O> Optionizable<O> for T where O: PartialOptionized<T> {}
     note = "Ensure the struct `{Self}` is not partial, or is annotated with `#[optionize(partial(upgradable))]`"
 )]
 pub trait Optionized<Subject>: PartialOptionized<Subject> {
-    type UpgradeErrors: IntoIterator<Item: Error + Send + Sync + 'static>;
-    fn upgrade(self) -> Result<Subject, (Self::UpgradeErrors, Self)>;
+    type Errors: IntoIterator<Item: core::error::Error + Send + Sync + 'static>;
+    fn validate(&self) -> Result<(), Self::Errors>;
+    /// # Safety
+    ///
+    /// TODO
+    unsafe fn upgrade_unchecked(self) -> Subject;
+    fn upgrade(self) -> Result<Subject, Self::Errors> {
+        self.validate()?;
+        Ok(unsafe { self.upgrade_unchecked() })
+    }
 }
 
 #[derive(Debug)]
@@ -83,7 +91,7 @@ impl Display for TypeInfo {
 }
 
 #[derive(Debug)]
-pub enum UpgradeError {
+pub enum Error {
     MissingField {
         ty: TypeInfo,
         field: FieldInfo,
@@ -91,11 +99,11 @@ pub enum UpgradeError {
     NestedError {
         ty: TypeInfo,
         field: FieldInfo,
-        source: Box<dyn Error + Send + Sync + 'static>,
+        source: Box<dyn core::error::Error + Send + Sync + 'static>,
     },
 }
 
-impl Display for UpgradeError {
+impl Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingField { ty, field } => {
@@ -112,8 +120,8 @@ impl Display for UpgradeError {
     }
 }
 
-impl Error for UpgradeError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
+impl core::error::Error for Error {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::NestedError { source, .. } => Some(&**source),
             _ => None,
@@ -123,11 +131,11 @@ impl Error for UpgradeError {
 
 #[derive(Debug, Default, From, Into, Deref, DerefMut, IntoIterator)]
 #[into_iterator(owned, ref, ref_mut)]
-pub struct UpgradeErrorCollection {
-    pub errors: Vec<UpgradeError>,
+pub struct ErrorCollection {
+    pub errors: Vec<Error>,
 }
 
-impl Display for UpgradeErrorCollection {
+impl Display for ErrorCollection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.errors.is_empty() {
             return write!(f, "No upgrade errors");
@@ -138,8 +146,8 @@ impl Display for UpgradeErrorCollection {
         let mut groups = BTreeMap::<_, Vec<_>>::new();
         for error in &self.errors {
             let ty = match error {
-                UpgradeError::MissingField { ty, .. } => *ty,
-                UpgradeError::NestedError { ty, .. } => *ty,
+                Error::MissingField { ty, .. } => *ty,
+                Error::NestedError { ty, .. } => *ty,
             };
             groups.entry(ty).or_default().push(error);
         }
@@ -153,10 +161,10 @@ impl Display for UpgradeErrorCollection {
                 let last = groups.peek().is_none() && errors.peek().is_none();
 
                 match error {
-                    UpgradeError::MissingField { field, .. } => {
+                    Error::MissingField { field, .. } => {
                         write!(f, "    - Missing required field: {}", field)?;
                     }
-                    UpgradeError::NestedError { field, source, .. } => {
+                    Error::NestedError { field, source, .. } => {
                         writeln!(f, "    - Failed to upgrade nested field: {}", field)?;
                         write!(f, "      - {}", source)?;
                     }
@@ -172,34 +180,34 @@ impl Display for UpgradeErrorCollection {
     }
 }
 
-impl Error for UpgradeErrorCollection {}
+impl core::error::Error for ErrorCollection {}
 
-impl FromIterator<UpgradeError> for UpgradeErrorCollection {
-    fn from_iter<I: IntoIterator<Item = UpgradeError>>(iter: I) -> Self {
+impl FromIterator<Error> for ErrorCollection {
+    fn from_iter<I: IntoIterator<Item = Error>>(iter: I) -> Self {
         iter.into_iter().collect::<Vec<_>>().into()
     }
 }
 
-impl Extend<UpgradeError> for UpgradeErrorCollection {
+impl Extend<Error> for ErrorCollection {
     delegate! {
         to self.errors {
-            fn extend<T: IntoIterator<Item = UpgradeError>>(&mut self, iter: T);
+            fn extend<T: IntoIterator<Item = Error>>(&mut self, iter: T);
         }
     }
 }
 
-impl AsRef<[UpgradeError]> for UpgradeErrorCollection {
+impl AsRef<[Error]> for ErrorCollection {
     delegate! {
         to self.errors {
-            fn as_ref(&self) -> &[UpgradeError];
+            fn as_ref(&self) -> &[Error];
         }
     }
 }
 
-impl AsMut<[UpgradeError]> for UpgradeErrorCollection {
+impl AsMut<[Error]> for ErrorCollection {
     delegate! {
         to self.errors {
-            fn as_mut(&mut self) -> &mut [UpgradeError];
+            fn as_mut(&mut self) -> &mut [Error];
         }
     }
 }

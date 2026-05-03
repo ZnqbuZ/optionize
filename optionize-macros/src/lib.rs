@@ -1,17 +1,23 @@
 use proc_macro::TokenStream;
+use quote::quote;
 
 mod optionize;
 
 #[proc_macro_attribute]
 pub fn optionized(args: TokenStream, input: TokenStream) -> TokenStream {
-    optionize::proc(args.into(), input.into())
-        .unwrap_or_else(|e| e.write_errors())
+    let input = input.into();
+    optionize::proc(args.into(), &input)
+        .unwrap_or_else(|e| {
+            let e = e.write_errors();
+            quote! {
+                #input
+                #e
+            }
+        })
         .into()
 }
 
 #[proc_macro_derive(Optionize, attributes(optionize))]
-pub fn derive(input: TokenStream) -> TokenStream {
-    optionize::derive(input.into())
-        .unwrap_or_else(|e| e.write_errors())
-        .into()
+pub fn derive(_: TokenStream) -> TokenStream {
+    Default::default()
 }
