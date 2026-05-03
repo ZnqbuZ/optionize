@@ -462,7 +462,7 @@ impl FieldIr {
         } = &strategy
         {
             vec![pq! {
-                #nest: #krate::PartialOptionized::<#ty>
+                #nest: #krate::PartialOptionized<#ty>
             }]
         } else {
             Default::default()
@@ -484,10 +484,10 @@ impl FieldIr {
         {
             vec![
                 pq! {
-                    #nest: #krate::Optionized::<#ty>
+                    #nest: #krate::Optionized<#ty>
                 },
                 pq! {
-                    <#nest as #krate::Optionized::<#ty>>::Errors: 'static
+                    <#nest as #krate::Optionized<#ty>>::Errors: 'static
                 },
             ]
         } else {
@@ -520,7 +520,7 @@ impl<'l> ToTokens for Optionize<'l> {
         };
 
         let mut optionize = if let Some(nest) = nest {
-            q! { <#nest as #krate::PartialOptionized::<#ty>>::optionize(#subject.#original) }
+            q! { <#nest as #krate::PartialOptionized<#ty>>::optionize(#subject.#original) }
         } else {
             q! { #subject.#original }
         };
@@ -562,7 +562,7 @@ impl<'l> ToTokens for Patch<'l> {
             q! { self.#optionized }
         };
         let mut patch = if let Some(nest) = nest {
-            q! { <#nest as #krate::PartialOptionized::<#ty>>::patch(#patch, &mut #subject.#original); }
+            q! { <#nest as #krate::PartialOptionized<#ty>>::patch(#patch, &mut #subject.#original); }
         } else {
             q! { #subject.#original = #patch; }
         };
@@ -603,7 +603,7 @@ impl<'l> ToTokens for Merge<'l> {
         let merge = match (wrap, nest) {
             (true, Some(nest)) => q! {
                 match (&mut self.#optionized, #other.#optionized) {
-                    (::core::option::Option::Some(this), ::core::option::Option::Some(other)) => <#nest as #krate::PartialOptionized::<#ty>>::merge(this, other),
+                    (::core::option::Option::Some(this), ::core::option::Option::Some(other)) => <#nest as #krate::PartialOptionized<#ty>>::merge(this, other),
                     (::core::option::Option::None, ::core::option::Option::Some(other)) => self.#optionized = ::core::option::Option::Some(other),
                     _ => {}
                 }
@@ -614,7 +614,7 @@ impl<'l> ToTokens for Merge<'l> {
                 }
             },
             (false, Some(nest)) => q! {
-                <#nest as #krate::PartialOptionized::<#ty>>::merge(&mut self.#optionized, #other.#optionized);
+                <#nest as #krate::PartialOptionized<#ty>>::merge(&mut self.#optionized, #other.#optionized);
             },
             (false, None) => q! {
                 self.#optionized = #other.#optionized;
@@ -698,7 +698,7 @@ impl<'l> ToTokens for Validate<'l> {
 
         let validate = nest.as_ref().map(|nest| {
             q! {
-                if let ::core::result::Result::Err(e) = <#nest as #krate::Optionized::<#ty>>::validate(#local) {
+                if let ::core::result::Result::Err(e) = <#nest as #krate::Optionized<#ty>>::validate(#local) {
                     #failed = true;
                     #errors.extend(::core::iter::IntoIterator::into_iter(e).map(#nest_map_err));
                 }
@@ -746,7 +746,7 @@ impl<'l> ToTokens for Upgrade<'l> {
         }
         if let Some(nest) = nest {
             tokens.extend(q! {
-                let #local = unsafe { <#nest as #krate::Optionized::<#ty>>::upgrade_unchecked(#local) };
+                let #local = unsafe { <#nest as #krate::Optionized<#ty>>::upgrade_unchecked(#local) };
             })
         }
     }
