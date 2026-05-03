@@ -1,9 +1,10 @@
+use crate::optionize;
 use darling::ast::NestedMeta;
 use darling::util::{Flag, Override, SpannedValue};
 use darling::{Error, FromAttributes, FromMeta, Result};
+use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Ident, Span, TokenStream};
-use proc_macro_crate::{crate_name, FoundCrate};
-use quote::{format_ident, quote_spanned as qs, ToTokens};
+use quote::{ToTokens, format_ident, quote, quote_spanned as qs};
 use std::collections::HashSet;
 use std::default::Default;
 use std::iter::zip;
@@ -13,11 +14,10 @@ use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::token::{Brace, Bracket, Comma, Paren, Pound};
 use syn::{
-    parse2, parse_quote, parse_quote_spanned as pqs, parse_str, AttrStyle, Attribute, Data, DeriveInput, Expr,
-    Field, Fields, FieldsNamed, FieldsUnnamed, Index, LitStr, Meta, Path,
-    Type, WherePredicate,
+    AttrStyle, Attribute, Data, DeriveInput, Expr, Field, Fields, FieldsNamed, FieldsUnnamed,
+    Index, LitStr, Meta, Path, Type, WherePredicate, parse_quote, parse_quote_spanned as pqs,
+    parse_str, parse2,
 };
-
 // region args
 
 #[derive(Debug, Default)]
@@ -143,26 +143,11 @@ struct PartialArgs {
 }
 
 #[derive(Debug, Default, FromAttributes)]
-#[darling(default, attributes(optionize), and_then = "Self::finalize")]
+#[darling(default, attributes(optionize))]
 struct StructArgs {
     #[darling(flatten)]
     general: GeneralArgs,
-    #[doc(hidden)]
-    #[darling(rename = "crate", multiple)]
-    _krate: Vec<Crate>,
-    #[darling(skip)]
-    krate: Crate,
     partial: Option<SpannedValue<Override<PartialArgs>>>,
-}
-
-impl StructArgs {
-    fn finalize(mut self) -> Result<Self> {
-        let Some(krate) = self._krate.last() else {
-            return Err(Error::missing_field("crate"));
-        };
-        self.krate = krate.clone();
-        Ok(self)
-    }
 }
 
 #[derive(Debug, Default, FromMeta)]
@@ -184,9 +169,7 @@ struct FieldArgs {
 impl FieldArgs {
     fn finalize(self) -> Result<Self> {
         if let Some(skip) = &self.skip
-            && (self.general.is_some()
-                || self.flatten.is_present()
-                || self.nest.is_some())
+            && (self.general.is_some() || self.flatten.is_present() || self.nest.is_some())
         {
             return Err(
                 Error::custom("`skip` attribute cannot be combined with other attributes")
@@ -842,7 +825,7 @@ enum StructStyle {
     Unit,
 }
 
-pub fn derive(input: TokenStream) -> Result<TokenStream> {
+fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
     let original = parse2::<DeriveInput>(input)?;
     let _span = original.span();
     span!(_span);
@@ -859,14 +842,15 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
 
     let args = StructArgs::from_attributes(&original.attrs)?;
 
-    let krate = args.krate;
-
     let (partial, upgradable, marked) = args
         .partial
         .map(|partial| {
             let span = partial.span();
             let (upgradable, marked) = match partial.into_inner() {
-                Override::Explicit(p) => (p.upgradable.is_present().then(|| p.upgradable.span()), p.marked),
+                Override::Explicit(p) => (
+                    p.upgradable.is_present().then(|| p.upgradable.span()),
+                    p.marked,
+                ),
                 _ => Default::default(),
             };
             (Some(span), upgradable, marked)
@@ -1110,16 +1094,14 @@ struct OptionizedArgs {
     krate: Option<Crate>,
 }
 
-pub fn proc(args: TokenStream, input: TokenStream) -> Result<TokenStream> {
+pub fn proc(args: TokenStream, input: &TokenStream) -> Result<TokenStream> {
     let args = OptionizedArgs::from_list(&NestedMeta::parse_meta_list(args)?)?;
-
     let krate = args.krate.unwrap_or_else(Crate::infer);
-
-    let output = qs! { input.span() =>
+    let output = parse(krate.clone(), input.clone()).unwrap_or_else(|e| e.write_errors());
+    let output = quote! {
         #[derive(#krate::__private::Optionize)]
-        #[optionize(crate = #krate)]
         #input
+        #output
     };
-
     Ok(output)
 }
