@@ -610,8 +610,8 @@ impl<'l> ToTokens for Merge<'l> {
         let merge = match (wrap, nest) {
             (true, Some(nest)) => q! {
                 match (&mut self.#optionized, #other.#optionized) {
-                    (Some(this), Some(other)) => <#nest as #krate::PartialOptionized::<#ty>>::merge(this, other),
-                    (None, Some(other)) => self.#optionized = Some(other),
+                    (::core::option::Option::Some(this), ::core::option::Option::Some(other)) => <#nest as #krate::PartialOptionized::<#ty>>::merge(this, other),
+                    (::core::option::Option::None, ::core::option::Option::Some(other)) => self.#optionized = ::core::option::Option::Some(other),
                     _ => {}
                 }
             },
