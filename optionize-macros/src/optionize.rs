@@ -4,11 +4,12 @@ use darling::{Error, Result};
 use darling::{FromAttributes, FromMeta};
 use proc_macro2::Span;
 use proc_macro2::{Ident, TokenStream};
-use quote::{format_ident, quote_spanned as qs, IdentFragment, ToTokens};
+use quote::{format_ident, quote_spanned as qs, ToTokens};
 use std::collections::HashSet;
 use std::default::Default;
 use std::iter::zip;
 use std::mem::take;
+use syn::ext::IdentExt;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::token::{Bracket, Comma, Pound};
@@ -136,12 +137,17 @@ impl FieldArgs {
 
 // region utils
 
-fn format(pattern: &str, ident: &Ident) -> Result<Ident> {
-    let old = ident.to_string();
-    let old = old.strip_prefix("r#").unwrap_or(&old);
-    let new = format!("r#{}", pattern.replace("{}", old));
-    parse_str::<Ident>(&new)
-        .map_err(|_| Error::custom(format!("`{}` is not a valid identifier", new)).with_span(ident))
+fn format(pattern: &LitStr, ident: &Ident) -> Result<Ident> {
+    let span = pattern.span();
+    let ident = format!(
+        "r#{}",
+        pattern.value().replace("{}", &ident.unraw().to_string())
+    );
+    let mut new = parse_str::<Ident>(&ident).map_err(|_| {
+        Error::custom(format!("`{}` is not a valid identifier", ident)).with_span(&span)
+    })?;
+    new.set_span(span);
+    Ok(new)
 }
 
 fn is_optionize(attr: &Attribute) -> bool {
@@ -302,22 +308,20 @@ impl FieldIr {
             }
 
             if let Some(name) = args.name {
-                let span = name.span();
                 let Some(ident) = ident.as_ref() else {
                     errors.push(
                         Error::custom("`name` attribute cannot be used on unnamed fields")
-                            .with_span(&span),
+                            .with_span(&name),
                     );
                     continue;
                 };
-                let mut ident = match format(&name.value(), ident) {
+                let ident = match format(&name, ident) {
                     Ok(ident) => ident,
                     Err(e) => {
                         errors.push(e);
                         continue;
                     }
                 };
-                ident.set_span(span);
                 field.ident = Some(ident);
             }
 
@@ -804,13 +808,9 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
     let mut optionized = original;
     let original = &optionized.ident.clone();
 
-    optionized.ident = {
-        let (span, mut ident) = match args.name {
-            Some(name) => (name.span(), format(&name.value(), original)?),
-            None => (original.span(), format("{}Optional", original)?),
-        };
-        ident.set_span(span);
-        ident
+    optionized.ident = match args.name {
+        Some(name) => format(&name, original)?,
+        None => format(&pqs! { original.span() => "{}Optional"}, original)?,
     };
 
     if let Some(attrs) = args.attributes {
