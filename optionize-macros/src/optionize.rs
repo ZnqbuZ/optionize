@@ -1,9 +1,9 @@
 use darling::ast::NestedMeta;
 use darling::util::{Flag, Override, SpannedValue};
 use darling::{Error, FromAttributes, FromMeta, Result};
+use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Ident, Span, TokenStream};
-use proc_macro_crate::{crate_name, FoundCrate};
-use quote::{format_ident, quote, quote_spanned as qs, ToTokens};
+use quote::{ToTokens, format_ident, quote, quote_spanned as qs};
 use std::collections::HashSet;
 use std::default::Default;
 use std::iter::zip;
@@ -13,9 +13,9 @@ use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::token::{Brace, Bracket, Comma, Paren, Pound};
 use syn::{
-    parse2, parse_quote, parse_quote_spanned as pqs, parse_str, AttrStyle, Attribute, Data, DeriveInput, Expr,
-    Field, Fields, FieldsNamed, FieldsUnnamed, Index, LitStr, Member, Meta,
-    Path, Type, WherePredicate,
+    AttrStyle, Attribute, Data, DeriveInput, Expr, Field, Fields, FieldsNamed, FieldsUnnamed,
+    Index, LitStr, Member, Meta, Path, Type, WherePredicate, parse_quote,
+    parse_quote_spanned as pqs, parse_str, parse2,
 };
 
 // region args
@@ -947,7 +947,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
     let optionized = &optionized.ident;
 
     let mut where_clause = where_clause.cloned().unwrap_or_else(|| pq! { where });
-    let mut clauses = HashSet::new();
+    let mut where_predicates = HashSet::new();
     macro_rules! where_clause_extend {
         ($map:expr) => {
             where_clause.predicates.extend(
@@ -955,13 +955,13 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                     .iter()
                     .copied()
                     .flat_map($map)
-                    .filter(|clause| clauses.insert(clause.to_token_stream().to_string())),
+                    .filter(|p| where_predicates.insert(p.clone())),
             )
         };
     }
 
     {
-        where_clause_extend!(&mut FieldIr::partial_optionized_where);
+        where_clause_extend!(FieldIr::partial_optionized_where);
 
         let subject = &format_ident!("subject", span = Span::mixed_site());
 
@@ -998,7 +998,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
     };
 
     if let Some(span) = span {
-        where_clause_extend!(&mut FieldIr::optionized_where);
+        where_clause_extend!(FieldIr::optionized_where);
 
         let failed = &format_ident!("failed", span = Span::mixed_site());
         let errors = &format_ident!("errors", span = Span::mixed_site());
