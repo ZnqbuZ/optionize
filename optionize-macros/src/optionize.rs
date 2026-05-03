@@ -952,7 +952,7 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
                 qs! { ident.span() => #ident: ::core::marker::PhantomData, },
                 pqs! { span =>
                     #(#attrs)*
-                    #ident: ::core::marker::PhantomData<#Subject>
+                    pub #ident: ::core::marker::PhantomData<#Subject>
                 },
             )
         } else {
@@ -1052,7 +1052,7 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
                 .iter()
                 .map(|field| UpgradeErr { field, named });
 
-            construct!(original_style, span => [Self] #(#errs)* #marker)
+            construct!(optionized_style, span => [Self] #(#errs)* #marker)
         };
 
         output.push(qs! { span =>
