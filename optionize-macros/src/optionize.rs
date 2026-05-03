@@ -435,6 +435,7 @@ impl FieldIr {
 macro_rules! expand {
     ($target:expr => { $($field:ident $(: $bind:pat)?),* $(,)? }) => {
         let FieldIr {
+            #[allow(unused_variables)]
             span,
             $(
                 $field $(: $bind)?,
@@ -498,7 +499,6 @@ impl FieldIr {
 struct Optionize<'l> {
     field: &'l FieldIr,
     subject: &'l Ident,
-    named: bool,
 }
 
 impl<'l> ToTokens for Optionize<'l> {
@@ -529,13 +529,7 @@ impl<'l> ToTokens for Optionize<'l> {
             optionize = q! { ::core::option::Option::Some(#optionize) }
         };
 
-        let optionize = if self.named {
-            q! { #optionized: #optionize, }
-        } else {
-            q! { #optionize, }
-        };
-
-        tokens.extend(optionize);
+        tokens.extend(q! { #optionized: #optionize, });
     }
 }
 
@@ -728,14 +722,12 @@ impl<'l> ToTokens for Validate<'l> {
     }
 }
 
-struct Upgrade<'l> {
-    field: &'l FieldIr,
-}
+struct Upgrade<'l>(&'l FieldIr);
 
 impl<'l> ToTokens for Upgrade<'l> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         expand! {
-            self.field => {
+            self.0 => {
                 krate,
                 ty,
                 optionized,
@@ -760,14 +752,12 @@ impl<'l> ToTokens for Upgrade<'l> {
     }
 }
 
-struct UpgradeSkip<'l> {
-    field: &'l FieldIr,
-}
+struct UpgradeSkip<'l>(&'l FieldIr);
 
 impl<'l> ToTokens for UpgradeSkip<'l> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         expand! {
-            self.field => {
+            self.0 => {
                 ty,
                 strategy,
                 local,
@@ -780,27 +770,12 @@ impl<'l> ToTokens for UpgradeSkip<'l> {
     }
 }
 
-struct UpgradeField<'l> {
-    field: &'l FieldIr,
-    named: bool,
-}
+struct UpgradeFieldValue<'l>(&'l FieldIr);
 
-impl<'l> ToTokens for UpgradeField<'l> {
+impl<'l> ToTokens for UpgradeFieldValue<'l> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        expand! {
-            self.field => {
-                original,
-                local,
-            }
-        }
-
-        let field = if self.named {
-            q! { #original: #local, }
-        } else {
-            q! { #local, }
-        };
-
-        tokens.extend(field);
+        expand! { self.0 => { original, local } }
+        tokens.extend(q! { #original: #local, });
     }
 }
 
@@ -821,9 +796,8 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
     macro_rules! construct {
         ($style:expr, $span:expr => [$($ty:tt)+] $($fields:tt)*) => {
             match $style {
-                StructStyle::Named => qs! { $span => $($ty)* { $($fields)* } },
-                StructStyle::Unnamed => qs! { $span => $($ty)* ( $($fields)* ) },
                 StructStyle::Unit => qs! { $span => $($ty)* },
+                _ => qs! { $span => $($ty)* { $($fields)* } },
             }
         };
     }
@@ -966,8 +940,6 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
     let mut output = vec![q! { #optionized }];
     let optionized = &optionized.ident;
 
-    let named = matches!(original_style, StructStyle::Named);
-
     let mut where_clause = where_clause.cloned().unwrap_or_else(|| pq! { where });
 
     {
@@ -981,11 +953,9 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         let subject = &format_ident!("subject", span = Span::mixed_site());
 
         let optionize = {
-            let optionizes = optionized_fields.iter().map(|field| Optionize {
-                field,
-                subject,
-                named,
-            });
+            let optionizes = optionized_fields
+                .iter()
+                .map(|field| Optionize { field, subject });
 
             construct!(optionized_style, _span => [Self] #(#optionizes)* #marker )
         };
@@ -1033,12 +1003,10 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
             errors,
         });
 
-        let skips = original_fields.iter().map(|field| UpgradeSkip { field });
-        let upgrades = optionized_fields.iter().map(|field| Upgrade { field });
+        let skips = original_fields.iter().map(UpgradeSkip);
+        let upgrades = optionized_fields.iter().copied().map(Upgrade);
         let subject = {
-            let fields = original_fields
-                .iter()
-                .map(|field| UpgradeField { field, named });
+            let fields = original_fields.iter().map(UpgradeFieldValue);
             construct!(original_style, span => [#original] #(#fields)*)
         };
 
