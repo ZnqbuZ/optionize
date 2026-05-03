@@ -8,7 +8,7 @@ Add `optionize` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-optionize = "0.1.0"
+optionize = "0.1"
 ```
 
 ### Basic Example
@@ -67,16 +67,16 @@ struct Config {
 
 #### Struct Attributes
 
-- `#[optionize(name = "CustomName")]`: Set the name of the generated optionized struct.
+- `#[optionize(name = "CustomPrefix{}CustomSuffix")]`: Set the name of the generated optionized struct.
 - `#[optionize(attrs(derive(Debug, Default)))]`: Add attributes to the generated struct.
 - `#[optionize(partial(upgradable))]`: Useful when generating partial structs that should/shouldn't implement `Optionized`.
 
 #### Field Attributes
 
-- `#[optionize(name = "new_name")]`: Rename a field in the optionized struct.
+- `#[optionize(name = "prefix_{}_suffix")]`: Rename a field in the optionized struct.
 - `#[optionize(flatten)]`: Do not wrap the field in `Option<T>` (useful if the field is already an `Option`).
 - `#[optionize(nest = "OtherOptionizedType")]`: Indicate that this field should recursively use another optionized type.
-- `#[optionize(skip(upgrade = "default_value()"))]`: Exclude the field from the optionized struct (only allowed with `partial`). Requires providing a default value expression for upgrading.
+- `#[optionize(skip(upgrade = self.other.clone()))]`: Exclude the field from the optionized struct (only allowed with `partial`). Requires providing a default value expression for upgrading.
 
 #### Upgrading from Partial
 

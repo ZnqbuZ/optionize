@@ -10,7 +10,7 @@ For full documentation and examples, please see the [workspace README](../README
 
 ```toml
 [dependencies]
-optionize = "0.1.0"
+optionize = "0.1"
 ```
 
 ## License
