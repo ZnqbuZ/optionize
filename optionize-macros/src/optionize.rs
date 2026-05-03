@@ -812,7 +812,8 @@ impl<'l> ToTokens for UpgradeErr<'l> {
             return;
         };
 
-        let mut ok = q! { v };
+        let v = format_ident!("v");
+        let mut ok = q! { #v };
         if let Some(nest) = nest {
             ok = q! { <#nest as #krate::PartialOptionized::<#ty>>::optionize(#ok) };
         }
@@ -821,8 +822,8 @@ impl<'l> ToTokens for UpgradeErr<'l> {
         }
         let rollback = q! {
             match #local {
-                ::core::result::Result::Ok(v) => #ok,
-                ::core::result::Result::Err(v) => v,
+                ::core::result::Result::Ok(#v) => #ok,
+                ::core::result::Result::Err(#v) => #v,
             }
         };
 
@@ -983,7 +984,7 @@ pub fn derive(input: TokenStream) -> Result<TokenStream> {
                 qs! { span => ::core::marker::PhantomData, },
                 pqs! { span =>
                     #(#attrs)*
-                    ::core::marker::PhantomData<#Subject>
+                    pub ::core::marker::PhantomData<#Subject>
                 },
             )
         };
