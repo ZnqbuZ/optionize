@@ -147,7 +147,7 @@ Upgrade failed with 1 error(s):
 ## Traits Overview
 
 - **`PartialOptionized<Subject>`**: Provides `optionize()`, `patch()`, and `merge()`.
-- **`Optionizable<O>`**: Automatically implemented for the original struct. Provides `load()` and `downgrade()`.
+- **`Optionizable<Object>`**: Automatically implemented for the original struct. Provides `load()` and `downgrade()`.
 - **`Optionized<Subject>`**: Provides `upgrade()`. Returns `Result<Subject, (UpgradeErrors, Self)>` where errors contain the specific missing fields or nested failures, and the original partial struct is returned in the `Err` variant so you don't lose the data.
 
 ## Crates in this workspace
