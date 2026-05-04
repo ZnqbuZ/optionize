@@ -84,7 +84,7 @@
 //!
 //! ### Upgrading and the `partial` attribute
 //! To support converting the partial struct back into the full struct, you must specify `partial(upgradable)`.
-//! This implements the `Optionized<T>` trait, providing `.validate()` and `.upgrade()` methods.
+//! This implements the `Optionized` trait, providing `.validate()` and `.upgrade()` methods.
 //! ```rust
 //! use optionize::{optionized, Optionized};
 //!
@@ -332,15 +332,17 @@ pub mod __private {
 /// Represents the relationship between a generated optionized struct and its target original struct.
 /// Allows extracting partial data from a full struct, applying partial data to a full struct,
 /// and merging two partial structs together.
-pub trait PartialOptionized<Subject>: Sized {
+pub trait PartialOptionized: Sized {
+    type Subject;
+
     /// Consumes the subject and converts it into its optionized version.
     /// This acts as a downgrade, populating every field with `Some(value)`.
-    fn optionize(subject: Subject) -> Self;
+    fn optionize(subject: Self::Subject) -> Self;
 
     /// Patches the provided subject struct with values from this optionized struct.
     /// If a field is `Some`, it will overwrite the subject's corresponding field.
     /// If it is `None`, the subject's field remains unchanged.
-    fn patch(self, subject: &mut Subject);
+    fn patch(self, subject: &mut Self::Subject);
 
     /// Merges another optionized struct into this one.
     /// By default, `Some` values from the `other` struct will overwrite values in `self`.
@@ -350,30 +352,30 @@ pub trait PartialOptionized<Subject>: Sized {
 
 /// Provides extension methods on the original subject struct to easily work with its
 /// `PartialOptionized` counterpart without having to import and specify the partial type.
-pub trait Optionizable<O: PartialOptionized<Self>>: Sized {
+pub trait Optionizable: Sized {
+    type Object: PartialOptionized<Subject = Self>;
+
     /// Loads values from the provided partial struct into `self`.
     /// Any `Some` field in the partial struct will overwrite the corresponding field in `self`.
-    fn load(&mut self, other: O) {
+    fn load(&mut self, other: Self::Object) {
         other.patch(self);
     }
 
     /// Converts `self` into its partial/optionized version.
     /// Every field in the resulting optionized struct will be populated.
-    fn downgrade(self) -> O {
-        O::optionize(self)
+    fn downgrade(self) -> Self::Object {
+        Self::Object::optionize(self)
     }
 }
-
-impl<T, O> Optionizable<O> for T where O: PartialOptionized<T> {}
 
 /// Implemented on an optionized struct (if marked `upgradable`), allowing validation
 /// of its completeness and a direct upgrade to the original subject struct.
 #[diagnostic::on_unimplemented(
-    message = "The type `{Self}` cannot be upgraded to `{Subject}`",
+    message = "The type `{Self}` cannot be upgraded",
     label = "Nested type lacks upgrade logic",
-    note = "Ensure the struct `{Self}` is not partial, or is annotated with `#[optionize(partial(upgradable))]`"
+    note = "Ensure the subject of `{Self}` is not annotated partial, or is annotated with `#[optionize(partial(upgradable))]`"
 )]
-pub trait Optionized<Subject>: PartialOptionized<Subject> {
+pub trait Optionized: PartialOptionized {
     type Errors: IntoIterator<Item: core::error::Error + Send + Sync + 'static>;
 
     /// Validates that all fields inside the optionized struct that are required for upgrading
@@ -386,11 +388,11 @@ pub trait Optionized<Subject>: PartialOptionized<Subject> {
     /// # Safety
     /// Calling this method when `validate()` would return an error results in undefined behavior
     /// because missing `Option::None` fields will be unwrapped without checks.
-    unsafe fn upgrade_unchecked(self) -> Subject;
+    unsafe fn upgrade_unchecked(self) -> Self::Subject;
 
     /// Validates and upgrades the optionized struct into the full subject struct.
-    /// Returns `Ok(Subject)` if all required fields are present, otherwise returns `Err(Self::Errors)`.
-    fn upgrade(self) -> Result<Subject, Self::Errors> {
+    /// Returns `Ok(Self::Subject)` if all required fields are present, otherwise returns `Err(Self::Errors)`.
+    fn upgrade(self) -> Result<Self::Subject, Self::Errors> {
         self.validate()?;
         Ok(unsafe { self.upgrade_unchecked() })
     }

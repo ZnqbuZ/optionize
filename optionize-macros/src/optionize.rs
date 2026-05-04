@@ -462,7 +462,7 @@ impl FieldIr {
         } = &strategy
         {
             vec![pq! {
-                #nest: #krate::PartialOptionized<#ty>
+                #nest: #krate::PartialOptionized<Subject = #ty>
             }]
         } else {
             Default::default()
@@ -484,10 +484,10 @@ impl FieldIr {
         {
             vec![
                 pq! {
-                    #nest: #krate::Optionized<#ty>
+                    #nest: #krate::Optionized<Subject = #ty>
                 },
                 pq! {
-                    <#nest as #krate::Optionized<#ty>>::Errors: 'static
+                    <#nest as #krate::Optionized>::Errors: 'static
                 },
             ]
         } else {
@@ -506,7 +506,6 @@ impl<'l> ToTokens for Optionize<'l> {
         expand! {
             self.field => {
                 krate,
-                ty,
                 original,
                 optionized,
                 strategy,
@@ -520,7 +519,7 @@ impl<'l> ToTokens for Optionize<'l> {
         };
 
         let mut optionize = if let Some(nest) = nest {
-            q! { <#nest as #krate::PartialOptionized<#ty>>::optionize(#subject.#original) }
+            q! { <#nest as #krate::PartialOptionized>::optionize(#subject.#original) }
         } else {
             q! { #subject.#original }
         };
@@ -543,7 +542,6 @@ impl<'l> ToTokens for Patch<'l> {
         expand! {
             self.field => {
                 krate,
-                ty,
                 original,
                 optionized,
                 strategy,
@@ -562,7 +560,7 @@ impl<'l> ToTokens for Patch<'l> {
             q! { self.#optionized }
         };
         let mut patch = if let Some(nest) = nest {
-            q! { <#nest as #krate::PartialOptionized<#ty>>::patch(#patch, &mut #subject.#original); }
+            q! { <#nest as #krate::PartialOptionized>::patch(#patch, &mut #subject.#original); }
         } else {
             q! { #subject.#original = #patch; }
         };
@@ -588,7 +586,6 @@ impl<'l> ToTokens for Merge<'l> {
         expand! {
             self.field => {
                 krate,
-                ty,
                 optionized,
                 strategy,
             }
@@ -603,7 +600,7 @@ impl<'l> ToTokens for Merge<'l> {
         let merge = match (wrap, nest) {
             (true, Some(nest)) => q! {
                 match (&mut self.#optionized, #other.#optionized) {
-                    (::core::option::Option::Some(this), ::core::option::Option::Some(other)) => <#nest as #krate::PartialOptionized<#ty>>::merge(this, other),
+                    (::core::option::Option::Some(this), ::core::option::Option::Some(other)) => <#nest as #krate::PartialOptionized>::merge(this, other),
                     (::core::option::Option::None, ::core::option::Option::Some(other)) => self.#optionized = ::core::option::Option::Some(other),
                     _ => {}
                 }
@@ -614,7 +611,7 @@ impl<'l> ToTokens for Merge<'l> {
                 }
             },
             (false, Some(nest)) => q! {
-                <#nest as #krate::PartialOptionized<#ty>>::merge(&mut self.#optionized, #other.#optionized);
+                <#nest as #krate::PartialOptionized>::merge(&mut self.#optionized, #other.#optionized);
             },
             (false, None) => q! {
                 self.#optionized = #other.#optionized;
@@ -638,7 +635,6 @@ impl<'l> ToTokens for Validate<'l> {
         expand! {
             self.field => {
                 krate,
-                ty,
                 original,
                 optionized,
                 strategy,
@@ -698,7 +694,7 @@ impl<'l> ToTokens for Validate<'l> {
 
         let validate = nest.as_ref().map(|nest| {
             q! {
-                if let ::core::result::Result::Err(e) = <#nest as #krate::Optionized<#ty>>::validate(#local) {
+                if let ::core::result::Result::Err(e) = <#nest as #krate::Optionized>::validate(#local) {
                     #failed = true;
                     #errors.extend(::core::iter::IntoIterator::into_iter(e).map(#nest_map_err));
                 }
@@ -729,7 +725,6 @@ impl<'l> ToTokens for Upgrade<'l> {
         expand! {
             self.0 => {
                 krate,
-                ty,
                 optionized,
                 strategy,
                 local,
@@ -748,7 +743,7 @@ impl<'l> ToTokens for Upgrade<'l> {
         }
         if let Some(nest) = nest {
             tokens.extend(q! {
-                let #local = unsafe { <#nest as #krate::Optionized<#ty>>::upgrade_unchecked(#local) };
+                let #local = unsafe { <#nest as #krate::Optionized>::upgrade_unchecked(#local) };
             })
         }
     }
@@ -945,6 +940,8 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
 
     let mut output = vec![q! { #optionized }];
     let optionized = &optionized.ident;
+    #[allow(non_snake_case)]
+    let Object = q! { #optionized #type_generics };
 
     let mut where_clause = where_clause.cloned().unwrap_or_else(|| pq! { where });
     let mut where_predicates = HashSet::new();
@@ -959,6 +956,13 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
             )
         };
     }
+
+    output.push(q! {
+        #[automatically_derived]
+        impl #impl_generics #krate::Optionizable for #original #type_generics #where_clause {
+            type Object = #Object;
+        }
+    });
 
     {
         where_clause_extend!(FieldIr::partial_optionized_where);
@@ -980,11 +984,12 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
 
         output.push(q! {
             #[automatically_derived]
-            impl #impl_generics #krate::PartialOptionized<#Subject> for #optionized #type_generics #where_clause {
+            impl #impl_generics #krate::PartialOptionized for #optionized #type_generics #where_clause {
+                type Subject = #Subject;
                 #[inline]
-                fn optionize(#subject: #Subject) -> Self { #optionize }
+                fn optionize(#subject: Self::Subject) -> Self { #optionize }
                 #[inline]
-                fn patch(self, #subject: &mut #Subject) { #(#patches)* }
+                fn patch(self, #subject: &mut Self::Subject) { #(#patches)* }
                 #[inline]
                 fn merge(&mut self, #other: Self) { #(#merges)* }
             }
@@ -1020,7 +1025,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
 
         output.push(qs! { span =>
             #[automatically_derived]
-            impl #impl_generics #krate::Optionized<#Subject> for #optionized #type_generics #where_clause {
+            impl #impl_generics #krate::Optionized for #optionized #type_generics #where_clause {
                 type Errors = #krate::ErrorCollection;
                 #[inline]
                 fn validate(&self) -> ::core::result::Result<(), Self::Errors> {
@@ -1034,7 +1039,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                     }
                 }
                 #[inline]
-                unsafe fn upgrade_unchecked(self) -> #Subject {
+                unsafe fn upgrade_unchecked(self) -> Self::Subject {
                     #(#skips)*
                     #(#upgrades)*
                     #subject

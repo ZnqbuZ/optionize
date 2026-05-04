@@ -159,7 +159,10 @@ struct Renamed {
 
 #[test]
 fn test_renamed_and_attrs() {
-    let o = CustomRenamed { x: Some(1), b: Some(2) };
+    let o = CustomRenamed {
+        x: Some(1),
+        b: Some(2),
+    };
 
     // Test derived Clone (from attrs override)
     let o2 = o.clone();
