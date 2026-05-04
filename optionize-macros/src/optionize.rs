@@ -624,8 +624,8 @@ impl<'l> ToTokens for Merge<'l> {
 
 struct Validate<'l> {
     field: &'l FieldIr,
-    original: &'l Ident,
-    optionized: &'l Ident,
+    subject: &'l Ident,
+    object: &'l Ident,
     failed: &'l Ident,
     errors: &'l Ident,
 }
@@ -646,28 +646,28 @@ impl<'l> ToTokens for Validate<'l> {
             return;
         };
 
-        let original_str = member_to_string(original);
-        let optionized_str = member_to_string(optionized);
+        let original = member_to_string(original);
+        let optionize = member_to_string(optionized);
 
-        let renamed = original_str == optionized_str;
+        let renamed = original == optionize;
 
         let (missing_err, nest_map_err) = {
             let ty = {
-                let original_ty = self.original.to_string();
-                let optionized_ty = self.optionized.to_string();
+                let subject = self.subject.to_string();
+                let object = self.object.to_string();
 
                 q! {
                     #krate::TypeInfo {
-                        original: #original_ty,
-                        optionized: #optionized_ty,
+                        subject: #subject,
+                        object: #object,
                     }
                 }
             };
 
             let field = if renamed {
-                q! { #krate::FieldInfo::Identical ( #original_str ) }
+                q! { #krate::FieldInfo::Identical ( #original ) }
             } else {
-                q! { #krate::FieldInfo::Renamed { original: #original_str, optionized: #optionized_str } }
+                q! { #krate::FieldInfo::Renamed { original: #original, optionized: #optionize } }
             };
 
             (
@@ -786,8 +786,8 @@ enum StructStyle {
 }
 
 fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
-    let original = parse2::<DeriveInput>(input)?;
-    let _span = original.span();
+    let subject = parse2::<DeriveInput>(input)?;
+    let _span = subject.span();
     span!(_span);
 
     macro_rules! construct {
@@ -799,7 +799,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         };
     }
 
-    let args = StructArgs::from_attributes(&original.attrs)?;
+    let args = StructArgs::from_attributes(&subject.attrs)?;
 
     let (partial, upgradable, marked) = args
         .partial
@@ -816,21 +816,21 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         })
         .unwrap_or_default();
 
-    let mut optionized = original;
-    let original = &optionized.ident.clone();
+    let mut object = subject;
+    let (impl_generics, type_generics, where_clause) = object.generics.split_for_impl();
 
-    optionized.ident = match args.general.name {
-        Some(name) => format(&name, original)?,
-        None => format(&pqs! { original.span() => "{}Optional"}, original)?,
+    let subject = &object.ident.clone();
+    #[allow(non_snake_case)]
+    let Subject = q! { #subject #type_generics };
+
+    object.ident = match args.general.name {
+        Some(name) => format(&name, subject)?,
+        None => format(&pqs! { subject.span() => "{}Optional"}, subject)?,
     };
 
-    args.general.attrs.patch(&mut optionized.attrs);
+    args.general.attrs.patch(&mut object.attrs);
 
-    let (impl_generics, type_generics, where_clause) = optionized.generics.split_for_impl();
-    #[allow(non_snake_case)]
-    let Subject = q! { #original #type_generics };
-
-    let data = match &mut optionized.data {
+    let data = match &mut object.data {
         Data::Struct(data) => data,
         _ => {
             return Err(
@@ -839,12 +839,12 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         }
     };
 
-    let original_style = match &data.fields {
+    let subject_style = match &data.fields {
         Fields::Named(_) => StructStyle::Named,
         Fields::Unnamed(_) => StructStyle::Unnamed,
         Fields::Unit => StructStyle::Unit,
     };
-    let optionized_style = if matches!(original_style, StructStyle::Unit)
+    let object_style = if matches!(subject_style, StructStyle::Unit)
         && let Some(marked) = &marked
     {
         let span = marked.span();
@@ -865,7 +865,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
             StructStyle::Unnamed
         }
     } else {
-        original_style
+        subject_style
     };
 
     let fields = match &mut data.fields {
@@ -874,8 +874,8 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         Fields::Unit => &mut Default::default(),
     };
 
-    let original_fields = FieldIr::extract(fields, krate.clone(), partial.is_some())?;
-    let optionized_fields = original_fields
+    let originals = FieldIr::extract(fields, krate.clone(), partial.is_some())?;
+    let optionizeds = originals
         .iter()
         .filter(|f| matches!(f.strategy, FieldStrategy::Optionize { .. }))
         .collect::<Vec<_>>();
@@ -887,7 +887,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         let mut attrs = vec![pqs! { span => #[doc(hidden)] }];
         marked.attrs.patch(&mut attrs);
 
-        let ident = match (original_style, marked.name) {
+        let ident = match (subject_style, marked.name) {
             (StructStyle::Named, None) => {
                 let names = fields
                     .iter()
@@ -938,17 +938,18 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         None
     };
 
-    let mut output = vec![q! { #optionized }];
-    let optionized = &optionized.ident;
+    let mut output = vec![q! { #object }];
+
+    let object = &object.ident;
     #[allow(non_snake_case)]
-    let Object = q! { #optionized #type_generics };
+    let Object = q! { #object #type_generics };
 
     let mut where_clause = where_clause.cloned().unwrap_or_else(|| pq! { where });
     let mut where_predicates = HashSet::new();
     macro_rules! where_clause_extend {
         ($map:expr) => {
             where_clause.predicates.extend(
-                optionized_fields
+                optionizeds
                     .iter()
                     .copied()
                     .flat_map($map)
@@ -959,7 +960,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
 
     output.push(q! {
         #[automatically_derived]
-        impl #impl_generics #krate::Optionizable for #original #type_generics #where_clause {
+        impl #impl_generics #krate::Optionizable for #subject #type_generics #where_clause {
             type Object = #Object;
         }
     });
@@ -970,21 +971,21 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         let subject = &format_ident!("subject", span = Span::mixed_site());
 
         let optionize = {
-            let optionizes = optionized_fields
+            let optionizes = optionizeds
                 .iter()
                 .map(|field| Optionize { field, subject });
 
-            construct!(optionized_style, _span => [Self] #(#optionizes)* #marker )
+            construct!(object_style, _span => [Self] #(#optionizes)* #marker )
         };
-        let patches = optionized_fields
+        let patches = optionizeds
             .iter()
             .map(|field| Patch { field, subject });
         let other = &format_ident!("other", span = Span::mixed_site());
-        let merges = optionized_fields.iter().map(|field| Merge { field, other });
+        let merges = optionizeds.iter().map(|field| Merge { field, other });
 
         output.push(q! {
             #[automatically_derived]
-            impl #impl_generics #krate::PartialOptionized for #optionized #type_generics #where_clause {
+            impl #impl_generics #krate::PartialOptionized for #object #type_generics #where_clause {
                 type Subject = #Subject;
                 #[inline]
                 fn optionize(#subject: Self::Subject) -> Self { #optionize }
@@ -1008,24 +1009,24 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         let failed = &format_ident!("failed", span = Span::mixed_site());
         let errors = &format_ident!("errors", span = Span::mixed_site());
 
-        let validates = optionized_fields.iter().map(|field| Validate {
+        let validates = optionizeds.iter().map(|field| Validate {
             field,
-            original,
-            optionized,
+            subject,
+            object,
             failed,
             errors,
         });
 
-        let skips = original_fields.iter().map(UpgradeSkip);
-        let upgrades = optionized_fields.iter().copied().map(Upgrade);
+        let skips = originals.iter().map(UpgradeSkip);
+        let upgrades = optionizeds.iter().copied().map(Upgrade);
         let subject = {
-            let fields = original_fields.iter().map(UpgradeFieldValue);
-            construct!(original_style, span => [#original] #(#fields)*)
+            let fields = originals.iter().map(UpgradeFieldValue);
+            construct!(subject_style, span => [#subject] #(#fields)*)
         };
 
         output.push(qs! { span =>
             #[automatically_derived]
-            impl #impl_generics #krate::Optionized for #optionized #type_generics #where_clause {
+            impl #impl_generics #krate::Optionized for #object #type_generics #where_clause {
                 type Errors = #krate::ErrorCollection;
                 #[inline]
                 fn validate(&self) -> ::core::result::Result<(), Self::Errors> {

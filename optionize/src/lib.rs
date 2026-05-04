@@ -357,8 +357,8 @@ pub trait Optionizable: Sized {
 
     /// Loads values from the provided partial struct into `self`.
     /// Any `Some` field in the partial struct will overwrite the corresponding field in `self`.
-    fn load(&mut self, other: Self::Object) {
-        other.patch(self);
+    fn load(&mut self, object: Self::Object) {
+        object.patch(self);
     }
 
     /// Converts `self` into its partial/optionized version.
@@ -423,13 +423,13 @@ impl Display for FieldInfo {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TypeInfo {
-    pub original: &'static str,
-    pub optionized: &'static str,
+    pub subject: &'static str,
+    pub object: &'static str,
 }
 
 impl Display for TypeInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "`{}` -> `{}`", self.optionized, self.original)
+        write!(f, "`{}` -> `{}`", self.object, self.subject)
     }
 }
 
