@@ -672,13 +672,13 @@ impl<'l> ToTokens for Validate<'l> {
 
             (
                 q! {
-                    #krate::Error::MissingField {
+                    #krate::Error::Missing {
                         ty: #ty,
                         field: #field
                     }
                 },
                 q! {
-                    |e| #krate::Error::NestedError {
+                    |e| #krate::Error::Nested {
                         ty: #ty,
                         field: #field,
                         source: #krate::__private::alloc::boxed::Box::new(e) as _

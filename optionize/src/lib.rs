@@ -435,11 +435,11 @@ impl Display for TypeInfo {
 
 #[derive(Debug)]
 pub enum Error {
-    MissingField {
+    Missing {
         ty: TypeInfo,
         field: FieldInfo,
     },
-    NestedError {
+    Nested {
         ty: TypeInfo,
         field: FieldInfo,
         source: Box<dyn core::error::Error + Send + Sync + 'static>,
@@ -449,10 +449,10 @@ pub enum Error {
 impl Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MissingField { ty, field } => {
+            Self::Missing { ty, field } => {
                 write!(f, "Missing required field when upgrading {}: {}", ty, field)
             }
-            Self::NestedError { ty, field, .. } => {
+            Self::Nested { ty, field, .. } => {
                 write!(
                     f,
                     "Failed to upgrade nested field when upgrading {}: {}",
@@ -466,7 +466,7 @@ impl Display for Error {
 impl core::error::Error for Error {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
-            Self::NestedError { source, .. } => Some(&**source),
+            Self::Nested { source, .. } => Some(&**source),
             _ => None,
         }
     }
@@ -491,8 +491,8 @@ impl Display for ErrorCollection {
         let mut groups = BTreeMap::<_, Vec<_>>::new();
         for error in &self.errors {
             let ty = match error {
-                Error::MissingField { ty, .. } => *ty,
-                Error::NestedError { ty, .. } => *ty,
+                Error::Missing { ty, .. } => *ty,
+                Error::Nested { ty, .. } => *ty,
             };
             groups.entry(ty).or_default().push(error);
         }
@@ -506,10 +506,10 @@ impl Display for ErrorCollection {
                 let last = groups.peek().is_none() && errors.peek().is_none();
 
                 match error {
-                    Error::MissingField { field, .. } => {
+                    Error::Missing { field, .. } => {
                         write!(f, "    - Missing required field: {}", field)?;
                     }
-                    Error::NestedError { field, source, .. } => {
+                    Error::Nested { field, source, .. } => {
                         writeln!(f, "    - Failed to upgrade nested field: {}", field)?;
                         write!(f, "      - {}", source)?;
                     }
