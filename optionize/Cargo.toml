@@ -14,5 +14,4 @@ readme = "README.md"
 
 [dependencies]
 optionize-macros = { version = "0.2", path = "../optionize-macros" }
-delegate = "0.13.5"
 derive_more = {version = "2.1.1", features = ["full"]}

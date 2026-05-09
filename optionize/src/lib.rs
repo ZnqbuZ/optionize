@@ -277,8 +277,7 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::fmt;
 use core::fmt::Display;
-use delegate::delegate;
-use derive_more::{Deref, DerefMut, From, Into, IntoIterator};
+use derive_more::{AsMut, AsRef, Deref, DerefMut, Error, From, Into, IntoIterator};
 
 /// Generates an optionized version of a struct, replacing its fields with `Option<T>` where applicable,
 /// and implements conversion and merge logic for partial updates and builders.
@@ -318,6 +317,7 @@ use derive_more::{Deref, DerefMut, From, Into, IntoIterator};
 /// ## Field Visibility
 /// The generated struct and its fields **strictly retain the visibility** of the original struct and its fields.
 pub use optionize_macros::optionized;
+
 
 #[cfg(test)]
 mod tests;
@@ -472,7 +472,9 @@ impl core::error::Error for Error {
     }
 }
 
-#[derive(Debug, Default, From, Into, Deref, DerefMut, IntoIterator)]
+#[derive(Debug, Default, From, Into, Deref, DerefMut, AsRef, AsMut, IntoIterator, Error)]
+#[as_ref(forward)]
+#[as_mut(forward)]
 #[into_iterator(owned, ref, ref_mut)]
 pub struct ErrorCollection {
     pub errors: Vec<Error>,
@@ -523,8 +525,6 @@ impl Display for ErrorCollection {
     }
 }
 
-impl core::error::Error for ErrorCollection {}
-
 impl FromIterator<Error> for ErrorCollection {
     fn from_iter<I: IntoIterator<Item = Error>>(iter: I) -> Self {
         iter.into_iter().collect::<Vec<_>>().into()
@@ -532,25 +532,7 @@ impl FromIterator<Error> for ErrorCollection {
 }
 
 impl Extend<Error> for ErrorCollection {
-    delegate! {
-        to self.errors {
-            fn extend<T: IntoIterator<Item = Error>>(&mut self, iter: T);
-        }
-    }
-}
-
-impl AsRef<[Error]> for ErrorCollection {
-    delegate! {
-        to self.errors {
-            fn as_ref(&self) -> &[Error];
-        }
-    }
-}
-
-impl AsMut<[Error]> for ErrorCollection {
-    delegate! {
-        to self.errors {
-            fn as_mut(&mut self) -> &mut [Error];
-        }
+    fn extend<T: IntoIterator<Item = Error>>(&mut self, iter: T) {
+        self.errors.extend(iter);
     }
 }
