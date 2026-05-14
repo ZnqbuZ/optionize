@@ -172,6 +172,38 @@ fn test_renamed_and_attrs() {
 }
 
 // ==========================================
+// User-defined Object Struct
+// ==========================================
+#[optionized]
+#[optionize(object = "ManualOptional", partial(upgradable))]
+#[derive(Debug, PartialEq, Clone)]
+struct Manual {
+    a: u32,
+    #[optionize(flatten)]
+    b: u32,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+struct ManualOptional {
+    a: Option<u32>,
+    b: u32,
+}
+
+#[test]
+fn test_manual_object() {
+    let o = ManualOptional { a: Some(1), b: 2 };
+
+    assert_eq!(o.clone().upgrade().unwrap(), Manual { a: 1, b: 2 });
+
+    let mut subject = Manual { a: 0, b: 0 };
+    o.clone().patch(&mut subject);
+    assert_eq!(subject, Manual { a: 1, b: 2 });
+
+    let downgraded: ManualOptional = subject.downgrade();
+    assert_eq!(downgraded, ManualOptional { a: Some(1), b: 2 });
+}
+
+// ==========================================
 // Skip Upgrades
 // ==========================================
 #[optionized]

@@ -15,6 +15,7 @@ proc-macro = true
 
 [dependencies]
 darling = "0.23"
+derive_more = { version = "2.1", features = ["full"] }
 proc-macro-crate = "3.5"
 proc-macro2 = "1"
 quote = "1"

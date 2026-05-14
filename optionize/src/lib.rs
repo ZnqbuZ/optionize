@@ -7,6 +7,7 @@
 //! - [Basic Usage](#basic-usage)
 //! - [Struct-level Attributes](#struct-level-attributes)
 //!   - [Renaming the generated struct](#renaming-the-generated-struct)
+//!   - [Using a user-defined object struct](#using-a-user-defined-object-struct)
 //!   - [Overriding derived attributes](#overriding-derived-attributes)
 //!   - [Upgrading and the `partial` attribute](#upgrading-and-the-partial-attribute)
 //!   - [Generics and the `marked` attribute](#generics-and-the-marked-attribute)
@@ -65,6 +66,32 @@
 //! }
 //!
 //! let builder = ConfigBuilder { port: Some(8080) };
+//! ```
+//!
+//! ### Using a user-defined object struct
+//! If you want to hand-write the optionized struct, use `object = "..."` to point the macro at your type.
+//! The macro will only generate the trait implementations and will expect your object struct to match the
+//! fields it would normally generate (including `#[optionize(name = ...)]`, `flatten`, `skip`, and `nest` rules).
+//! ```rust
+//! use optionize::{optionized, Optionized};
+//!
+//! #[optionized]
+//! #[optionize(object = "UserOptional", partial(upgradable))]
+//! #[derive(Debug, PartialEq, Clone)]
+//! struct User {
+//!     id: u32,
+//!     #[optionize(flatten)]
+//!     active: bool,
+//! }
+//!
+//! #[derive(Debug, PartialEq, Clone)]
+//! struct UserOptional {
+//!     id: Option<u32>,
+//!     active: bool,
+//! }
+//!
+//! let o = UserOptional { id: Some(1), active: true };
+//! assert_eq!(o.upgrade().unwrap(), User { id: 1, active: true });
 //! ```
 //!
 //! ### Overriding derived attributes
@@ -287,9 +314,12 @@ use derive_more::{AsMut, AsRef, Deref, DerefMut, Error, From, Into, IntoIterator
 ///
 /// ## Struct-level attributes
 ///
-/// `#[optionize(name = "...", attrs(...), partial(...))]`
+/// `#[optionize(name = "...", object = "...", attrs(...), partial(...))]`
 ///
 /// - `name`: Overrides the generated struct's name. Use `{}` as a placeholder for the original struct name.
+/// - `object`: Uses a user-defined optionized struct instead of generating one. The macro will only generate
+///   trait implementations and will expect your object struct to match the fields it would normally generate.
+///   This cannot be combined with `name` or `attrs`.
 /// - `attrs`: By default, the generated struct inherits all attributes from the original struct (except `#[optionize(...)]`).
 ///   If you provide `attrs(...)`, it **completely overrides** this behavior. You must list all attributes the generated struct should have.
 ///   For example, `#[optionize(attrs(derive(Debug)))]` makes the generated struct *only* derive `Debug`.
@@ -317,7 +347,6 @@ use derive_more::{AsMut, AsRef, Deref, DerefMut, Error, From, Into, IntoIterator
 /// ## Field Visibility
 /// The generated struct and its fields **strictly retain the visibility** of the original struct and its fields.
 pub use optionize_macros::optionized;
-
 
 #[cfg(test)]
 mod tests;

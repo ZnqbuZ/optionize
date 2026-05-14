@@ -1,6 +1,7 @@
 use darling::ast::NestedMeta;
 use darling::util::{Flag, Override, SpannedValue};
 use darling::{Error, FromAttributes, FromMeta, Result};
+use derive_more::Deref;
 use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::{ToTokens, format_ident, quote, quote_spanned as qs};
@@ -24,12 +25,14 @@ use syn::{
 struct MetaList(Vec<Meta>);
 
 impl MetaList {
-    fn merge(lists: &mut Vec<Self>) -> Option<Vec<Attribute>> {
+    fn merge(lists: &mut Vec<Self>) -> Option<SpannedValue<Vec<Attribute>>> {
         (!lists.is_empty()).then(|| {
-            take(lists)
+            let mut span = Span::call_site();
+            let attributes = take(lists)
                 .into_iter()
                 .flat_map(|ml| ml.0)
                 .map(|meta| {
+                    span = span.join(meta.span()).unwrap_or(meta.span());
                     let span = meta.span();
                     Attribute {
                         pound_token: Pound(span),
@@ -38,7 +41,8 @@ impl MetaList {
                         meta,
                     }
                 })
-                .collect()
+                .collect();
+            SpannedValue::new(attributes, span)
         })
     }
 }
@@ -95,7 +99,7 @@ struct Attributes {
     #[darling(rename = "attrs", multiple)]
     _attributes: Vec<MetaList>,
     #[darling(skip)]
-    attributes: Option<Vec<Attribute>>,
+    attributes: Option<SpannedValue<Vec<Attribute>>>,
 }
 
 impl Attributes {
@@ -106,7 +110,7 @@ impl Attributes {
 
     fn patch(self, attrs: &mut Vec<Attribute>) {
         if let Some(attributes) = self.attributes {
-            *attrs = attributes;
+            *attrs = attributes.into_inner();
         } else {
             attrs.retain(|attr| !is_optionize(attr));
         }
@@ -149,12 +153,48 @@ struct PartialArgs {
     marked: Option<SpannedValue<Override<MarkedArgs>>>,
 }
 
-#[derive(Debug, Default, FromAttributes)]
-#[darling(default, attributes(optionize))]
+#[derive(Debug, Default, Deref, FromAttributes)]
+#[darling(default, attributes(optionize), and_then = "Self::finalize")]
 struct StructArgs {
+    #[deref]
     #[darling(flatten)]
     general: GeneralArgs,
     partial: Option<SpannedValue<Override<PartialArgs>>>,
+    object: Option<LitStr>,
+}
+
+impl StructArgs {
+    fn finalize(self) -> Result<Self> {
+        let mut errors = Error::accumulator();
+
+        if self.object.is_some() {
+            if let Some(name) = &self.name {
+                errors.push(
+                    Error::custom("`name` cannot be used when `object` is specified")
+                        .with_span(name),
+                );
+            }
+
+            if let Some(attrs) = &self.attrs.attributes {
+                errors.push(
+                    Error::custom("`attrs` cannot be used when `object` is specified")
+                        .with_span(&attrs.span()),
+                );
+            }
+
+            if let Some(partial) = &self.partial
+                && let Override::Explicit(partial) = &**partial
+                && let Some(marked) = &partial.marked
+            {
+                errors.push(
+                    Error::custom("`marked` cannot be used when `object` is specified")
+                        .with_span(&marked.span()),
+                );
+            }
+        }
+
+        errors.finish_with(self)
+    }
 }
 
 #[derive(Debug, Default, FromMeta)]
@@ -163,9 +203,10 @@ struct SkipArgs {
     upgrade: Option<Expr>,
 }
 
-#[derive(Debug, Default, FromAttributes)]
+#[derive(Debug, Default, Deref, FromAttributes)]
 #[darling(default, attributes(optionize), and_then = "Self::finalize")]
 struct FieldArgs {
+    #[deref]
     #[darling(flatten)]
     general: GeneralArgs,
     flatten: Flag,
@@ -379,15 +420,15 @@ impl FieldIr {
                 continue;
             }
 
-            if let Some(name) = args.general.name {
+            if let Some(name) = &args.general.name {
                 let Some(ident) = ident.as_ref() else {
                     errors.push(
                         Error::custom("`name` attribute cannot be used on unnamed fields")
-                            .with_span(&name),
+                            .with_span(name),
                     );
                     continue;
                 };
-                let ident = match format(&name, ident) {
+                let ident = match format(name, ident) {
                     Ok(ident) => ident,
                     Err(e) => {
                         errors.push(e);
@@ -823,12 +864,16 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
     #[allow(non_snake_case)]
     let Subject = q! { #subject #type_generics };
 
-    object.ident = match args.general.name {
-        Some(name) => format(&name, subject)?,
-        None => format(&pqs! { subject.span() => "{}Optional"}, subject)?,
+    let has_object = args.object.is_some();
+    object.ident = match (&args.object, &args.general.name) {
+        (Some(name), None) | (None, Some(name)) => format(name, subject)?,
+        (None, None) => format(&pqs! { subject.span() => "{}Optional"}, subject)?,
+        _ => unreachable!(),
     };
 
-    args.general.attrs.patch(&mut object.attrs);
+    if !has_object {
+        args.general.attrs.patch(&mut object.attrs);
+    }
 
     let data = match &mut object.data {
         Data::Struct(data) => data,
@@ -938,7 +983,10 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         None
     };
 
-    let mut output = vec![q! { #object }];
+    let mut output = Vec::new();
+    if !has_object {
+        output.push(q! { #object });
+    }
 
     let object = &object.ident;
     #[allow(non_snake_case)]
@@ -971,15 +1019,11 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         let subject = &format_ident!("subject", span = Span::mixed_site());
 
         let optionize = {
-            let optionizes = optionizeds
-                .iter()
-                .map(|field| Optionize { field, subject });
+            let optionizes = optionizeds.iter().map(|field| Optionize { field, subject });
 
             construct!(object_style, _span => [Self] #(#optionizes)* #marker )
         };
-        let patches = optionizeds
-            .iter()
-            .map(|field| Patch { field, subject });
+        let patches = optionizeds.iter().map(|field| Patch { field, subject });
         let other = &format_ident!("other", span = Span::mixed_site());
         let merges = optionizeds.iter().map(|field| Merge { field, other });
 
