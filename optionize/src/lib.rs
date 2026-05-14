@@ -361,17 +361,15 @@ pub mod __private {
 /// Represents the relationship between a generated optionized struct and its target original struct.
 /// Allows extracting partial data from a full struct, applying partial data to a full struct,
 /// and merging two partial structs together.
-pub trait PartialOptionized: Sized {
-    type Subject;
-
+pub trait PartialOptionized<Subject>: Sized {
     /// Consumes the subject and converts it into its optionized version.
     /// This acts as a downgrade, populating every field with `Some(value)`.
-    fn optionize(subject: Self::Subject) -> Self;
+    fn optionize(subject: Subject) -> Self;
 
     /// Patches the provided subject struct with values from this optionized struct.
     /// If a field is `Some`, it will overwrite the subject's corresponding field.
     /// If it is `None`, the subject's field remains unchanged.
-    fn patch(self, subject: &mut Self::Subject);
+    fn patch(self, subject: &mut Subject);
 
     /// Merges another optionized struct into this one.
     /// By default, `Some` values from the `other` struct will overwrite values in `self`.
@@ -381,19 +379,17 @@ pub trait PartialOptionized: Sized {
 
 /// Provides extension methods on the original subject struct to easily work with its
 /// `PartialOptionized` counterpart without having to import and specify the partial type.
-pub trait Optionizable: Sized {
-    type Object: PartialOptionized<Subject = Self>;
-
+pub trait Optionizable<Object: PartialOptionized<Self>>: Sized {
     /// Loads values from the provided partial struct into `self`.
     /// Any `Some` field in the partial struct will overwrite the corresponding field in `self`.
-    fn load(&mut self, object: Self::Object) {
+    fn load(&mut self, object: Object) {
         object.patch(self);
     }
 
     /// Converts `self` into its partial/optionized version.
     /// Every field in the resulting optionized struct will be populated.
-    fn downgrade(self) -> Self::Object {
-        Self::Object::optionize(self)
+    fn downgrade(self) -> Object {
+        Object::optionize(self)
     }
 }
 
@@ -404,7 +400,8 @@ pub trait Optionizable: Sized {
     label = "Nested type lacks upgrade logic",
     note = "Ensure the subject of `{Self}` is not annotated partial, or is annotated with `#[optionize(partial(upgradable))]`"
 )]
-pub trait Optionized: PartialOptionized {
+pub trait Optionized: PartialOptionized<Self::Subject> {
+    type Subject;
     type Errors: IntoIterator<Item: core::error::Error + Send + Sync + 'static>;
 
     /// Validates that all fields inside the optionized struct that are required for upgrading
