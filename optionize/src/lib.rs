@@ -109,6 +109,21 @@
 //! }
 //! ```
 //!
+//! ### Attribute order and inheritance
+//! Attributes placed before `#[optionized]` are not ported to the generated struct.
+//! ```compile_fail
+//! use optionize::optionized;
+//!
+//! #[derive(Clone)]
+//! #[optionized]
+//! struct AttrBefore {
+//!     a: u32,
+//! }
+//!
+//! fn assert_clone<T: Clone>() {}
+//! assert_clone::<AttrBeforeOptional>();
+//! ```
+//!
 //! ### Upgrading and the `partial` attribute
 //! To support converting the partial struct back into the full struct, you must specify `partial(upgradable)`.
 //! This implements the `Optionized` trait, providing `.validate()` and `.upgrade()` methods.
