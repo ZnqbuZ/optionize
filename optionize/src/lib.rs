@@ -72,6 +72,10 @@
 //! If you want to hand-write the optionized struct, use `object = "..."` to point the macro at your type.
 //! The macro will only generate the trait implementations and will expect your object struct to match the
 //! fields it would normally generate (including `#[optionize(name = ...)]`, `flatten`, `skip`, and `nest` rules).
+//! `object` accepts a complete type path, such as `"pb::UserOptional"` or
+//! `"pb::UserOptional<T>"`. Write generic arguments explicitly; the subject's
+//! generic arguments are not automatically appended to an existing object type.
+//! The `{}` placeholder is still replaced with the subject's name.
 //! ```rust
 //! use optionize::{optionized, Optionized};
 //!
@@ -334,6 +338,7 @@ use derive_more::{AsMut, AsRef, Deref, DerefMut, Error, From, Into, IntoIterator
 /// - `name`: Overrides the generated struct's name. Use `{}` as a placeholder for the original struct name.
 /// - `object`: Uses a user-defined optionized struct instead of generating one. The macro will only generate
 ///   trait implementations and will expect your object struct to match the fields it would normally generate.
+///   Accepts complete type paths with explicit generic arguments, e.g. `"pb::Config<T>"`.
 ///   This cannot be combined with `name` or `attrs`.
 /// - `attrs`: By default, the generated struct inherits all attributes from the original struct (except `#[optionize(...)]`).
 ///   If you provide `attrs(...)`, it **completely overrides** this behavior. You must list all attributes the generated struct should have.

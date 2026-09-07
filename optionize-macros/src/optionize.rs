@@ -15,7 +15,7 @@ use syn::spanned::Spanned;
 use syn::token::{Brace, Bracket, Comma, Paren, Pound};
 use syn::{
     AttrStyle, Attribute, Data, DeriveInput, Expr, Field, Fields, FieldsNamed, FieldsUnnamed,
-    Index, LitStr, Member, Meta, Path, Type, WherePredicate, parse_quote,
+    Index, LitStr, Member, Meta, Path, Type, TypePath, WherePredicate, parse_quote,
     parse_quote_spanned as pqs, parse_str, parse2,
 };
 
@@ -669,7 +669,7 @@ impl<'l> ToTokens for Merge<'l> {
 struct Validate<'l> {
     field: &'l FieldIr,
     subject: &'l Ident,
-    object: &'l Ident,
+    object: &'l TokenStream,
     failed: &'l Ident,
     errors: &'l Ident,
 }
@@ -868,10 +868,20 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
     let Subject = q! { #subject #type_generics };
 
     let has_object = args.object.is_some();
-    object.ident = match (&args.object, &args.general.name) {
-        (Some(name), None) | (None, Some(name)) => format(name, subject)?,
-        (None, None) => format(&pqs! { subject.span() => "{}Optional"}, subject)?,
-        _ => unreachable!(),
+    #[allow(non_snake_case)]
+    let Object = if let Some(path) = &args.object {
+        let value = path.value().replace("{}", &subject.unraw().to_string());
+        let path = parse_str::<TypePath>(&value).map_err(|err| {
+            Error::custom(format!("invalid object type path: {err}")).with_span(path)
+        })?;
+        q! { #path }
+    } else {
+        object.ident = match &args.general.name {
+            Some(name) => format(name, subject)?,
+            None => format(&pqs! { subject.span() => "{}Optional"}, subject)?,
+        };
+        let name = &object.ident;
+        q! { #name #type_generics }
     };
 
     if !has_object {
@@ -991,10 +1001,6 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         output.push(q! { #object });
     }
 
-    let object = &object.ident;
-    #[allow(non_snake_case)]
-    let Object = q! { #object #type_generics };
-
     let mut where_clause = where_clause.cloned().unwrap_or_else(|| pq! { where });
     let mut where_predicates = HashSet::new();
     macro_rules! where_clause_extend {
@@ -1030,7 +1036,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
 
         output.push(q! {
             #[automatically_derived]
-            impl #impl_generics #krate::PartialOptionized<#Subject> for #object #type_generics #where_clause {
+            impl #impl_generics #krate::PartialOptionized<#Subject> for #Object #where_clause {
                 #[inline]
                 fn optionize(#subject: #Subject) -> Self { #optionize }
                 #[inline]
@@ -1056,7 +1062,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         let validates = optionizeds.iter().map(|field| Validate {
             field,
             subject,
-            object,
+            object: &Object,
             failed,
             errors,
         });
@@ -1070,7 +1076,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
 
         output.push(qs! { span =>
             #[automatically_derived]
-            impl #impl_generics #krate::Optionized for #object #type_generics #where_clause {
+            impl #impl_generics #krate::Optionized for #Object #where_clause {
                 type Subject = #Subject;
                 type Errors = #krate::ErrorCollection;
                 #[inline]
