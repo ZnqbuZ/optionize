@@ -238,8 +238,9 @@ pub mod helper_names {
     use optionize::optionized;
 
     #[optionized]
+    #[optionize(name = "ViewWithSuffixOptional")]
     #[derive(PartialEq)]
-    pub struct __OptionizeLayout {
+    pub struct __OptionizeView_ {
         pub value: u32,
     }
 
@@ -250,8 +251,8 @@ pub mod helper_names {
     }
 
     #[optionized]
-    pub struct Generic<__OptionizeLayout, __OptionizeView> {
-        pub first: __OptionizeLayout,
+    pub struct Generic<__OptionizeView_, __OptionizeView> {
+        pub first: __OptionizeView_,
         pub second: __OptionizeView,
     }
 
@@ -285,8 +286,8 @@ pub mod helper_names {
 fn generated_helper_types_avoid_subject_parameter_and_field_type_names() {
     use helper_names::*;
 
-    let baseline = __OptionizeLayout { value: 1 };
-    let mut patch = __OptionizeLayout { value: 1 }.downgrade();
+    let baseline = __OptionizeView_ { value: 1 };
+    let mut patch = __OptionizeView_ { value: 1 }.downgrade();
     assert!(!patch.retain(&baseline));
 
     let baseline = __OptionizeView { value: 2 };

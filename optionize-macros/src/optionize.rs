@@ -413,7 +413,7 @@ impl FieldIr {
     fn view_type(&self, borrow: &syn::Lifetime) -> TokenStream {
         expand! { self => { krate, ty } }
         if let Some(descriptor) = self.nested_descriptor() {
-            q! { ::core::option::Option<#krate::__private::NestedRef<#borrow, #ty, <#descriptor as #krate::Schema<#ty>>::Layout>> }
+            q! { ::core::option::Option<<#descriptor as #krate::Schema<#ty>>::View<#borrow>> }
         } else {
             q! { ::core::option::Option<&#borrow #ty> }
         }
@@ -430,8 +430,8 @@ impl FieldIr {
     fn view(&self, full: bool, root: &TokenStream) -> TokenStream {
         expand! { self => { krate, ty, original, optionized, strategy } }
         if full {
-            if self.nested_descriptor().is_some() {
-                return q! { ::core::option::Option::Some(#krate::__private::NestedRef::Full(&#root.#original)) };
+            if let Some(descriptor) = self.nested_descriptor() {
+                return q! { ::core::option::Option::Some(<#descriptor as #krate::Schema<#ty>>::full_view(&#root.#original)) };
             }
             return q! { ::core::option::Option::Some(&#root.#original) };
         }
@@ -440,15 +440,11 @@ impl FieldIr {
         };
         if let Some(nest) = nest {
             let descriptor = self.nested_descriptor().unwrap();
-            let value = q! {
-                #krate::__private::NestedRef::Partial(
-                    <#nest as #krate::PartialOptionized<#ty, #descriptor>>::view(value)
-                )
-            };
+            let view = q! { <#nest as #krate::PartialOptionized<#ty, #descriptor>>::view };
             if *wrap {
-                q! { #root.#optionized.as_ref().map(|value| #value) }
+                q! { #root.#optionized.as_ref().map(#view) }
             } else {
-                q! { { let value = &#root.#optionized; ::core::option::Option::Some(#value) } }
+                q! { ::core::option::Option::Some(#view(&#root.#optionized)) }
             }
         } else if *wrap {
             q! { #root.#optionized.as_ref() }
@@ -1375,21 +1371,18 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         q! { #Subject #Object #impl_generics #where_clause #(#field_types)* },
         &mut type_names,
     );
-    let layout_ident = fresh_ident("__OptionizeLayout", &type_names);
     let view_ident = fresh_ident("__OptionizeView", &type_names);
-    let layout = q! { #layout_ident #type_generics };
-    let nested_layouts = originals.iter().filter_map(|field| {
-        let descriptor = field.nested_descriptor()?;
-        let ty = &field.ty;
-        Some(q! { <#descriptor as #krate::Schema<#ty>>::Layout })
-    });
     let mut view_generics = object.generics.clone();
     view_generics.params.insert(0, parse_quote! { #borrow });
     view_generics.where_clause = Some(where_clause.clone());
     view_generics
         .make_where_clause()
         .predicates
-        .push(pq! { #layout: #borrow });
+        .push(pq! { #Subject: #borrow });
+    view_generics
+        .make_where_clause()
+        .predicates
+        .push(pq! { #Descriptor: #borrow });
     let (view_impl_generics, view_type_generics, view_where_clause) =
         view_generics.split_for_impl();
     let view_fields = originals.iter().map(|field| {
@@ -1414,21 +1407,13 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
     });
     let view = q! { #view_ident { #(#partial_fields)* __marker: ::core::marker::PhantomData } };
     output.push(q! {
-        // Nominal helpers keep private field types out of public associated types.
+        // A nominal view keeps private field types out of public associated types.
         // The anonymous const gives each mapping its own scope without user names.
-        #[doc(hidden)]
-        #[allow(private_bounds, clippy::type_complexity)]
-        pub struct #layout_ident #impl_generics (
-            ::core::marker::PhantomData<fn() -> (#Descriptor, #(#nested_layouts,)*)>
-        ) #where_clause;
         #[doc(hidden)]
         #[allow(private_bounds)]
         pub struct #view_ident #view_impl_generics #view_where_clause {
             #(#view_fields)*
-            __marker: ::core::marker::PhantomData<&#borrow #layout>,
-        }
-        impl #impl_generics #krate::__private::Layout for #layout #where_clause {
-            type Ref<#borrow> = #view_ident #view_type_generics where Self: #borrow;
+            __marker: ::core::marker::PhantomData<fn() -> &#borrow #Descriptor>,
         }
         impl #view_impl_generics ::core::default::Default for #view_ident #view_type_generics #view_where_clause {
             fn default() -> Self {
@@ -1437,10 +1422,11 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         }
         #[automatically_derived]
         impl #impl_generics #krate::Schema<#Subject> for #Descriptor #where_clause {
-            type Layout = #layout;
+            type View<#borrow> = #view_ident #view_type_generics
+            where #Subject: #borrow, Self: #borrow;
             #[inline]
-            fn full_view<#borrow>(subject: &#borrow #Subject) -> <Self::Layout as #krate::__private::Layout>::Ref<#borrow>
-            where Self::Layout: #borrow {
+            fn full_view<#borrow>(subject: &#borrow #Subject) -> Self::View<#borrow>
+            where Self: #borrow {
                 #view_ident { #(#full_fields)* __marker: ::core::marker::PhantomData }
             }
         }
@@ -1467,7 +1453,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         impl #impl_generics #krate::Retain<#Subject, #Descriptor> for #Object #retain_where {
             #[inline]
             fn retain_view<#borrow>(&mut #this, #baseline: #view_ident #view_type_generics) -> bool
-            where #layout: #borrow {
+            where #Subject: #borrow, #Descriptor: #borrow {
                 let mut #remains = false;
                 #(#retain)*
                 #remains
@@ -1485,8 +1471,8 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                 #[inline]
                 fn merge(&mut #this, other: Self) { *#this = other; }
                 #[inline]
-                fn view<#borrow>(&#borrow #this) -> <<#Descriptor as #krate::Schema<#Subject>>::Layout as #krate::__private::Layout>::Ref<#borrow>
-                where <#Descriptor as #krate::Schema<#Subject>>::Layout: #borrow {
+                fn view<#borrow>(&#borrow #this) -> <#Descriptor as #krate::Schema<#Subject>>::View<#borrow>
+                where #Subject: #borrow, #Descriptor: #borrow {
                     <#Descriptor as #krate::Schema<#Subject>>::full_view(#this)
                 }
             }
@@ -1520,8 +1506,8 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                 #[inline]
                 fn merge(&mut #this, #other: Self) { #(#merges)* }
                 #[inline]
-                fn view<#borrow>(&#borrow #this) -> <<#Descriptor as #krate::Schema<#Subject>>::Layout as #krate::__private::Layout>::Ref<#borrow>
-                where <#Descriptor as #krate::Schema<#Subject>>::Layout: #borrow { #view }
+                fn view<#borrow>(&#borrow #this) -> <#Descriptor as #krate::Schema<#Subject>>::View<#borrow>
+                where #Subject: #borrow, #Descriptor: #borrow { #view }
             }
         });
     }

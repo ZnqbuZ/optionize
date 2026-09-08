@@ -193,6 +193,8 @@ mean every stored field is `None`.
 The baseline can be any `PartialOptionized` implementation with the same subject
 and descriptor, including the subject itself. Existing protobuf objects
 selected through `object = ...` use the same API.
+Borrowed views are constructed recursively before comparison, including
+flattened nested fields.
 
 ### Using an external subject
 
@@ -240,6 +242,7 @@ the annotated field already supplies its nested object type.
 ## Traits Overview
 
 - **`PartialOptionized<Subject, Descriptor = Subject>`**: Provides `optionize()`, `patch()`, `merge()`, and a borrowed field view. The subject itself has an identity mapping, so it can also serve as a complete baseline.
+- **`Schema<Subject>`**: Defines `View<'a>` and `full_view()`. The macro generates the view type, including nested views, for the mapping descriptor.
 - **`Retain<Subject, Descriptor = Subject>`**: Provides `retain(&mut self, &baseline) -> bool` when the mapped fields support comparison.
 - **`Optionizable<Object, Descriptor = Self>`**: Automatically implemented for the subject. Provides `load()` and `downgrade()`.
 - **`Optionized<Subject, Descriptor = Subject>`**: Provides `validate()`, `upgrade()`, and `unsafe upgrade_unchecked()`. `upgrade()` returns `Result<Subject, Self::Errors>` and consumes the partial on both success and failure.
@@ -264,8 +267,8 @@ subject's generic parameters automatically.
 `Diff` and `#[optionize(diff)]` have been removed. To compare two full values,
 convert the next value into its patch with `downgrade()`, then call
 `patch.retain(&baseline)`. An existing patch can call `retain` directly. Manual
-trait implementations also need the borrowed field metadata used for comparison;
-the macros generate it automatically.
+implementations expose borrowed fields through `Schema::View<'a>` and
+`PartialOptionized::view()`; the macros generate these automatically.
 
 ## Crates in this workspace
 

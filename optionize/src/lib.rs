@@ -513,13 +513,11 @@ pub trait PartialOptionized<Subject, Descriptor = Subject>: Sized {
     /// `None` values from the `other` struct will leave `self` unchanged.
     fn merge(&mut self, other: Self);
 
-    /// Borrows the fields managed by this mapping in its shared layout.
-    fn view<'a>(
-        &'a self,
-    ) -> <<Descriptor as Schema<Subject>>::Layout as __private::Layout>::Ref<'a>
+    /// Borrows the fields managed by this mapping, recursively constructing nested views.
+    fn view<'a>(&'a self) -> <Descriptor as Schema<Subject>>::View<'a>
     where
-        Descriptor: Schema<Subject>,
-        <Descriptor as Schema<Subject>>::Layout: 'a;
+        Subject: 'a,
+        Descriptor: Schema<Subject> + 'a;
 }
 
 impl<Subject: Schema<Subject>> PartialOptionized<Subject> for Subject {
@@ -535,9 +533,9 @@ impl<Subject: Schema<Subject>> PartialOptionized<Subject> for Subject {
         *self = other;
     }
 
-    fn view<'a>(&'a self) -> <<Subject as Schema<Subject>>::Layout as __private::Layout>::Ref<'a>
+    fn view<'a>(&'a self) -> <Subject as Schema<Subject>>::View<'a>
     where
-        <Subject as Schema<Subject>>::Layout: 'a,
+        Subject: 'a,
     {
         Self::full_view(self)
     }

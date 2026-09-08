@@ -1,13 +1,5 @@
 use crate::PartialOptionized;
 
-/// The common borrowed field representation selected by a schema.
-#[doc(hidden)]
-pub trait Layout {
-    type Ref<'a>
-    where
-        Self: 'a;
-}
-
 /// Selects the common borrowed view of a subject and its partial representations.
 ///
 /// The `optionized` macro implements this for its subject automatically. A local
@@ -15,13 +7,16 @@ pub trait Layout {
 /// subject's crate. Partial representations compared with one another must use
 /// the same descriptor.
 pub trait Schema<S> {
-    #[doc(hidden)]
-    type Layout: Layout;
+    /// The borrowed fields, including recursively constructed nested views.
+    type View<'a>
+    where
+        S: 'a,
+        Self: 'a;
 
     /// Borrows every field of a complete subject without cloning its values.
-    fn full_view<'a>(subject: &'a S) -> <Self::Layout as Layout>::Ref<'a>
+    fn full_view<'a>(subject: &'a S) -> Self::View<'a>
     where
-        Self::Layout: 'a;
+        Self: 'a;
 }
 
 /// Selects the descriptor for a particular object-to-subject mapping.
@@ -59,13 +54,6 @@ impl<T: PartialEq + ?Sized, const INDEX: usize> Equal<INDEX> for &T {
     }
 }
 
-/// A complete nested value or another object's partial view of that value.
-#[doc(hidden)]
-pub enum NestedRef<'a, S: 'a, L: Layout + 'a> {
-    Full(&'a S),
-    Partial(L::Ref<'a>),
-}
-
 /// Removes updates already represented by a borrowed baseline.
 ///
 /// The baseline may be the complete subject or any partial representation using
@@ -84,29 +72,31 @@ pub enum NestedRef<'a, S: 'a, L: Layout + 'a> {
 pub trait Retain<S, D: Schema<S> = S>: PartialOptionized<S, D> {
     /// Retains changes relative to the shared borrowed field representation.
     #[doc(hidden)]
-    fn retain_view<'a>(&mut self, baseline: <D::Layout as Layout>::Ref<'a>) -> bool
+    fn retain_view<'a>(&mut self, baseline: D::View<'a>) -> bool
     where
-        D::Layout: 'a;
+        S: 'a,
+        D: 'a;
 
     /// Removes redundant updates and reports whether any changes remain.
     fn retain<'a, B: PartialOptionized<S, D>>(&mut self, baseline: &'a B) -> bool
     where
-        D::Layout: 'a,
+        S: 'a,
+        D: 'a,
     {
         self.retain_view(baseline.view())
     }
 }
 
-/// Adapts a borrowed nested patch to its complete or partial baseline.
+/// Compares a borrowed nested patch against its already constructed baseline view.
 ///
 /// Generated implementations place a higher-ranked bound on the borrowed patch
 /// so unavailable nested comparison does not restrict patching and upgrading.
 #[doc(hidden)]
 pub trait NestedRetain<S, D: Schema<S> = S, const INDEX: usize = 0> {
-    fn retain_nested<'a>(self, baseline: NestedRef<'a, S, D::Layout>) -> bool
+    fn retain_nested<'a>(self, baseline: D::View<'a>) -> bool
     where
         S: 'a,
-        D::Layout: 'a;
+        D: 'a;
 }
 
 impl<P, S, D, const INDEX: usize> NestedRetain<S, D, INDEX> for &mut P
@@ -114,15 +104,11 @@ where
     D: Schema<S>,
     P: Retain<S, D>,
 {
-    fn retain_nested<'a>(self, baseline: NestedRef<'a, S, D::Layout>) -> bool
+    fn retain_nested<'a>(self, baseline: D::View<'a>) -> bool
     where
         S: 'a,
-        D::Layout: 'a,
+        D: 'a,
     {
-        let baseline = match baseline {
-            NestedRef::Full(subject) => D::full_view(subject),
-            NestedRef::Partial(view) => view,
-        };
         self.retain_view(baseline)
     }
 }
@@ -132,7 +118,6 @@ mod tests {
     extern crate alloc;
 
     use alloc::string::String;
-    use core::marker::PhantomData;
 
     use super::*;
 
@@ -144,24 +129,19 @@ mod tests {
         value: Option<T>,
     }
 
-    struct SubjectLayout<T>(PhantomData<fn() -> Subject<T>>);
     struct View<'a, T> {
         value: Option<&'a T>,
     }
 
-    impl<T> Layout for SubjectLayout<T> {
-        type Ref<'a>
+    impl<T> Schema<Subject<T>> for Subject<T> {
+        type View<'a>
             = View<'a, T>
         where
             Self: 'a;
-    }
-
-    impl<T> Schema<Subject<T>> for Subject<T> {
-        type Layout = SubjectLayout<T>;
 
         fn full_view<'a>(subject: &'a Subject<T>) -> View<'a, T>
         where
-            Self::Layout: 'a,
+            Self: 'a,
         {
             View {
                 value: Some(&subject.value),
@@ -188,9 +168,9 @@ mod tests {
             }
         }
 
-        fn view<'a>(&'a self) -> <<Subject<T> as Schema<Subject<T>>>::Layout as Layout>::Ref<'a>
+        fn view<'a>(&'a self) -> <Subject<T> as Schema<Subject<T>>>::View<'a>
         where
-            <Subject<T> as Schema<Subject<T>>>::Layout: 'a,
+            Subject<T>: 'a,
         {
             View {
                 value: self.value.as_ref(),
@@ -204,7 +184,7 @@ mod tests {
     {
         fn retain_view<'a>(&mut self, baseline: View<'a, T>) -> bool
         where
-            SubjectLayout<T>: 'a,
+            Subject<T>: 'a,
         {
             if let (Some(value), Some(baseline)) = (self.value.as_ref(), baseline.value)
                 && Equal::<0>::equal(value, baseline)
@@ -251,7 +231,7 @@ mod tests {
         };
         assert!(!NestedRetain::<Subject<NoClone>>::retain_nested(
             &mut patch,
-            NestedRef::Full(&baseline),
+            Subject::full_view(&baseline),
         ));
         assert!(patch.value.is_none());
 
@@ -259,7 +239,7 @@ mod tests {
         patch.value = Some(NoClone(String::from("changed")));
         assert!(NestedRetain::<Subject<NoClone>>::retain_nested(
             &mut patch,
-            NestedRef::Partial(baseline.view()),
+            baseline.view(),
         ));
         assert!(patch.value.is_some());
     }
@@ -315,11 +295,11 @@ mod tests {
         {
             let first = NestedRetain::<Subject<T>, Subject<T>, 0>::retain_nested(
                 first,
-                NestedRef::Full(baseline),
+                Subject::full_view(baseline),
             );
             let second = NestedRetain::<Subject<T>, Subject<T>, 1>::retain_nested(
                 second,
-                NestedRef::Full(baseline),
+                Subject::full_view(baseline),
             );
             first | second
         }

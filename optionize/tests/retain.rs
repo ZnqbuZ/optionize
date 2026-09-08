@@ -173,13 +173,11 @@ impl PartialOptionized<Values> for RenamedBaseline {
 
     // The generated view is named through its associated type.
     #[allow(clippy::field_reassign_with_default)]
-    fn view<'a>(
-        &'a self,
-    ) -> <<Values as optionize::Schema<Values>>::Layout as optionize::__private::Layout>::Ref<'a>
+    fn view<'a>(&'a self) -> <Values as optionize::Schema<Values>>::View<'a>
     where
-        <Values as optionize::Schema<Values>>::Layout: 'a,
+        Values: 'a,
     {
-        let mut view: <<Values as optionize::Schema<Values>>::Layout as optionize::__private::Layout>::Ref<'a> = Default::default();
+        let mut view: <Values as optionize::Schema<Values>>::View<'a> = Default::default();
         view.v_enabled = self.active.as_ref();
         view.v_label = self.title.as_ref();
         view
@@ -339,6 +337,58 @@ fn generic_retain_supports_full_and_partial_baselines() {
     };
     assert!(retain_generic(&mut patch, &baseline));
     assert_eq!(patch.value, Some(NoClone(0)));
+}
+
+#[test]
+fn nested_views_include_optional_and_flattened_descendants() {
+    #[optionized]
+    struct Root {
+        #[optionize(nest = OuterOptional)]
+        outer: Outer,
+    }
+
+    let full = Root {
+        outer: Outer {
+            nested: Inner {
+                value: 1,
+                label: String::from("nested"),
+            },
+            flattened: Inner {
+                value: 2,
+                label: String::from("flattened"),
+            },
+        },
+    };
+    let outer = full.view().v_outer.unwrap();
+    let nested = outer.v_nested.unwrap();
+    let flattened = outer.v_flattened.unwrap();
+    assert_eq!(nested.v_value, Some(&1));
+    assert_eq!(nested.v_label.map(String::as_str), Some("nested"));
+    assert_eq!(flattened.v_value, Some(&2));
+    assert_eq!(flattened.v_label.map(String::as_str), Some("flattened"));
+
+    let mut partial = RootOptional {
+        outer: Some(OuterOptional {
+            nested: None,
+            flattened: InnerOptional {
+                value: Some(3),
+                label: None,
+            },
+        }),
+    };
+    let outer = partial.view().v_outer.unwrap();
+    assert!(outer.v_nested.is_none());
+    let flattened = outer.v_flattened.unwrap();
+    assert_eq!(flattened.v_value, Some(&3));
+    assert_eq!(flattened.v_label, None);
+
+    partial.outer.as_mut().unwrap().nested = Some(empty_inner());
+    let nested = partial.view().v_outer.unwrap().v_nested.unwrap();
+    assert_eq!(nested.v_value, None);
+    assert_eq!(nested.v_label, None);
+
+    partial.outer = None;
+    assert!(partial.view().v_outer.is_none());
 }
 
 #[test]
