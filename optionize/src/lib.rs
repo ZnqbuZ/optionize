@@ -112,11 +112,12 @@
 //! A `nest` attribute names the nested subject; its field already supplies the
 //! nested object type. A `skip` field declares an unmanaged subject field using
 //! its subject type and is removed from the local object.
-//! The local object also supplies the mapping descriptor, so generic bounds use
-//! `PartialOptionized<Subject, Object>` or `Optionized<Subject, Object>`.
-//! No attributes or trait implementations are needed in the subject's crate.
-//! Comparing two partial representations requires the same descriptor; separate
-//! reverse mappings use their respective object types as descriptors.
+//! The object implements `PartialOptionized<Subject>` and `Optionized<Subject>`,
+//! just as with a local subject. No attributes or trait implementations are
+//! needed in the subject's crate.
+//! For comparison, the object owns the shared view through `Schema<Subject>`;
+//! complete subjects and other baselines use `Schema<Subject, Object>`. Separate
+//! mappings use their respective object types as descriptors.
 //!
 //! ```rust
 //! use optionize::{optionized, Optionizable, Optionized};
@@ -370,6 +371,22 @@
 //! equality. `skip` fields are ignored, and nested patches recurse without
 //! requiring equality on the whole nested subject. `flatten` fields stay stored
 //! but contribute to the result, so `false` need not mean every field is `None`.
+//! Complete and partial baselines implement `Schema<Subject, Object>`, generated
+//! by the macro. `Schema::view()` provides their common borrowed representation;
+//! ordinary callers do not need to construct a view themselves. A generic helper
+//! can accept either kind of baseline:
+//!
+//! ```rust
+//! use optionize::{Retain, Schema};
+//! fn trim<P, S, B>(patch: &mut P, baseline: &B) -> bool
+//! where
+//!     P: Retain<S>,
+//!     B: Schema<S, P>,
+//! {
+//!     patch.retain(baseline)
+//! }
+//! ```
+//!
 //! Patching, merging, and upgrading do not require comparison support:
 //!
 //! ```rust
@@ -457,9 +474,9 @@ use derive_more::{AsMut, AsRef, Deref, DerefMut, Error, From, Into, IntoIterator
 /// - `subject`: Treats the annotated local struct as the object of an existing
 ///   subject, which may come from another crate. Declare ordinary object fields
 ///   as `Option<T>` (aliases also work). Accepts the same string-template and
-///   unquoted-path syntax as `object`. The local object supplies the descriptor,
-///   so generic bounds use `PartialOptionized<Subject, Object>` and
-///   `Optionized<Subject, Object>`; ordinary method calls infer it.
+///   unquoted-path syntax as `object`. Generic update bounds use
+///   `PartialOptionized<Subject>` and `Optionized<Subject>`. For `retain`, generic
+///   baseline bounds use `Schema<Subject, Object>`; ordinary calls infer the mapping.
 ///   This cannot be combined with `object`, struct-level `name`, or struct-level `attrs`.
 /// - `attrs`: By default, the generated struct inherits all attributes from the original struct (except `#[optionize(...)]`).
 ///   If you provide `attrs(...)`, it **completely overrides** this behavior. You must list all attributes the generated struct should have.
@@ -511,13 +528,20 @@ pub mod __private {
 /// Represents the relationship between a generated optionized struct and its target original struct.
 /// Allows extracting partial data from a full struct, applying partial data to a full struct,
 /// and merging two partial structs together.
-/// `Descriptor` defaults to the subject. With `#[optionize(subject = ...)]`, the
-/// local object supplies the descriptor instead. The macro generates the
-/// implementations for both the object and the complete subject. The subject's
-/// identity mapping constructs a full view; patching and merging replace the
-/// complete value. Handwritten mappings implement this trait for the subject
-/// explicitly when they need complete baselines.
-pub trait PartialOptionized<Subject, Descriptor = Subject>: Sized {
+///
+/// The macro implements this trait for the optionized object. Complete subjects
+/// expose borrowed baselines through [`Schema`] and receive [`Optionizable`]
+/// extension methods. They do not implement this partial-update trait:
+///
+/// ```compile_fail,E0277
+/// use optionize::{optionized, PartialOptionized};
+/// #[optionized]
+/// struct Config { enabled: bool }
+/// fn accept_partial<P: PartialOptionized<Config>>(_: P) {}
+/// accept_partial(ConfigOptional { enabled: Some(true) });
+/// accept_partial(Config { enabled: true });
+/// ```
+pub trait PartialOptionized<Subject>: Sized {
     /// Consumes the subject and converts it into its optionized version.
     /// This acts as a downgrade, populating every field with `Some(value)`.
     fn optionize(subject: Subject) -> Self;
@@ -531,19 +555,11 @@ pub trait PartialOptionized<Subject, Descriptor = Subject>: Sized {
     /// By default, `Some` values from the `other` struct will overwrite values in `self`.
     /// `None` values from the `other` struct will leave `self` unchanged.
     fn merge(&mut self, other: Self);
-
-    /// Borrows the fields managed by this mapping, recursively constructing nested views.
-    fn view<'a>(&'a self) -> <Descriptor as Schema<Subject>>::View<'a>
-    where
-        Subject: 'a,
-        Descriptor: Schema<Subject> + 'a;
 }
 
 /// Provides extension methods on the original subject struct to easily work with its
 /// `PartialOptionized` counterpart without having to import and specify the partial type.
-pub trait Optionizable<Object: PartialOptionized<Self, Descriptor>, Descriptor = Self>:
-    Sized
-{
+pub trait Optionizable<Object: PartialOptionized<Self>>: Sized {
     /// Loads values from the provided partial struct into `self`.
     /// Any `Some` field in the partial struct will overwrite the corresponding field in `self`.
     fn load(&mut self, object: Object) {
@@ -562,7 +578,7 @@ pub trait Optionizable<Object: PartialOptionized<Self, Descriptor>, Descriptor =
 ///
 /// `Subject` is a trait parameter so a crate can implement this trait for an
 /// external object (e.g. generated protobuf) when the subject is local. There is
-/// one implementation per `(Self, Subject, Descriptor)` combination, rather than one subject per object.
+/// one implementation per `(Self, Subject)` combination, allowing several subjects per object.
 /// When the complete subject type is uniquely determined, method calls infer it.
 /// Generic code can name the subject in its bound:
 ///
@@ -625,9 +641,7 @@ pub trait Optionizable<Object: PartialOptionized<Self, Descriptor>, Descriptor =
     label = "Nested type lacks upgrade logic",
     note = "Ensure the subject of `{Self}` is not annotated partial, or is annotated with `#[optionize(partial(upgradable))]`"
 )]
-pub trait Optionized<Subject, Descriptor = Subject>:
-    PartialOptionized<Subject, Descriptor>
-{
+pub trait Optionized<Subject>: PartialOptionized<Subject> {
     type Errors: IntoIterator<Item: core::error::Error + Send + Sync + 'static>;
 
     /// Validates that all fields inside the optionized struct that are required for upgrading

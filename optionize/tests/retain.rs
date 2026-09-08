@@ -2,7 +2,7 @@
 
 use core::marker::PhantomData;
 
-use optionize::{Optionizable, Optionized, PartialOptionized, Retain, optionized};
+use optionize::{Optionizable, Optionized, PartialOptionized, Retain, Schema, optionized};
 use optionize_test_proto as proto;
 
 #[optionized]
@@ -141,45 +141,21 @@ struct UncomparableContainer {
 }
 
 // This independent representation knows only two renamed fields. It supplies
-// the shared view, but does not implement Retain itself.
+// the shared view without implementing PartialOptionized or Retain.
 struct RenamedBaseline {
     active: Option<bool>,
     title: Option<String>,
 }
 
-impl PartialOptionized<Values> for RenamedBaseline {
-    fn optionize(subject: Values) -> Self {
-        Self {
-            active: Some(subject.enabled),
-            title: Some(subject.label),
-        }
-    }
-
-    fn patch(self, subject: &mut Values) {
-        if let Some(active) = self.active {
-            subject.enabled = active;
-        }
-        if let Some(title) = self.title {
-            subject.label = title;
-        }
-    }
-
-    fn merge(&mut self, other: Self) {
-        if other.active.is_some() {
-            self.active = other.active;
-        }
-        if other.title.is_some() {
-            self.title = other.title;
-        }
-    }
-
+impl Schema<Values, ValuesOptional> for RenamedBaseline {
+    type View<'a> = <ValuesOptional as Schema<Values>>::View<'a>;
     // The generated view is named through its associated type.
     #[allow(clippy::field_reassign_with_default)]
-    fn view<'a>(&'a self) -> <Values as optionize::Schema<Values>>::View<'a>
+    fn view<'a>(&'a self) -> <ValuesOptional as Schema<Values>>::View<'a>
     where
         Values: 'a,
     {
-        let mut view: <Values as optionize::Schema<Values>>::View<'a> = Default::default();
+        let mut view: <ValuesOptional as Schema<Values>>::View<'a> = Default::default();
         view.v_enabled = self.active.as_ref();
         view.v_label = self.title.as_ref();
         view
@@ -190,7 +166,7 @@ fn retain_generic<S, D, P, B>(patch: &mut P, baseline: &B) -> bool
 where
     D: optionize::Schema<S>,
     P: Retain<S, D>,
-    B: PartialOptionized<S, D>,
+    B: Schema<S, D>,
 {
     patch.retain(baseline)
 }
@@ -539,7 +515,7 @@ fn external_objects_support_full_and_partial_baselines() {
 }
 
 #[test]
-fn external_subjects_supply_identity_baselines_without_local_wrappers() {
+fn external_subjects_supply_full_baselines_without_local_wrappers() {
     let baseline = proto::Subject {
         enabled: false,
         count: 0,
@@ -612,41 +588,7 @@ fn subject_views_use_the_same_type_as_object_schemas() {
 }
 
 #[test]
-fn complete_subjects_can_be_used_as_nested_objects() {
-    #[optionized]
-    #[optionize(partial)]
-    struct Parent<'a> {
-        #[optionize(nest = Borrowed::<'a>)]
-        child: Borrowed<'a>,
-    }
-
-    let first = String::from("first");
-    let second = String::from("second");
-    let subject = Parent {
-        child: Borrowed { value: &first },
-    };
-    let mut patch = subject.downgrade();
-    assert_eq!(
-        patch.view().v_child.unwrap().v_value.copied(),
-        Some(first.as_str())
-    );
-    patch.merge(ParentOptional {
-        child: Some(Borrowed { value: &second }),
-    });
-
-    let mut subject = Parent {
-        child: Borrowed { value: &first },
-    };
-    patch.patch(&mut subject);
-    assert_eq!(subject.child.value, second.as_str());
-    assert_eq!(
-        subject.view().v_child.unwrap().v_value.copied(),
-        Some(second.as_str())
-    );
-}
-
-#[test]
-fn nested_objects_do_not_require_subject_identity_implementations() {
+fn nested_objects_do_not_require_subject_schema_implementations() {
     struct Child {
         value: u32,
     }
@@ -656,11 +598,18 @@ fn nested_objects_do_not_require_subject_identity_implementations() {
     }
 
     impl optionize::Schema<Child> for ChildPatch {
-        type Descriptor = Self;
         type View<'a> = Option<&'a u32>;
+
+        fn view<'a>(&'a self) -> <Self as optionize::Schema<Child>>::View<'a>
+        where
+            Child: 'a,
+            Self: 'a,
+        {
+            self.value.as_ref()
+        }
     }
 
-    impl PartialOptionized<Child, ChildPatch> for ChildPatch {
+    impl PartialOptionized<Child> for ChildPatch {
         fn optionize(subject: Child) -> Self {
             Self {
                 value: Some(subject.value),
@@ -677,14 +626,6 @@ fn nested_objects_do_not_require_subject_identity_implementations() {
             if other.value.is_some() {
                 self.value = other.value;
             }
-        }
-
-        fn view<'a>(&'a self) -> <Self as optionize::Schema<Child>>::View<'a>
-        where
-            Child: 'a,
-            Self: 'a,
-        {
-            self.value.as_ref()
         }
     }
 
@@ -704,7 +645,7 @@ fn nested_objects_do_not_require_subject_identity_implementations() {
         }
     }
 
-    // Child deliberately has no PartialOptionized implementation.
+    // Child deliberately has no Schema implementation.
     #[optionized]
     #[optionize(partial)]
     struct Parent {

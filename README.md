@@ -190,11 +190,16 @@ stored because they cannot represent an omitted update, but equal values do not
 count as remaining changes. Consequently, a `false` result does not necessarily
 mean every stored field is `None`.
 
-The baseline can be any `PartialOptionized` implementation with the same subject
-and descriptor, including the subject itself. Existing protobuf objects
-selected through `object = ...` use the same API.
-Borrowed views are constructed recursively before comparison, including
-flattened nested fields.
+The baseline can be the complete subject, the same patch type, or another type
+implementing `Schema<Subject, Patch>`. The macro generates the schemas for the
+subject and patch automatically. Existing protobuf objects selected through
+`object = ...` use the same API.
+
+`Schema::view()` borrows the mapped fields so `retain` can compare complete and
+partial baselines without copying values. Views are constructed recursively,
+including flattened nested fields. Ordinary callers only need `retain()`; the
+view protocol is useful when writing a custom baseline or generic comparison
+code. The subject does not implement `PartialOptionized`.
 
 ### Using an external subject
 
@@ -203,7 +208,7 @@ struct. The external subject needs no annotation or wrapper. For example, given
 `model::Config { enabled: bool, name: String }` with public fields:
 
 ```rust,ignore
-use optionize::{optionized, PartialOptionized, Retain};
+use optionize::{optionized, Retain, Schema};
 
 #[optionized]
 #[optionize(subject = model::Config)]
@@ -222,7 +227,7 @@ let mut patch = ConfigPatch {
 };
 assert!(!patch.retain(&current));
 
-fn trim<B: PartialOptionized<model::Config, ConfigPatch>>(
+fn trim<B: Schema<model::Config, ConfigPatch>>(
     patch: &mut ConfigPatch,
     baseline: &B,
 ) -> bool {
@@ -230,22 +235,26 @@ fn trim<B: PartialOptionized<model::Config, ConfigPatch>>(
 }
 ```
 
-The local `ConfigPatch` also serves as the descriptor used by the
-mapping. Ordinary method calls infer it; generic bounds specify it as the second
-trait parameter. The usual local-subject form defaults this parameter to the
-subject, so `PartialOptionized<Config>` and `Optionized<Config>` remain sufficient.
-Separate reverse mappings use their respective objects as descriptors; sharing a
-subject alone does not make them mutually comparable.
+`ConfigPatch` owns the shared view in both mapping directions. It implements
+`Schema<model::Config>`, whose second parameter defaults to `Self`, and the
+subject implements `Schema<model::Config, ConfigPatch>`. Generic baseline bounds
+name the patch explicitly, as in `trim` above; ordinary calls infer it.
+`PartialOptionized<model::Config>` and `Optionized<model::Config>` only need the
+subject parameter, including for external subjects.
+
+Separate mappings use their respective objects as descriptors. To compare with
+a different partial representation, implement `Schema<Subject, Patch>` for that
+baseline and return the patch's shared view; a common subject alone is not enough.
 In this reverse mapping, `nest = NestedSubject` names the nested subject;
 the annotated field already supplies its nested object type.
 
 ## Traits Overview
 
-- **`PartialOptionized<Subject, Descriptor = Subject>`**: Provides `optionize()`, `patch()`, `merge()`, and a borrowed field view. The subject itself has an identity mapping, so it can also serve as a complete baseline.
-- **`Schema<Subject>`**: Selects `Descriptor` and defines the shared `View<'a>` type. The macro implements it for the object and its descriptor; both the subject and the object construct their views through `PartialOptionized::view()`.
-- **`Retain<Subject, Descriptor = Subject>`**: Provides `retain(&mut self, &baseline) -> bool` when the mapped fields support comparison.
-- **`Optionizable<Object, Descriptor = Self>`**: Automatically implemented for the subject. Provides `load()` and `downgrade()`.
-- **`Optionized<Subject, Descriptor = Subject>`**: Provides `validate()`, `upgrade()`, and `unsafe upgrade_unchecked()`. `upgrade()` returns `Result<Subject, Self::Errors>` and consumes the partial on both success and failure.
+- **`PartialOptionized<Subject>`**: Implemented for objects; provides `optionize()`, `patch()`, and `merge()`.
+- **`Schema<Subject, Descriptor = Self>`**: Defines `View<'a>` and provides `view()`, which returns the descriptor's shared borrowed view. Generated objects own the view through `Schema<Subject>`; subjects expose complete baselines through `Schema<Subject, Object>`.
+- **`Retain<Subject, Descriptor = Self>`**: Provides `retain(&mut self, &baseline) -> bool` when the mapped fields support comparison. The baseline implements `Schema<Subject, Descriptor>`.
+- **`Optionizable<Object>`**: Automatically implemented for the subject. Provides `load()` and `downgrade()`.
+- **`Optionized<Subject>`**: Provides `validate()`, `upgrade()`, and `unsafe upgrade_unchecked()`. `upgrade()` returns `Result<Subject, Self::Errors>` and consumes the partial on both success and failure.
 
 ### Migrating to 0.5
 
@@ -255,7 +264,7 @@ remove `type Subject` and return `S` from `upgrade_unchecked`.
 
 The shared traits support either an external protobuf object with a local subject
 or an external subject with a local object. Uniqueness applies to
-`(object, subject, descriptor)` combinations. Calls infer the target when its
+`(object, subject)` combinations for `PartialOptionized` and `Optionized`. Calls infer the target when its
 complete type is uniquely determined. For multiple targets, annotate the upgraded
 result or use `Optionized::<S>::validate(&partial)`. A generic parameter that only
 appears on the subject still needs type information, even with one implementation.
@@ -268,17 +277,21 @@ subject's generic parameters automatically.
 convert the next value into its patch with `downgrade()`, then call
 `patch.retain(&baseline)`. An existing patch can call `retain` directly. Manual
 implementations expose borrowed fields through `Schema::View<'a>` and
-`PartialOptionized::view()`; the macros generate these automatically.
+`Schema::view()`; the macros generate these automatically.
 
-`Schema` now also selects the mapping descriptor. Handwritten schemas that own
-their view add `type Descriptor = Self`; forwarding schemas select the shared
-descriptor and reuse its `View` type.
+`PartialOptionized`, `Optionized`, and `Optionizable` no longer take a descriptor
+parameter. `PartialOptionized::view()` and the subject's identity implementation
+have been removed. Keep update operations on the object and move borrowed view
+construction into `Schema`.
 
-`Schema::full_view()` has been removed. Subjects and objects both expose
-`PartialOptionized::view()`, generated by the macro in both mapping directions.
-Handwritten mappings implement `PartialOptionized` for the subject explicitly
-when they need complete baselines; `Schema` alone no longer supplies that
-identity implementation.
+`Schema<Subject, Descriptor = Self>` replaces its associated `Descriptor` type
+with a trait parameter. The object implements `Schema<Subject>` and owns the
+shared view. Complete subjects and other baselines implement
+`Schema<Subject, Object>`, reuse `<Object as Schema<Subject>>::View<'a>`, and
+construct that view in `view()`. `Schema::full_view()` is no longer needed.
+`Retain` also defaults its descriptor to `Self`, so generic baseline bounds use
+`B: Schema<Subject, Object>` instead of `B: PartialOptionized<Subject, Descriptor>`.
+These rules apply to both local and external subjects.
 
 ## Crates in this workspace
 

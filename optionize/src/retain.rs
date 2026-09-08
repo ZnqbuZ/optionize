@@ -1,24 +1,25 @@
 use crate::PartialOptionized;
 
-/// Selects the common borrowed view of a subject and its partial representations.
+/// Reads borrowed fields from complete subjects and partial representations.
 ///
-/// The `optionized` macro implements this for the object and its mapping
-/// descriptor. By default, the subject supplies the descriptor and the object's
-/// schema forwards to it. With `subject = ...`, the local object supplies the
-/// descriptor. Partial representations compared with one another must use the
-/// same descriptor. Both subjects and objects construct their views through
-/// [`PartialOptionized::view`].
-pub trait Schema<S> {
-    /// Selects the descriptor used by `PartialOptionized` and `Retain` when this
-    /// type is a nested object. Generated descriptors select `Self`; forwarding
-    /// schemas select that descriptor and reuse its view type.
-    type Descriptor: Schema<S>;
-
-    /// The borrowed fields, including recursively constructed nested views.
+/// `D` selects the shared view and defaults to `Self`. The `optionized` macro
+/// implements `Schema<Subject>` for the object and `Schema<Subject, Object>` for
+/// the subject, including subjects from another crate. Other representations
+/// can implement the same schema to act as baselines without patch operations.
+pub trait Schema<S, D = Self>: Sized {
+    /// The borrowed field representation. Generated subject schemas reuse the
+    /// object's view type, including recursively constructed nested views.
     type View<'a>
     where
         S: 'a,
+        D: 'a,
         Self: 'a;
+
+    /// Borrows the known fields using the descriptor's shared view.
+    fn view<'a>(&'a self) -> <D as Schema<S>>::View<'a>
+    where
+        S: 'a,
+        D: Schema<S> + 'a;
 }
 
 /// Extracts the inner value of an optional field, including through type aliases.
@@ -61,7 +62,7 @@ impl<T: PartialEq + ?Sized, const INDEX: usize> Equal<INDEX> for &T {
 /// Generated objects gain this trait automatically when their compared field
 /// types support equality. Other operations remain available without those
 /// comparison bounds.
-pub trait Retain<S, D: Schema<S> = S>: PartialOptionized<S, D> {
+pub trait Retain<S, D: Schema<S> = Self>: PartialOptionized<S> + Schema<S, D> {
     /// Retains changes relative to the shared borrowed field representation.
     #[doc(hidden)]
     fn retain_view<'a>(&mut self, baseline: D::View<'a>) -> bool
@@ -70,7 +71,7 @@ pub trait Retain<S, D: Schema<S> = S>: PartialOptionized<S, D> {
         D: 'a;
 
     /// Removes redundant updates and reports whether any changes remain.
-    fn retain<'a, B: PartialOptionized<S, D>>(&mut self, baseline: &'a B) -> bool
+    fn retain<'a, B: Schema<S, D>>(&mut self, baseline: &'a B) -> bool
     where
         S: 'a,
         D: 'a,
@@ -99,27 +100,29 @@ mod tests {
         value: Option<&'a T>,
     }
 
-    impl<T> Schema<Subject<T>> for Subject<T> {
-        type Descriptor = Self;
+    impl<T> Schema<Subject<T>> for Patch<T> {
         type View<'a>
             = View<'a, T>
         where
             Self: 'a;
+        fn view<'a>(&'a self) -> <Self as Schema<Subject<T>>>::View<'a>
+        where
+            Subject<T>: 'a,
+        {
+            View {
+                value: self.value.as_ref(),
+            }
+        }
     }
 
-    impl<T> PartialOptionized<Subject<T>> for Subject<T> {
-        fn optionize(subject: Self) -> Self {
-            subject
-        }
-        fn patch(self, subject: &mut Self) {
-            *subject = self;
-        }
-        fn merge(&mut self, other: Self) {
-            *self = other;
-        }
-        fn view<'a>(&'a self) -> <Subject<T> as Schema<Subject<T>>>::View<'a>
+    impl<T> Schema<Subject<T>, Patch<T>> for Subject<T> {
+        type View<'a>
+            = View<'a, T>
         where
-            Self: 'a,
+            Self: 'a;
+        fn view<'a>(&'a self) -> <Patch<T> as Schema<Subject<T>>>::View<'a>
+        where
+            Subject<T>: 'a,
         {
             View {
                 value: Some(&self.value),
@@ -145,15 +148,6 @@ mod tests {
                 self.value = other.value;
             }
         }
-
-        fn view<'a>(&'a self) -> <Subject<T> as Schema<Subject<T>>>::View<'a>
-        where
-            Subject<T>: 'a,
-        {
-            View {
-                value: self.value.as_ref(),
-            }
-        }
     }
 
     impl<T> Retain<Subject<T>> for Patch<T>
@@ -176,7 +170,7 @@ mod tests {
     fn trim<P, B, S, D>(patch: &mut P, baseline: &B) -> bool
     where
         P: Retain<S, D>,
-        B: PartialOptionized<S, D>,
+        B: Schema<S, D>,
         D: Schema<S>,
     {
         patch.retain(baseline)
@@ -194,6 +188,31 @@ mod tests {
         assert!(!trim(&mut patch, &baseline));
         assert_eq!(patch.value, None);
         assert_eq!(baseline.value, owned.as_str());
+    }
+
+    #[test]
+    fn retain_bound_includes_the_objects_own_schema() {
+        fn trim_same<S, P: Retain<S>>(patch: &mut P, baseline: &P) -> bool {
+            patch.retain(baseline)
+        }
+
+        fn trim_shared<S, D: Schema<S>, P: Retain<S, D>>(patch: &mut P, baseline: &P) -> bool {
+            patch.retain(baseline)
+        }
+
+        let owned = String::from("borrowed");
+        let baseline = Patch {
+            value: Some(owned.as_str()),
+        };
+        let mut patch = Patch {
+            value: Some(owned.as_str()),
+        };
+        assert!(!trim_same(&mut patch, &baseline));
+        assert!(patch.value.is_none());
+
+        patch.value = Some(owned.as_str());
+        assert!(!trim_shared(&mut patch, &baseline));
+        assert!(patch.value.is_none());
     }
 
     #[test]

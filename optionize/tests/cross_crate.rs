@@ -1,6 +1,6 @@
 use core::marker::PhantomData;
 
-use optionize::{Optionizable, Optionized, optionized};
+use optionize::{Optionizable, Optionized, Retain, Schema, optionized};
 use optionize_test_proto as proto;
 
 #[optionized]
@@ -125,6 +125,31 @@ fn shared_object_upgrade_infers_from_the_return_type() {
 
     assert_eq!(required.value, 7);
     assert_eq!(nullable.value, None);
+}
+
+#[test]
+fn shared_object_retain_infers_the_mapping_from_the_baseline() {
+    fn trim<S, D, P, B>(patch: &mut P, baseline: &B) -> bool
+    where
+        D: Schema<S>,
+        P: Retain<S, D>,
+        B: Schema<S, D>,
+    {
+        patch.retain(baseline)
+    }
+
+    let mut patch = proto::Shared { value: Some(7) };
+    assert!(!patch.retain(&RequiredTarget { value: 7 }));
+    assert_eq!(patch.value, None);
+
+    patch.value = Some(7);
+    assert!(!trim(&mut patch, &NullableTarget { value: Some(7) }));
+    // This mapping flattens the field, so retaining keeps its stored value.
+    assert_eq!(patch.value, Some(7));
+
+    let baseline = proto::Shared { value: Some(7) };
+    assert!(!Retain::<RequiredTarget>::retain(&mut patch, &baseline));
+    assert_eq!(patch.value, None);
 }
 
 #[test]
