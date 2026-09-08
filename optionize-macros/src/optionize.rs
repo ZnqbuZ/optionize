@@ -397,135 +397,6 @@ macro_rules! expand {
 }
 
 impl FieldIr {
-    fn nested_descriptor(&self) -> Option<Type> {
-        expand! { self => { strategy } }
-        if let FieldStrategy::Optionize {
-            nest: Some(nest), ..
-        } = strategy
-        {
-            Some(nest.clone())
-        } else {
-            None
-        }
-    }
-
-    fn view_type(&self, lifetime: &Lifetime) -> TokenStream {
-        expand! { self => { krate, ty } }
-        if let Some(descriptor) = self.nested_descriptor() {
-            q! { ::core::option::Option<<#descriptor as #krate::Schema<#ty>>::View<#lifetime>> }
-        } else {
-            q! { ::core::option::Option<&#lifetime #ty> }
-        }
-    }
-
-    fn view_member(&self) -> Ident {
-        format_ident!(
-            "v_{}",
-            member_to_string(&self.original),
-            span = Span::mixed_site()
-        )
-    }
-
-    fn view(&self, full: bool, root: &TokenStream) -> TokenStream {
-        expand! { self => { krate, ty, original, optionized, strategy } }
-        if full {
-            if let Some(descriptor) = self.nested_descriptor() {
-                return q! { ::core::option::Option::Some(<#ty as #krate::Schema<#ty, #descriptor>>::view(&#root.#original)) };
-            }
-            return q! { ::core::option::Option::Some(&#root.#original) };
-        }
-        let FieldStrategy::Optionize { wrap, nest } = strategy else {
-            return q! { ::core::option::Option::None };
-        };
-        if let Some(nest) = nest {
-            let view = q! { <#nest as #krate::Schema<#ty>>::view };
-            if *wrap {
-                q! { #root.#optionized.as_ref().map(#view) }
-            } else {
-                q! { ::core::option::Option::Some(#view(&#root.#optionized)) }
-            }
-        } else if *wrap {
-            q! { #root.#optionized.as_ref() }
-        } else {
-            q! { ::core::option::Option::Some(&#root.#optionized) }
-        }
-    }
-
-    fn retain_where(&self, lifetime: &Lifetime) -> Option<WherePredicate> {
-        expand! { self => { krate, ty, strategy, index } }
-        match strategy {
-            FieldStrategy::Skip { .. } => None,
-            FieldStrategy::Optionize { nest: None, .. } => {
-                Some(pq! { for<#lifetime> &#lifetime #ty: #krate::__private::Equal<#index> })
-            }
-            FieldStrategy::Optionize {
-                nest: Some(nest), ..
-            } => {
-                let descriptor = self.nested_descriptor().unwrap();
-                // The unused binder defers concrete comparison bounds until
-                // Retain is used, keeping other operations available without it.
-                Some(pq! { for<#lifetime> #nest: #krate::Retain<#ty, #descriptor> })
-            }
-        }
-    }
-
-    fn retain(&self, baseline: &Ident, remains: &Ident) -> TokenStream {
-        expand! { self => { krate, ty, optionized, strategy, index } }
-        let this = format_ident!("self", span = Span::mixed_site());
-        let member = self.view_member();
-        let descriptor = self.nested_descriptor();
-        match strategy {
-            FieldStrategy::Skip { .. } => TokenStream::new(),
-            FieldStrategy::Optionize {
-                wrap: true,
-                nest: None,
-            } => q! {
-                if let (::core::option::Option::Some(value), ::core::option::Option::Some(baseline)) =
-                    (#this.#optionized.as_ref(), #baseline.#member)
-                    && #krate::__private::Equal::<#index>::equal(value, baseline)
-                {
-                    #this.#optionized = ::core::option::Option::None;
-                }
-                #remains |= #this.#optionized.is_some();
-            },
-            FieldStrategy::Optionize {
-                wrap: false,
-                nest: None,
-            } => q! {
-                #remains |= #baseline.#member.is_none_or(|baseline| {
-                    !#krate::__private::Equal::<#index>::equal(&#this.#optionized, baseline)
-                });
-            },
-            FieldStrategy::Optionize {
-                wrap: true,
-                nest: Some(_),
-            } => q! {
-                let changed = match (#this.#optionized.as_mut(), #baseline.#member) {
-                    (::core::option::Option::None, _) => false,
-                    (::core::option::Option::Some(_), ::core::option::Option::None) => true,
-                    (::core::option::Option::Some(value), ::core::option::Option::Some(baseline)) => {
-                        #krate::Retain::<#ty, #descriptor>::retain_view(value, baseline)
-                    }
-                };
-                if !changed {
-                    #this.#optionized = ::core::option::Option::None;
-                }
-                #remains |= changed;
-            },
-            FieldStrategy::Optionize {
-                wrap: false,
-                nest: Some(_),
-            } => q! {
-                #remains |= match #baseline.#member {
-                    ::core::option::Option::None => true,
-                    ::core::option::Option::Some(baseline) => {
-                        #krate::Retain::<#ty, #descriptor>::retain_view(&mut #this.#optionized, baseline)
-                    }
-                };
-            },
-        }
-    }
-
     fn extract(
         fields: &mut Punctuated<Field, Comma>,
         krate: Crate,
@@ -663,53 +534,105 @@ impl FieldIr {
 
 // endregion
 
-impl FieldIr {
-    fn partial_optionized_where(&self) -> Vec<WherePredicate> {
-        expand! {
-            self => {
-                krate,
-                ty,
-                strategy,
-            }
-        }
+struct View<'f> {
+    field: &'f FieldIr,
+    subject: bool,
+}
 
-        if let FieldStrategy::Optionize {
-            nest: Some(nest), ..
-        } = &strategy
-        {
-            vec![
-                pq! { #nest: #krate::Schema<#ty> },
-                pq! { #nest: #krate::PartialOptionized<#ty> },
-            ]
+impl ToTokens for View<'_> {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        expand! { self.field => { krate, ty, original, optionized, strategy, local } }
+        let this = format_ident!("self", span = Span::mixed_site());
+        let view = if self.subject {
+            if let FieldStrategy::Optionize {
+                nest: Some(nest), ..
+            } = strategy
+            {
+                q! { ::core::option::Option::Some(<#ty as #krate::Schema<#ty, #nest>>::view(&#this.#original)) }
+            } else {
+                q! { ::core::option::Option::Some(&#this.#original) }
+            }
+        } else if let FieldStrategy::Optionize { wrap, nest } = strategy {
+            let view = if *wrap {
+                q! { #this.#optionized.as_ref() }
+            } else {
+                q! { ::core::option::Option::Some(&#this.#optionized) }
+            };
+            if let Some(nest) = nest {
+                q! { #view.map(<#nest as #krate::Schema<#ty>>::view) }
+            } else {
+                view
+            }
         } else {
-            Default::default()
-        }
+            q! { ::core::option::Option::None }
+        };
+        tokens.extend(q! { #local: #view, });
     }
+}
 
-    fn optionized_where(&self) -> Vec<WherePredicate> {
-        expand! {
-            self => {
-                krate,
-                ty,
-                strategy,
-            }
-        }
+struct Retain<'f, 'i> {
+    field: &'f FieldIr,
+    baseline: &'i Ident,
+    remains: &'i Ident,
+}
 
-        if let FieldStrategy::Optionize {
-            nest: Some(nest), ..
-        } = &strategy
-        {
-            vec![
-                pq! {
-                    #nest: #krate::Optionized<#ty>
-                },
-                pq! {
-                    <#nest as #krate::Optionized<#ty>>::Errors: 'static
-                },
-            ]
-        } else {
-            Default::default()
-        }
+impl ToTokens for Retain<'_, '_> {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        expand! { self.field => { krate, ty, optionized, strategy, index, local } }
+        let this = format_ident!("self", span = Span::mixed_site());
+        let baseline = self.baseline;
+        let remains = self.remains;
+        let retain = match strategy {
+            FieldStrategy::Skip { .. } => return,
+            FieldStrategy::Optionize {
+                wrap: true,
+                nest: None,
+            } => q! {
+                if let (::core::option::Option::Some(value), ::core::option::Option::Some(baseline)) =
+                    (#this.#optionized.as_ref(), #baseline.#local)
+                    && #krate::__private::Equal::<#index>::equal(value, baseline)
+                {
+                    #this.#optionized = ::core::option::Option::None;
+                }
+                #remains |= #this.#optionized.is_some();
+            },
+            FieldStrategy::Optionize {
+                wrap: false,
+                nest: None,
+            } => q! {
+                #remains |= #baseline.#local.is_none_or(|baseline| {
+                    !#krate::__private::Equal::<#index>::equal(&#this.#optionized, baseline)
+                });
+            },
+            FieldStrategy::Optionize {
+                wrap: true,
+                nest: Some(nest),
+            } => q! {
+                let changed = match (#this.#optionized.as_mut(), #baseline.#local) {
+                    (::core::option::Option::None, _) => false,
+                    (::core::option::Option::Some(_), ::core::option::Option::None) => true,
+                    (::core::option::Option::Some(value), ::core::option::Option::Some(baseline)) => {
+                        <#nest as #krate::Retain<#ty>>::retain_view(value, baseline)
+                    }
+                };
+                if !changed {
+                    #this.#optionized = ::core::option::Option::None;
+                }
+                #remains |= changed;
+            },
+            FieldStrategy::Optionize {
+                wrap: false,
+                nest: Some(nest),
+            } => q! {
+                #remains |= match #baseline.#local {
+                    ::core::option::Option::None => true,
+                    ::core::option::Option::Some(baseline) => {
+                        <#nest as #krate::Retain<#ty>>::retain_view(&mut #this.#optionized, baseline)
+                    }
+                };
+            },
+        };
+        tokens.extend(retain);
     }
 }
 
@@ -1213,7 +1136,22 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         where_clause.predicates.extend(
             optionizeds
                 .iter()
-                .flat_map(|field| field.partial_optionized_where())
+                .filter_map(|field| -> Option<[WherePredicate; 2]> {
+                    let FieldIr {
+                        ty, strategy, span, ..
+                    } = field;
+                    let FieldStrategy::Optionize {
+                        nest: Some(nest), ..
+                    } = strategy
+                    else {
+                        return None;
+                    };
+                    Some([
+                        pqs! { *span => #nest: #krate::Schema<#ty> },
+                        pqs! { *span => #nest: #krate::PartialOptionized<#ty> },
+                    ])
+                })
+                .flatten()
                 .filter(|predicate| predicates.insert(predicate.clone())),
         );
         where_clause
@@ -1262,10 +1200,23 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         {
             let (impl_generics, _, where_clause) = generics.split_for_impl();
             let fields = originals.iter().map(|field| {
-                let visibility = &field.visibility;
-                let member = field.view_member();
-                let ty = field.view_type(&view_lifetime);
-                q! { #visibility #member: #ty, }
+                let FieldIr {
+                    ty,
+                    visibility,
+                    strategy,
+                    local,
+                    span,
+                    ..
+                } = field;
+                let ty = if let FieldStrategy::Optionize {
+                    nest: Some(nest), ..
+                } = strategy
+                {
+                    qs! { *span => <#nest as #krate::Schema<#ty>>::View<#view_lifetime> }
+                } else {
+                    qs! { *span => &#view_lifetime #ty }
+                };
+                qs! { *span => #visibility #local: ::core::option::Option<#ty>, }
             });
             output.push(q! {
                 // A nominal view keeps private field types out of public associated types.
@@ -1280,8 +1231,8 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
             });
 
             let fields = originals.iter().map(|field| {
-                let member = field.view_member();
-                q! { #member: ::core::option::Option::None, }
+                let local = &field.local;
+                q! { #local: ::core::option::Option::None, }
             });
             output.push(q! {
                 impl #impl_generics ::core::default::Default for #view_ident #type_generics #where_clause {
@@ -1293,10 +1244,9 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         }
 
         {
-            let fields = originals.iter().map(|field| {
-                let member = field.view_member();
-                let value = field.view(false, &q! { #this });
-                q! { #member: #value, }
+            let fields = originals.iter().map(|field| View {
+                field,
+                subject: false,
             });
             output.push(q! {
                 #[automatically_derived]
@@ -1322,14 +1272,29 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
             where_clause.predicates.extend(
                 originals
                     .iter()
-                    .filter_map(|field| field.retain_where(&view_lifetime))
+                    .filter_map(|field| -> Option<WherePredicate> {
+                        let FieldIr { ty, strategy, index, span, .. } = field;
+                        match strategy {
+                            FieldStrategy::Skip { .. } => None,
+                            FieldStrategy::Optionize { nest: None, .. } => {
+                                Some(pqs! { *span => for<#view_lifetime> &#view_lifetime #ty: #krate::__private::Equal<#index> })
+                            }
+                            FieldStrategy::Optionize { nest: Some(nest), .. } => {
+                                // The unused binder defers concrete comparison bounds until
+                                // Retain is used, keeping other operations available without it.
+                                Some(pqs! { *span => for<#view_lifetime> #nest: #krate::Retain<#ty> })
+                            }
+                        }
+                    })
                     .filter(|predicate| predicates.insert(predicate.clone())),
             );
             let baseline = format_ident!("baseline", span = Span::mixed_site());
             let remains = format_ident!("remains", span = Span::mixed_site());
-            let fields = originals
-                .iter()
-                .map(|field| field.retain(&baseline, &remains));
+            let fields = originals.iter().map(|field| Retain {
+                field,
+                baseline: &baseline,
+                remains: &remains,
+            });
             output.push(q! {
                 #[automatically_derived]
                 impl #impl_generics #krate::Retain<#Subject, #Object> for #Object #where_clause {
@@ -1357,16 +1322,22 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                 optionizeds
                     .iter()
                     .filter_map(|field| -> Option<WherePredicate> {
-                        let descriptor = field.nested_descriptor()?;
-                        let ty = &field.ty;
-                        Some(pq! { for<#view_lifetime> #ty: #krate::Schema<#ty, #descriptor> })
+                        let FieldIr {
+                            ty, strategy, span, ..
+                        } = field;
+                        let FieldStrategy::Optionize {
+                            nest: Some(nest), ..
+                        } = strategy
+                        else {
+                            return None;
+                        };
+                        Some(pqs! { *span => for<#view_lifetime> #ty: #krate::Schema<#ty, #nest> })
                     })
                     .filter(|predicate| predicates.insert(predicate.clone())),
             );
-            let fields = originals.iter().map(|field| {
-                let member = field.view_member();
-                let value = field.view(true, &q! { #this });
-                q! { #member: #value, }
+            let fields = originals.iter().map(|field| View {
+                field,
+                subject: true,
             });
             output.push(q! {
                 #[automatically_derived]
@@ -1429,7 +1400,22 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         where_clause.predicates.extend(
             optionizeds
                 .iter()
-                .flat_map(|field| field.optionized_where())
+                .filter_map(|field| -> Option<[WherePredicate; 2]> {
+                    let FieldIr {
+                        ty, strategy, span, ..
+                    } = field;
+                    let FieldStrategy::Optionize {
+                        nest: Some(nest), ..
+                    } = strategy
+                    else {
+                        return None;
+                    };
+                    Some([
+                        pqs! { *span => #nest: #krate::Optionized<#ty> },
+                        pqs! { *span => <#nest as #krate::Optionized<#ty>>::Errors: 'static },
+                    ])
+                })
+                .flatten()
                 .filter(|predicate| predicates.insert(predicate.clone())),
         );
 
