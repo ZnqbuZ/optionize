@@ -18,6 +18,26 @@ mod wire {
     pub struct FormattedOptional {
         pub value: Option<u32>,
     }
+
+    pub struct Bare<T> {
+        pub value: Option<T>,
+    }
+
+    pub struct BareBorrowed<'a, T, const N: usize> {
+        pub values: Option<&'a [T; N]>,
+    }
+
+    pub struct GenericFormattedOp<T> {
+        pub value: Option<T>,
+    }
+
+    pub struct ForwardedTemplateOp<T> {
+        pub value: Option<T>,
+    }
+
+    pub struct ForwardedPath<T> {
+        pub value: Option<T>,
+    }
 }
 
 #[optionized]
@@ -47,6 +67,41 @@ pub struct Borrowed<'a, T, const N: usize> {
 #[optionize(object = "wire::{}Optional")]
 pub struct Formatted {
     value: u32,
+}
+
+#[optionized]
+#[optionize(object = crate::wire::Bare::<T>)]
+pub struct Bare<T> {
+    value: T,
+}
+
+#[optionized]
+#[optionize(object = wire::BareBorrowed::<'a, T, N>)]
+pub struct BareBorrowed<'a, T, const N: usize> {
+    values: &'a [T; N],
+}
+
+#[optionized]
+#[optionize(object = "wire::{}Op<T>")]
+pub struct GenericFormatted<T> {
+    value: T,
+}
+
+macro_rules! forwarded_objects {
+    ($($name:ident => $object:expr),+ $(,)?) => {
+        $(
+            #[optionized]
+            #[optionize(object = $object)]
+            pub struct $name<T> {
+                value: T,
+            }
+        )+
+    };
+}
+
+forwarded_objects! {
+    ForwardedTemplate => "wire::{}Op<T>",
+    ForwardedBare => wire::ForwardedPath::<T>,
 }
 
 #[test]
@@ -92,4 +147,58 @@ fn object_path_retains_name_placeholder() {
             .value,
         7
     );
+}
+
+#[test]
+fn bare_generic_path_supports_all_operations() {
+    let mut full = Bare {
+        value: String::from("old"),
+    };
+    let mut patch = wire::Bare { value: None };
+    patch.merge(wire::Bare {
+        value: Some(String::from("new")),
+    });
+    full.load(patch);
+    assert_eq!(full.value, "new");
+
+    let patch: wire::Bare<String> = full.downgrade();
+    patch.validate().unwrap();
+    assert_eq!(patch.upgrade().unwrap().value, "new");
+}
+
+#[test]
+fn bare_paths_preserve_lifetime_and_const_arguments() {
+    let values = [5, 6, 7];
+    let patch = BareBorrowed { values: &values }.downgrade();
+
+    patch.validate().unwrap();
+    assert_eq!(patch.upgrade().unwrap().values, &values);
+}
+
+#[test]
+fn string_templates_preserve_generic_arguments() {
+    let patch = GenericFormatted {
+        value: String::from("generic template"),
+    }
+    .downgrade();
+
+    patch.validate().unwrap();
+    assert_eq!(patch.upgrade().unwrap().value, "generic template");
+}
+
+#[test]
+fn macro_expression_forwarding_accepts_templates_and_bare_paths() {
+    let template = ForwardedTemplate {
+        value: String::from("forwarded template"),
+    }
+    .downgrade();
+    template.validate().unwrap();
+    assert_eq!(template.upgrade().unwrap().value, "forwarded template");
+
+    let path = ForwardedBare {
+        value: String::from("forwarded path"),
+    }
+    .downgrade();
+    path.validate().unwrap();
+    assert_eq!(path.upgrade().unwrap().value, "forwarded path");
 }

@@ -69,18 +69,20 @@
 //! ```
 //!
 //! ### Using a user-defined object struct
-//! If you want to hand-write the optionized struct, use `object = "..."` to point the macro at your type.
+//! If you want to hand-write the optionized struct, use `object = ...` to point the macro at your type.
 //! The macro will only generate the trait implementations and will expect your object struct to match the
 //! fields it would normally generate (including `#[optionize(name = ...)]`, `flatten`, `skip`, and `nest` rules).
-//! `object` accepts a complete type path, such as `"pb::UserOptional"` or
-//! `"pb::UserOptional<T>"`. Write generic arguments explicitly; the subject's
-//! generic arguments are not automatically appended to an existing object type.
-//! The `{}` placeholder is still replaced with the subject's name.
+//! `object` accepts a string template or an unquoted type path, such as
+//! `object = "pb::{}Optional<T>"` or `object = pb::UserOptional::<T>`.
+//! In strings, `{}` is replaced with the subject's name before parsing the type path.
+//! Write generic arguments explicitly; the subject's generic arguments are not
+//! automatically appended to an existing object type. Unquoted generic paths use
+//! `::<T>` because attribute values are parsed as expressions; strings may use `<T>`.
 //! ```rust
 //! use optionize::{optionized, Optionized};
 //!
 //! #[optionized]
-//! #[optionize(object = "UserOptional", partial(upgradable))]
+//! #[optionize(object = UserOptional, partial(upgradable))]
 //! #[derive(Debug, PartialEq, Clone)]
 //! struct User {
 //!     id: u32,
@@ -333,12 +335,14 @@ use derive_more::{AsMut, AsRef, Deref, DerefMut, Error, From, Into, IntoIterator
 ///
 /// ## Struct-level attributes
 ///
-/// `#[optionize(name = "...", object = "...", attrs(...), partial(...), diff)]`
+/// `#[optionize(name = "...", object = ..., attrs(...), partial(...), diff)]`
 ///
 /// - `name`: Overrides the generated struct's name. Use `{}` as a placeholder for the original struct name.
 /// - `object`: Uses a user-defined optionized struct instead of generating one. The macro will only generate
 ///   trait implementations and will expect your object struct to match the fields it would normally generate.
-///   Accepts complete type paths with explicit generic arguments, e.g. `"pb::Config<T>"`.
+///   Accepts a string template (`"pb::{}Optional<T>"`) or an unquoted type path
+///   (`pb::Config::<T>`). In strings, `{}` is replaced with the subject's name.
+///   Generic arguments must be explicit; unquoted generic paths use `::<T>`.
 ///   This cannot be combined with `name` or `attrs`.
 /// - `diff`: Generates [`Diff`] for the optionized struct. Compared fields must
 ///   implement `PartialEq`; these bounds only apply to the diff implementation.

@@ -15,8 +15,8 @@ use syn::spanned::Spanned;
 use syn::token::{Brace, Bracket, Comma, Paren, Pound};
 use syn::{
     AttrStyle, Attribute, Data, DeriveInput, Expr, Field, Fields, FieldsNamed, FieldsUnnamed,
-    Index, LitStr, Member, Meta, Path, Type, TypePath, WherePredicate, parse_quote,
-    parse_quote_spanned as pqs, parse_str, parse2,
+    Index, Lit, LitStr, Member, Meta, Path, Type, TypePath, WherePredicate, parse_quote,
+    parse_quote_spanned as pqs, parse2,
 };
 
 // region args
@@ -153,6 +153,31 @@ struct PartialArgs {
     marked: Option<SpannedValue<Override<MarkedArgs>>>,
 }
 
+#[derive(Debug)]
+enum Object {
+    Str(LitStr),
+    Path(TypePath),
+}
+
+impl FromMeta for Object {
+    fn from_expr(expr: &Expr) -> Result<Self> {
+        match expr {
+            Expr::Lit(lit) if let Lit::Str(value) = &lit.lit => Ok(Self::Str(value.clone())),
+            Expr::Group(group) => Self::from_expr(&group.expr),
+            _ => TypePath::from_expr(expr).map(Self::Path),
+        }
+    }
+}
+
+impl Object {
+    fn format(self, subject: &Ident) -> Result<TypePath> {
+        match self {
+            Self::Str(pattern) => format(&pattern, subject),
+            Self::Path(path) => Ok(path),
+        }
+    }
+}
+
 #[derive(Debug, Default, Deref, FromAttributes)]
 #[darling(default, attributes(optionize), and_then = "Self::finalize")]
 struct StructArgs {
@@ -160,7 +185,7 @@ struct StructArgs {
     #[darling(flatten)]
     general: GeneralArgs,
     partial: Option<SpannedValue<Override<PartialArgs>>>,
-    object: Option<LitStr>,
+    object: Option<Object>,
     diff: Flag,
 }
 
@@ -234,14 +259,11 @@ impl FieldArgs {
 
 // region utils
 
-fn format(pattern: &LitStr, ident: &Ident) -> Result<Ident> {
-    let span = pattern.span();
-    let ident = pattern.value().replace("{}", &ident.unraw().to_string());
-    let mut ident = parse_str::<Ident>(&ident).map_err(|_| {
-        Error::custom(format!("`{}` is not a valid identifier", ident)).with_span(&span)
-    })?;
-    ident.set_span(span);
-    Ok(ident)
+fn format<T: syn::parse::Parse>(pattern: &LitStr, ident: &Ident) -> Result<T> {
+    let value = pattern.value().replace("{}", &ident.unraw().to_string());
+    LitStr::new(&value, pattern.span())
+        .parse()
+        .map_err(Error::from)
 }
 
 fn is_optionize(attr: &Attribute) -> bool {
@@ -924,11 +946,8 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
 
     let has_object = args.object.is_some();
     #[allow(non_snake_case)]
-    let Object = if let Some(path) = &args.object {
-        let value = path.value().replace("{}", &subject.unraw().to_string());
-        let path = parse_str::<TypePath>(&value).map_err(|err| {
-            Error::custom(format!("invalid object type path: {err}")).with_span(path)
-        })?;
+    let Object = if let Some(object) = args.object {
+        let path = object.format(subject)?;
         q! { #path }
     } else {
         object.ident = match &args.general.name {

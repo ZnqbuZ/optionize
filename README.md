@@ -62,7 +62,7 @@ You can customize the generated struct and its fields using the `#[optionize(...
 ### Struct Attributes
 
 - `#[optionize(name = "CustomPrefix{}CustomSuffix")]`: Set the name of the generated optionized struct. `{}` will be replaced with the original struct name.
-- `#[optionize(object = "pb::Config<T>")]`: Use an existing struct through a complete type path. Write generic arguments explicitly. The subject must be local when the object is from another crate.
+- `#[optionize(object = pb::Config::<T>)]` or `#[optionize(object = "pb::{}Optional<T>")]`: Use an existing struct through an unquoted type path or a string template. In strings, `{}` is replaced with the subject's name. Write generic arguments explicitly; unquoted generic paths use `::<T>`. The subject must be local when the object is from another crate.
 - `#[optionize(diff)]`: Generate `Diff<Subject>` on the optionized struct. Compared field types must implement `PartialEq`.
 - `#[optionize(attrs(derive(Debug, Default)))]`: Replace the attributes inherited by the generated struct.
 - `#[optionize(partial(upgradable))]`: By default, the generated struct implements both `PartialOptionized` and `Optionized`. If you only want partial updates and don't need upgrading, use `#[optionize(partial)]`. If you want both while using `partial` specific features (like `skip`), use `#[optionize(partial(upgradable))]`.

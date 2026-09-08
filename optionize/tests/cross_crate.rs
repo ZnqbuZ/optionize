@@ -4,7 +4,7 @@ use optionize::{Optionizable, Optionized, optionized};
 use optionize_test_proto as proto;
 
 #[optionized]
-#[optionize(object = "proto::Single")]
+#[optionize(object = proto::Single)]
 #[derive(Debug, PartialEq)]
 struct SingleTarget {
     enabled: bool,
@@ -12,7 +12,7 @@ struct SingleTarget {
 }
 
 #[optionized]
-#[optionize(object = "proto::Shared")]
+#[optionize(object = proto::Shared)]
 #[derive(Debug, PartialEq)]
 struct RequiredTarget {
     value: u32,
@@ -41,7 +41,7 @@ struct NullableContainer {
 }
 
 #[optionized]
-#[optionize(object = "proto::Generic<T>")]
+#[optionize(object = proto::Generic::<T>)]
 #[derive(Debug, PartialEq)]
 struct GenericTarget<T> {
     value: T,
