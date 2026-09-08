@@ -7,6 +7,7 @@ A Rust library providing macros and traits to easily generate and manage "option
 - **Downgrading**: Convert a complete struct into its optionized version.
 - **Patching / Loading**: Apply an optionized struct onto a complete struct, updating only the `Some` fields.
 - **Merging**: Merge two optionized structs together.
+- **Diffing**: Compare two full values and generate a patch containing changed fields.
 - **Upgrading**: Convert an optionized struct back into a complete struct. If any required fields are missing, it returns beautifully structured errors detailing exactly what is missing.
 
 ## Installation
@@ -62,6 +63,7 @@ You can customize the generated struct and its fields using the `#[optionize(...
 
 - `#[optionize(name = "CustomPrefix{}CustomSuffix")]`: Set the name of the generated optionized struct. `{}` will be replaced with the original struct name.
 - `#[optionize(object = "pb::Config<T>")]`: Use an existing struct through a complete type path. Write generic arguments explicitly. The subject must be local when the object is from another crate.
+- `#[optionize(diff)]`: Generate `Diff<Subject>` on the optionized struct. Compared field types must implement `PartialEq`.
 - `#[optionize(attrs(derive(Debug, Default)))]`: Replace the attributes inherited by the generated struct.
 - `#[optionize(partial(upgradable))]`: By default, the generated struct implements both `PartialOptionized` and `Optionized`. If you only want partial updates and don't need upgrading, use `#[optionize(partial)]`. If you want both while using `partial` specific features (like `skip`), use `#[optionize(partial(upgradable))]`.
 - `#[optionize(partial(marked))]`: Adds a `PhantomData` marker to the generated struct, typing it strictly to the original struct.
@@ -144,9 +146,40 @@ Upgrade failed with 1 error(s):
     - Missing required field: `age`
 ```
 
+### Generating a diff
+
+```rust
+use optionize::{optionized, Diff, Optionizable};
+
+#[optionized]
+#[optionize(diff)]
+struct Config {
+    enabled: bool,
+    socket_mark: Option<u32>,
+}
+
+let mut current = Config { enabled: true, socket_mark: Some(7) };
+let next = Config { enabled: true, socket_mark: None };
+let patch = ConfigOptional::diff(&current, next);
+assert_eq!(patch.enabled, None);
+assert_eq!(patch.socket_mark, Some(None));
+current.load(patch);
+```
+
+Diff borrows the baseline and consumes the next value, without requiring `Clone`.
+It returns the existing optionized type and supports `object` paths too. Only
+compared field types need `PartialEq`; the full struct does not need a derive.
+Diff bounds do not affect ordinary patching or upgrading.
+
+`flatten` fields always contain the next value, and `skip` fields are omitted.
+Nested patches must also implement `Diff`; wrapped nested fields additionally
+require `PartialEq` on the nested subject to omit an unchanged value. Flattened
+nested fields recurse without comparing the whole nested subject.
+
 ## Traits Overview
 
 - **`PartialOptionized<Subject>`**: Provides `optionize()`, `patch()`, and `merge()`.
+- **`Diff<Subject>`**: Opt-in comparison through `diff(&base, next)`, returning the existing patch type.
 - **`Optionizable<Object>`**: Automatically implemented for the original struct. Provides `load()` and `downgrade()`.
 - **`Optionized<Subject>`**: Provides `validate()`, `upgrade()`, and `unsafe upgrade_unchecked()`. `upgrade()` returns `Result<Subject, Self::Errors>` and consumes the partial on both success and failure.
 

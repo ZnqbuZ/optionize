@@ -333,13 +333,15 @@ use derive_more::{AsMut, AsRef, Deref, DerefMut, Error, From, Into, IntoIterator
 ///
 /// ## Struct-level attributes
 ///
-/// `#[optionize(name = "...", object = "...", attrs(...), partial(...))]`
+/// `#[optionize(name = "...", object = "...", attrs(...), partial(...), diff)]`
 ///
 /// - `name`: Overrides the generated struct's name. Use `{}` as a placeholder for the original struct name.
 /// - `object`: Uses a user-defined optionized struct instead of generating one. The macro will only generate
 ///   trait implementations and will expect your object struct to match the fields it would normally generate.
 ///   Accepts complete type paths with explicit generic arguments, e.g. `"pb::Config<T>"`.
 ///   This cannot be combined with `name` or `attrs`.
+/// - `diff`: Generates [`Diff`] for the optionized struct. Compared fields must
+///   implement `PartialEq`; these bounds only apply to the diff implementation.
 /// - `attrs`: By default, the generated struct inherits all attributes from the original struct (except `#[optionize(...)]`).
 ///   If you provide `attrs(...)`, it **completely overrides** this behavior. You must list all attributes the generated struct should have.
 ///   For example, `#[optionize(attrs(derive(Debug)))]` makes the generated struct *only* derive `Debug`.
@@ -395,6 +397,59 @@ pub trait PartialOptionized<Subject>: Sized {
     /// By default, `Some` values from the `other` struct will overwrite values in `self`.
     /// `None` values from the `other` struct will leave `self` unchanged.
     fn merge(&mut self, other: Self);
+}
+
+/// Computes a patch from a borrowed baseline and an owned next value.
+///
+/// Enable the generated implementation with `#[optionize(diff)]`. The result is
+/// the existing optionized struct, including when using `object = "..."`.
+/// Values move out of `next`, so no `Clone` bound is required.
+///
+/// Generated implementations follow the same field strategies as patching:
+///
+/// - Ordinary fields use `PartialEq`: equal values produce `None`, and changed
+///   values produce `Some(next.field)`. An optional field is still wrapped, so
+///   clearing it produces `Some(None)`.
+/// - `flatten` fields always carry the next value, without a comparison.
+/// - `skip` fields are ignored and keep their baseline value when patched.
+/// - `nest` fields recurse through the nested patch's `Diff` implementation.
+///   Wrapped nested fields also compare the entire nested subject using
+///   `PartialEq` to omit unchanged values. Flattened nested fields always recurse.
+///
+/// Only compared field types need `PartialEq`; the subject itself does not.
+/// These bounds do not affect `PartialOptionized` or `Optionized` implementations.
+/// Diff is explicitly enabled because a concrete field without `PartialEq`
+/// cannot satisfy a conditional diff implementation.
+///
+/// ```rust
+/// use optionize::{optionized, Diff, Optionizable};
+///
+/// #[optionized]
+/// #[optionize(diff)]
+/// struct Config {
+///     enabled: bool,
+///     label: String,
+///     socket_mark: Option<u32>,
+/// }
+///
+/// let mut current = Config {
+///     enabled: true, label: "peer".into(), socket_mark: Some(7),
+/// };
+/// let next = Config {
+///     enabled: false, label: "peer".into(), socket_mark: None,
+/// };
+/// let patch = ConfigOptional::diff(&current, next);
+/// assert_eq!(patch.enabled, Some(false));
+/// assert_eq!(patch.label, None);
+/// assert_eq!(patch.socket_mark, Some(None));
+/// current.load(patch);
+/// assert!(!current.enabled);
+/// assert_eq!(current.socket_mark, None);
+/// ```
+pub trait Diff<Subject>: PartialOptionized<Subject> {
+    /// Produces a patch that updates the managed fields of `base` to `next`.
+    /// Skipped fields are not part of the patch.
+    fn diff(base: &Subject, next: Subject) -> Self;
 }
 
 /// Provides extension methods on the original subject struct to easily work with its

@@ -1,6 +1,6 @@
 # optionize
 
-Core crate for the `optionize` framework. This crate provides the traits and data types necessary to handle optionized structs, such as `PartialOptionized`, `Optionizable`, and `Optionized`.
+Core crate for the `optionize` framework. This crate provides the traits and data types necessary to handle optionized structs, such as `PartialOptionized`, `Optionizable`, `Optionized`, and `Diff`.
 
 It also re-exports the macros from `optionize-macros` for convenience.
 

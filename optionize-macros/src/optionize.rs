@@ -161,6 +161,7 @@ struct StructArgs {
     general: GeneralArgs,
     partial: Option<SpannedValue<Override<PartialArgs>>>,
     object: Option<LitStr>,
+    diff: Flag,
 }
 
 impl StructArgs {
@@ -489,6 +490,21 @@ macro_rules! expand {
 }
 
 impl FieldIr {
+    fn diff_where(&self) -> Vec<WherePredicate> {
+        expand! { self => { krate, ty, strategy } }
+
+        let mut predicates = Vec::new();
+        if let FieldStrategy::Optionize { wrap, nest } = strategy {
+            if *wrap {
+                predicates.push(pq! { #ty: ::core::cmp::PartialEq });
+            }
+            if let Some(nest) = nest {
+                predicates.push(pq! { #nest: #krate::Diff<#ty> });
+            }
+        }
+        predicates
+    }
+
     fn partial_optionized_where(&self) -> Vec<WherePredicate> {
         expand! {
             self => {
@@ -571,6 +587,43 @@ impl<'l> ToTokens for Optionize<'l> {
         };
 
         tokens.extend(q! { #optionized: #optionize, });
+    }
+}
+
+struct DiffField<'l> {
+    field: &'l FieldIr,
+    base: &'l Ident,
+    next: &'l Ident,
+}
+
+impl ToTokens for DiffField<'_> {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        expand! {
+            self.field => { krate, ty, original, optionized, strategy }
+        }
+
+        let FieldStrategy::Optionize { wrap, nest } = strategy else {
+            return;
+        };
+        let base = self.base;
+        let next = self.next;
+        let value = if let Some(nest) = nest {
+            q! { <#nest as #krate::Diff<#ty>>::diff(&#base.#original, #next.#original) }
+        } else {
+            q! { #next.#original }
+        };
+        let value = if *wrap {
+            q! {
+                if ::core::cmp::PartialEq::ne(&#base.#original, &#next.#original) {
+                    ::core::option::Option::Some(#value)
+                } else {
+                    ::core::option::Option::None
+                }
+            }
+        } else {
+            value
+        };
+        tokens.extend(q! { #optionized: #value, });
     }
 }
 
@@ -1045,6 +1098,32 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                 fn patch(self, #subject: &mut #Subject) { #(#patches)* }
                 #[inline]
                 fn merge(&mut self, #other: Self) { #(#merges)* }
+            }
+        });
+    }
+
+    if args.diff.is_present() {
+        let mut diff_where = where_clause.clone();
+        let mut diff_predicates = where_predicates.clone();
+        diff_where.predicates.extend(
+            optionizeds
+                .iter()
+                .flat_map(|field| field.diff_where())
+                .filter(|p| diff_predicates.insert(p.clone())),
+        );
+
+        let base = &format_ident!("base", span = Span::mixed_site());
+        let next = &format_ident!("next", span = Span::mixed_site());
+        let fields = optionizeds
+            .iter()
+            .map(|field| DiffField { field, base, next });
+        let value = construct!(object_style, _span => [Self] #(#fields)* #marker);
+
+        output.push(q! {
+            #[automatically_derived]
+            impl #impl_generics #krate::Diff<#Subject> for #Object #diff_where {
+                #[inline]
+                fn diff(#base: &#Subject, #next: #Subject) -> Self { #value }
             }
         });
     }
