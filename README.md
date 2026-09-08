@@ -242,7 +242,7 @@ the annotated field already supplies its nested object type.
 ## Traits Overview
 
 - **`PartialOptionized<Subject, Descriptor = Subject>`**: Provides `optionize()`, `patch()`, `merge()`, and a borrowed field view. The subject itself has an identity mapping, so it can also serve as a complete baseline.
-- **`Schema<Subject>`**: Defines `View<'a>` and `full_view()`. The macro generates the view type, including nested views, for the mapping descriptor.
+- **`Schema<Subject>`**: Selects `Descriptor` and defines `View<'a>` and `full_view()`. The macro implements it for the object and its descriptor; the default mapping uses the subject's shared view, while `subject = ...` uses the local object's.
 - **`Retain<Subject, Descriptor = Subject>`**: Provides `retain(&mut self, &baseline) -> bool` when the mapped fields support comparison.
 - **`Optionizable<Object, Descriptor = Self>`**: Automatically implemented for the subject. Provides `load()` and `downgrade()`.
 - **`Optionized<Subject, Descriptor = Subject>`**: Provides `validate()`, `upgrade()`, and `unsafe upgrade_unchecked()`. `upgrade()` returns `Result<Subject, Self::Errors>` and consumes the partial on both success and failure.
@@ -269,6 +269,10 @@ convert the next value into its patch with `downgrade()`, then call
 `patch.retain(&baseline)`. An existing patch can call `retain` directly. Manual
 implementations expose borrowed fields through `Schema::View<'a>` and
 `PartialOptionized::view()`; the macros generate these automatically.
+
+`Schema` now also selects the mapping descriptor. Handwritten schemas that own
+their view add `type Descriptor = Self`; forwarding schemas select the shared
+descriptor and delegate `View` and `full_view()` to it.
 
 ## Crates in this workspace
 

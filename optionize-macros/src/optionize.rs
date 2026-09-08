@@ -404,7 +404,7 @@ impl FieldIr {
             nest: Some(nest), ..
         } = strategy
         {
-            Some(pq! { <#nest as #krate::__private::Mapping<#ty>>::Descriptor })
+            Some(pq! { <#nest as #krate::Schema<#ty>>::Descriptor })
         } else {
             None
         }
@@ -796,7 +796,7 @@ impl FieldIr {
         {
             let descriptor = self.nested_descriptor().unwrap();
             vec![
-                pq! { #nest: #krate::__private::Mapping<#ty> },
+                pq! { #nest: #krate::Schema<#ty> },
                 pq! { #nest: #krate::PartialOptionized<#ty, #descriptor> },
             ]
         } else {
@@ -1422,6 +1422,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         }
         #[automatically_derived]
         impl #impl_generics #krate::Schema<#Subject> for #Descriptor #where_clause {
+            type Descriptor = Self;
             type View<#borrow> = #view_ident #view_type_generics
             where #Subject: #borrow, Self: #borrow;
             #[inline]
@@ -1430,11 +1431,22 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                 #view_ident { #(#full_fields)* __marker: ::core::marker::PhantomData }
             }
         }
-        #[automatically_derived]
-        impl #impl_generics #krate::__private::Mapping<#Subject> for #Object #where_clause {
-            type Descriptor = #Descriptor;
-        }
     });
+    if !reverse {
+        output.push(q! {
+            #[automatically_derived]
+            impl #impl_generics #krate::Schema<#Subject> for #Object #where_clause {
+                type Descriptor = #Descriptor;
+                type View<#borrow> = <#Descriptor as #krate::Schema<#Subject>>::View<#borrow>
+                where #Subject: #borrow, Self: #borrow;
+                #[inline]
+                fn full_view<#borrow>(subject: &#borrow #Subject) -> Self::View<#borrow>
+                where Self: #borrow {
+                    <#Descriptor as #krate::Schema<#Subject>>::full_view(subject)
+                }
+            }
+        });
+    }
     let mut retain_where = where_clause.clone();
     let mut retain_predicates = HashSet::new();
     retain_where.predicates.extend(

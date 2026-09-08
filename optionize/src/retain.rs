@@ -2,11 +2,17 @@ use crate::PartialOptionized;
 
 /// Selects the common borrowed view of a subject and its partial representations.
 ///
-/// The `optionized` macro implements this for its subject automatically. A local
-/// descriptor can implement it for an external subject without changing that
-/// subject's crate. Partial representations compared with one another must use
-/// the same descriptor.
+/// The `optionized` macro implements this for the object and its mapping
+/// descriptor. By default, the subject supplies the descriptor and the object's
+/// schema forwards to it. With `subject = ...`, the local object supplies the
+/// descriptor. Partial representations
+/// compared with one another must use the same descriptor.
 pub trait Schema<S> {
+    /// Selects the descriptor used by `PartialOptionized` and `Retain` when this
+    /// type is a nested object. Generated descriptors select `Self`; forwarding
+    /// schemas select that descriptor and reuse its view and `full_view`.
+    type Descriptor: Schema<S>;
+
     /// The borrowed fields, including recursively constructed nested views.
     type View<'a>
     where
@@ -17,16 +23,6 @@ pub trait Schema<S> {
     fn full_view<'a>(subject: &'a S) -> Self::View<'a>
     where
         Self: 'a;
-}
-
-/// Selects the descriptor for a particular object-to-subject mapping.
-#[doc(hidden)]
-pub trait Mapping<S> {
-    type Descriptor: Schema<S>;
-}
-
-impl<S: Schema<S>> Mapping<S> for S {
-    type Descriptor = S;
 }
 
 /// Extracts the inner value of an optional field, including through type aliases.
@@ -108,6 +104,7 @@ mod tests {
     }
 
     impl<T> Schema<Subject<T>> for Subject<T> {
+        type Descriptor = Self;
         type View<'a>
             = View<'a, T>
         where

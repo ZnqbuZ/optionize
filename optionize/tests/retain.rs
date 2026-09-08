@@ -598,6 +598,55 @@ fn borrowed_fields_do_not_require_static_lifetimes() {
 }
 
 #[test]
+fn object_schemas_forward_borrowed_subject_views() {
+    use optionize::Schema;
+
+    let text = String::from("borrowed through the object schema");
+    let baseline = Borrowed { value: &text };
+    let view: <Borrowed<'_> as Schema<Borrowed<'_>>>::View<'_> =
+        <BorrowedOptional<'_> as Schema<Borrowed<'_>>>::full_view(&baseline);
+
+    assert_eq!(view.v_value.copied(), Some(text.as_str()));
+    let mut patch = BorrowedOptional { value: Some(&text) };
+    assert!(!patch.retain_view(view));
+    assert!(patch.value.is_none());
+}
+
+#[test]
+fn complete_subjects_can_be_used_as_nested_objects() {
+    #[optionized]
+    #[optionize(partial)]
+    struct Parent<'a> {
+        #[optionize(nest = Borrowed::<'a>)]
+        child: Borrowed<'a>,
+    }
+
+    let first = String::from("first");
+    let second = String::from("second");
+    let subject = Parent {
+        child: Borrowed { value: &first },
+    };
+    let mut patch = subject.downgrade();
+    assert_eq!(
+        patch.view().v_child.unwrap().v_value.copied(),
+        Some(first.as_str())
+    );
+    patch.merge(ParentOptional {
+        child: Some(Borrowed { value: &second }),
+    });
+
+    let mut subject = Parent {
+        child: Borrowed { value: &first },
+    };
+    patch.patch(&mut subject);
+    assert_eq!(subject.child.value, second.as_str());
+    assert_eq!(
+        subject.view().v_child.unwrap().v_value.copied(),
+        Some(second.as_str())
+    );
+}
+
+#[test]
 fn independent_baseline_types_can_rename_and_omit_fields() {
     let baseline = RenamedBaseline {
         active: Some(false),
