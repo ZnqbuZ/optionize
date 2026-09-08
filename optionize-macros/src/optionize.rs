@@ -6,7 +6,7 @@ mod syntax;
 use darling::ast::NestedMeta;
 use darling::util::Override;
 use darling::{Error, FromAttributes, FromMeta, Result};
-use proc_macro2::{Span, TokenStream};
+use proc_macro2::{Ident, Span, TokenStream};
 use quote::{format_ident, quote, quote_spanned as qs};
 use std::collections::HashSet;
 use std::mem::take;
@@ -273,8 +273,9 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                 let ident = fresh_ident(prefix, &names);
                 Lifetime::new(&format!("'{ident}"), ident.span())
             };
+            let view_ident = format::<Ident>(&pq! { "__Optionize{}View" }, subject)?;
             (
-                fresh_ident("__OptionizeView", &names),
+                fresh_ident(&view_ident.to_string(), &names),
                 lifetime("v"),
                 lifetime("s"),
             )
@@ -317,7 +318,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
             });
             output.push(q! {
                 // A nominal view keeps private field types out of public associated types.
-                // The anonymous const gives each mapping its own scope without user names.
+                // The anonymous const keeps the helper out of the surrounding namespace.
                 #[doc(hidden)]
                 #[allow(private_bounds)]
                 pub struct #view_ident #impl_generics #where_clause {

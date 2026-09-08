@@ -291,31 +291,33 @@ pub mod helper_names {
     use optionize::optionized;
 
     #[optionized]
-    #[optionize(name = "ViewWithSuffixOptional")]
+    #[optionize(name = "__OptionizeNamedView")]
+    pub struct Named {
+        pub value: u32,
+    }
+
     #[derive(PartialEq)]
-    pub struct __OptionizeView_ {
+    pub struct __OptionizeFieldTypeView {
         pub value: u32,
     }
 
     #[optionized]
-    #[derive(PartialEq)]
-    pub struct __OptionizeView {
-        pub value: u32,
-    }
-
-    #[optionized]
-    pub struct Generic<__OptionizeView_, __OptionizeView> {
-        pub first: __OptionizeView_,
-        pub second: __OptionizeView,
+    pub struct Generic<__OptionizeGenericView, __OptionizeGenericView_> {
+        pub first: __OptionizeGenericView,
+        pub second: __OptionizeGenericView_,
     }
 
     #[optionized]
     pub struct FieldType {
-        pub value: __OptionizeView,
+        pub value: __OptionizeFieldTypeView,
+    }
+
+    pub struct __OptionizeReverseView {
+        pub value: u32,
     }
 
     #[optionized]
-    #[optionize(subject = "__OptionizeView")]
+    #[optionize(subject = "__OptionizeReverseView")]
     pub struct Reverse {
         pub value: Option<u32>,
     }
@@ -323,12 +325,12 @@ pub mod helper_names {
     pub mod string_object {
         use optionize::optionized;
 
-        pub struct __OptionizeView {
+        pub struct __OptionizeSubjectView {
             pub value: Option<u32>,
         }
 
         #[optionized]
-        #[optionize(object = "__OptionizeView")]
+        #[optionize(object = "__OptionizeSubjectView")]
         pub struct Subject {
             pub value: u32,
         }
@@ -336,15 +338,11 @@ pub mod helper_names {
 }
 
 #[test]
-fn generated_helper_types_avoid_subject_parameter_and_field_type_names() {
+fn generated_helper_types_avoid_object_parameter_and_field_type_names() {
     use helper_names::*;
 
-    let baseline = __OptionizeView_ { value: 1 };
-    let mut patch = __OptionizeView_ { value: 1 }.downgrade();
-    assert!(!patch.retain(&baseline));
-
-    let baseline = __OptionizeView { value: 2 };
-    let mut patch: __OptionizeViewOptional = __OptionizeView { value: 2 }.downgrade();
+    let baseline = Named { value: 1 };
+    let mut patch: __OptionizeNamedView = Named { value: 1 }.downgrade();
     assert!(!patch.retain(&baseline));
 
     let baseline = Generic {
@@ -359,10 +357,10 @@ fn generated_helper_types_avoid_subject_parameter_and_field_type_names() {
     assert!(!patch.retain(&baseline));
 
     let baseline = FieldType {
-        value: __OptionizeView { value: 4 },
+        value: __OptionizeFieldTypeView { value: 4 },
     };
     let mut patch = FieldType {
-        value: __OptionizeView { value: 4 },
+        value: __OptionizeFieldTypeView { value: 4 },
     }
     .downgrade();
     assert!(!patch.retain(&baseline));
@@ -370,12 +368,12 @@ fn generated_helper_types_avoid_subject_parameter_and_field_type_names() {
 
 #[test]
 fn generated_helper_types_avoid_paths_supplied_inside_attribute_strings() {
-    let baseline = helper_names::__OptionizeView { value: 5 };
+    let baseline = helper_names::__OptionizeReverseView { value: 5 };
     let mut patch = helper_names::Reverse { value: Some(5) };
     assert!(!patch.retain(&baseline));
 
     let baseline = helper_names::string_object::Subject { value: 6 };
-    let mut patch = helper_names::string_object::__OptionizeView { value: Some(6) };
+    let mut patch = helper_names::string_object::__OptionizeSubjectView { value: Some(6) };
     assert!(!patch.retain(&baseline));
 }
 
