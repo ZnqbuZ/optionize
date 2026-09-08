@@ -464,9 +464,9 @@ impl FieldIr {
                 nest: Some(nest), ..
             } => {
                 let descriptor = self.nested_descriptor().unwrap();
-                Some(
-                    pq! { for<#borrow> &#borrow mut #nest: #krate::__private::NestedRetain<#ty, #descriptor, #index> },
-                )
+                // The unused binder defers concrete comparison bounds until
+                // Retain is used, keeping other operations available without it.
+                Some(pq! { for<#borrow> #nest: #krate::Retain<#ty, #descriptor> })
             }
         }
     }
@@ -506,7 +506,7 @@ impl FieldIr {
                     (::core::option::Option::None, _) => false,
                     (::core::option::Option::Some(_), ::core::option::Option::None) => true,
                     (::core::option::Option::Some(value), ::core::option::Option::Some(baseline)) => {
-                        #krate::__private::NestedRetain::<#ty, #descriptor, #index>::retain_nested(value, baseline)
+                        #krate::Retain::<#ty, #descriptor>::retain_view(value, baseline)
                     }
                 };
                 if !changed {
@@ -521,7 +521,7 @@ impl FieldIr {
                 #remains |= match #baseline.#member {
                     ::core::option::Option::None => true,
                     ::core::option::Option::Some(baseline) => {
-                        #krate::__private::NestedRetain::<#ty, #descriptor, #index>::retain_nested(&mut #this.#optionized, baseline)
+                        #krate::Retain::<#ty, #descriptor>::retain_view(&mut #this.#optionized, baseline)
                     }
                 };
             },

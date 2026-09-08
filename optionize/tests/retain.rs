@@ -1,3 +1,5 @@
+#![deny(unused_lifetimes)]
+
 use core::marker::PhantomData;
 
 use optionize::{Optionizable, Optionized, PartialOptionized, Retain, optionized};

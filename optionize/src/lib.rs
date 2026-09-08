@@ -393,6 +393,23 @@
 //! patch.retain(&baseline);
 //! ```
 //!
+//! This comparison requirement also applies to nested fields:
+//!
+//! ```compile_fail
+//! use optionize::{optionized, Retain};
+//! struct NoEq;
+//! #[optionized]
+//! struct Child { value: NoEq }
+//! #[optionized]
+//! struct Parent {
+//!     #[optionize(nest = ChildOptional)]
+//!     child: Child,
+//! }
+//! let baseline = Parent { child: Child { value: NoEq } };
+//! let mut patch = ParentOptional { child: None };
+//! patch.retain(&baseline);
+//! ```
+//!
 //! ### Validation & Upgrading
 //! Call `.validate()` to ensure all required fields are present. Call `.upgrade()` to convert it to the original type.
 //! ```rust

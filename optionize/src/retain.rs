@@ -87,32 +87,6 @@ pub trait Retain<S, D: Schema<S> = S>: PartialOptionized<S, D> {
     }
 }
 
-/// Compares a borrowed nested patch against its already constructed baseline view.
-///
-/// Generated implementations place a higher-ranked bound on the borrowed patch
-/// so unavailable nested comparison does not restrict patching and upgrading.
-#[doc(hidden)]
-pub trait NestedRetain<S, D: Schema<S> = S, const INDEX: usize = 0> {
-    fn retain_nested<'a>(self, baseline: D::View<'a>) -> bool
-    where
-        S: 'a,
-        D: 'a;
-}
-
-impl<P, S, D, const INDEX: usize> NestedRetain<S, D, INDEX> for &mut P
-where
-    D: Schema<S>,
-    P: Retain<S, D>,
-{
-    fn retain_nested<'a>(self, baseline: D::View<'a>) -> bool
-    where
-        S: 'a,
-        D: 'a,
-    {
-        self.retain_view(baseline)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     extern crate alloc;
@@ -219,7 +193,7 @@ mod tests {
     }
 
     #[test]
-    fn nested_adapter_handles_full_and_partial_baselines_without_clone() {
+    fn nested_views_compare_full_and_partial_baselines_without_clone() {
         #[derive(PartialEq)]
         struct NoClone(String);
 
@@ -229,7 +203,7 @@ mod tests {
         let mut patch = Patch {
             value: Some(NoClone(String::from("same"))),
         };
-        assert!(!NestedRetain::<Subject<NoClone>>::retain_nested(
+        assert!(!Retain::<Subject<NoClone>>::retain_view(
             &mut patch,
             Subject::full_view(&baseline),
         ));
@@ -237,7 +211,7 @@ mod tests {
 
         let baseline = Patch::<NoClone> { value: None };
         patch.value = Some(NoClone(String::from("changed")));
-        assert!(NestedRetain::<Subject<NoClone>>::retain_nested(
+        assert!(Retain::<Subject<NoClone>>::retain_view(
             &mut patch,
             baseline.view(),
         ));
@@ -282,25 +256,20 @@ mod tests {
     }
 
     #[test]
-    fn indexed_nested_bounds_distinguish_normalized_field_aliases() {
+    fn nested_bounds_handle_normalized_field_aliases() {
+        // Exercise the same higher-ranked bounds as the generated impl.
+        #[allow(unused_lifetimes)]
         fn trim_two<T>(
             first: &mut Patch<T>,
             second: &mut <Option<Patch<T>> as OptionField>::Value,
             baseline: &Subject<T>,
         ) -> bool
         where
-            for<'a> &'a mut Patch<T>: NestedRetain<Subject<T>, Subject<T>, 0>,
-            for<'a> &'a mut <Option<Patch<T>> as OptionField>::Value:
-                NestedRetain<Subject<T>, Subject<T>, 1>,
+            for<'a> Patch<T>: Retain<Subject<T>>,
+            for<'a> <Option<Patch<T>> as OptionField>::Value: Retain<Subject<T>>,
         {
-            let first = NestedRetain::<Subject<T>, Subject<T>, 0>::retain_nested(
-                first,
-                Subject::full_view(baseline),
-            );
-            let second = NestedRetain::<Subject<T>, Subject<T>, 1>::retain_nested(
-                second,
-                Subject::full_view(baseline),
-            );
+            let first = Retain::<Subject<T>>::retain_view(first, Subject::full_view(baseline));
+            let second = Retain::<Subject<T>>::retain_view(second, Subject::full_view(baseline));
             first | second
         }
 
