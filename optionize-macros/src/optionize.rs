@@ -1360,7 +1360,8 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
 
     where_clause_extend!(FieldIr::partial_optionized_where);
 
-    let descriptor = if reverse { &Object } else { &Subject };
+    #[allow(non_snake_case)]
+    let Descriptor = if reverse { &Object } else { &Subject };
     let mut type_names = HashSet::new();
     let field_types = originals.iter().map(|field| {
         let ty = &field.ty;
@@ -1418,7 +1419,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         #[doc(hidden)]
         #[allow(private_bounds, clippy::type_complexity)]
         pub struct #layout_ident #impl_generics (
-            ::core::marker::PhantomData<fn() -> (#descriptor, #(#nested_layouts,)*)>
+            ::core::marker::PhantomData<fn() -> (#Descriptor, #(#nested_layouts,)*)>
         ) #where_clause;
         #[doc(hidden)]
         #[allow(private_bounds)]
@@ -1435,7 +1436,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
             }
         }
         #[automatically_derived]
-        impl #impl_generics #krate::Schema<#Subject> for #descriptor #where_clause {
+        impl #impl_generics #krate::Schema<#Subject> for #Descriptor #where_clause {
             type Layout = #layout;
             #[inline]
             fn full_view<#borrow>(subject: &#borrow #Subject) -> <Self::Layout as #krate::__private::Layout>::Ref<#borrow>
@@ -1445,7 +1446,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         }
         #[automatically_derived]
         impl #impl_generics #krate::__private::Mapping<#Subject> for #Object #where_clause {
-            type Descriptor = #descriptor;
+            type Descriptor = #Descriptor;
         }
     });
     let mut retain_where = where_clause.clone();
@@ -1463,7 +1464,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         .map(|field| field.retain(&baseline, &remains));
     output.push(q! {
         #[automatically_derived]
-        impl #impl_generics #krate::Retain<#Subject, #descriptor> for #Object #retain_where {
+        impl #impl_generics #krate::Retain<#Subject, #Descriptor> for #Object #retain_where {
             #[inline]
             fn retain_view<#borrow>(&mut #this, #baseline: #view_ident #view_type_generics) -> bool
             where #layout: #borrow {
@@ -1476,7 +1477,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
     if reverse {
         output.push(q! {
             #[automatically_derived]
-            impl #impl_generics #krate::PartialOptionized<#Subject, #descriptor> for #Subject #where_clause {
+            impl #impl_generics #krate::PartialOptionized<#Subject, #Descriptor> for #Subject #where_clause {
                 #[inline]
                 fn optionize(subject: #Subject) -> Self { subject }
                 #[inline]
@@ -1484,9 +1485,9 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                 #[inline]
                 fn merge(&mut #this, other: Self) { *#this = other; }
                 #[inline]
-                fn view<#borrow>(&#borrow #this) -> <<#descriptor as #krate::Schema<#Subject>>::Layout as #krate::__private::Layout>::Ref<#borrow>
-                where <#descriptor as #krate::Schema<#Subject>>::Layout: #borrow {
-                    <#descriptor as #krate::Schema<#Subject>>::full_view(#this)
+                fn view<#borrow>(&#borrow #this) -> <<#Descriptor as #krate::Schema<#Subject>>::Layout as #krate::__private::Layout>::Ref<#borrow>
+                where <#Descriptor as #krate::Schema<#Subject>>::Layout: #borrow {
+                    <#Descriptor as #krate::Schema<#Subject>>::full_view(#this)
                 }
             }
         });
@@ -1494,7 +1495,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
 
     output.push(q! {
         #[automatically_derived]
-        impl #impl_generics #krate::Optionizable<#Object, #descriptor> for #Subject #where_clause {}
+        impl #impl_generics #krate::Optionizable<#Object, #Descriptor> for #Subject #where_clause {}
     });
 
     {
@@ -1511,7 +1512,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
 
         output.push(q! {
             #[automatically_derived]
-            impl #impl_generics #krate::PartialOptionized<#Subject, #descriptor> for #Object #where_clause {
+            impl #impl_generics #krate::PartialOptionized<#Subject, #Descriptor> for #Object #where_clause {
                 #[inline]
                 fn optionize(#subject: #Subject) -> Self { #optionize }
                 #[inline]
@@ -1519,8 +1520,8 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                 #[inline]
                 fn merge(&mut #this, #other: Self) { #(#merges)* }
                 #[inline]
-                fn view<#borrow>(&#borrow #this) -> <<#descriptor as #krate::Schema<#Subject>>::Layout as #krate::__private::Layout>::Ref<#borrow>
-                where <#descriptor as #krate::Schema<#Subject>>::Layout: #borrow { #view }
+                fn view<#borrow>(&#borrow #this) -> <<#Descriptor as #krate::Schema<#Subject>>::Layout as #krate::__private::Layout>::Ref<#borrow>
+                where <#Descriptor as #krate::Schema<#Subject>>::Layout: #borrow { #view }
             }
         });
     }
@@ -1554,7 +1555,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
 
         output.push(qs! { span =>
             #[automatically_derived]
-            impl #impl_generics #krate::Optionized<#Subject, #descriptor> for #Object #where_clause {
+            impl #impl_generics #krate::Optionized<#Subject, #Descriptor> for #Object #where_clause {
                 type Errors = #krate::ErrorCollection;
                 #[inline]
                 fn validate(&#this) -> ::core::result::Result<(), Self::Errors> {
