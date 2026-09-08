@@ -378,3 +378,43 @@ fn generated_helper_types_avoid_paths_supplied_inside_attribute_strings() {
     let mut patch = helper_names::string_object::__OptionizeView { value: Some(6) };
     assert!(!patch.retain(&baseline));
 }
+
+#[test]
+fn raw_field_names_preserve_subject_names_in_views_and_renamed_mappings() {
+    use optionize::{PartialOptionized, Schema, optionized};
+    use optionize_test_proto as proto;
+
+    #[optionized]
+    struct RawSubject {
+        #[optionize(name = "{}_value")]
+        r#type: u32,
+    }
+
+    #[optionized]
+    #[optionize(subject = proto::NestedSubject)]
+    struct RawPatch {
+        #[optionize(name = "value")]
+        r#type: Option<u32>,
+    }
+
+    let patch = RawSubject { r#type: 7 }.downgrade();
+    assert_eq!(patch.type_value, Some(7));
+    assert_eq!(patch.view().v_type, Some(&7));
+    let subject = patch.upgrade().unwrap();
+    assert_eq!(subject.r#type, 7);
+    assert_eq!(subject.view().v_type, Some(&7));
+
+    let mut subject = proto::NestedSubject { value: 8 };
+    let mut patch = RawPatch { r#type: Some(8) };
+    assert_eq!(subject.view().v_value, Some(&8));
+    assert_eq!(patch.view().v_value, Some(&8));
+    assert!(!patch.retain(&subject));
+    assert!(patch.r#type.is_none());
+    patch.r#type = Some(9);
+    patch.patch(&mut subject);
+    assert_eq!(subject.value, 9);
+
+    let patch: RawPatch = subject.downgrade();
+    assert_eq!(patch.r#type, Some(9));
+    assert_eq!(patch.upgrade().unwrap().value, 9);
+}

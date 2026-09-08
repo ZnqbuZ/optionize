@@ -7,13 +7,16 @@ use proc_macro2::{Ident, Span, TokenStream};
 use quote::{ToTokens, format_ident, quote, quote_spanned as qs};
 use std::collections::HashSet;
 use std::default::Default;
-use std::iter::zip;
 use std::mem::take;
 use syn::ext::IdentExt;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::token::{Brace, Bracket, Comma, Paren, Pound};
-use syn::{AttrStyle, Attribute, Data, DeriveInput, Expr, Field, Fields, FieldsNamed, FieldsUnnamed, Index, Lit, LitStr, Member, Meta, Path, Type, TypePath, WherePredicate, parse_quote, parse_quote_spanned as pqs, parse2, Lifetime, Visibility, PathArguments};
+use syn::{
+    AttrStyle, Attribute, Data, DeriveInput, Expr, Field, Fields, FieldsNamed, FieldsUnnamed,
+    Index, Lifetime, Lit, LitStr, Member, Meta, Path, PathArguments, Type, TypePath, Visibility,
+    WherePredicate, parse_quote, parse_quote_spanned as pqs, parse2,
+};
 
 // region args
 
@@ -527,205 +530,78 @@ impl FieldIr {
         fields: &mut Punctuated<Field, Comma>,
         krate: Crate,
         partial: bool,
-    ) -> Result<Vec<Self>> {
-        let mut errors = Error::accumulator();
-
-        let args = fields
-            .iter_mut()
-            .filter_map(|field| errors.handle(FieldArgs::from_attributes(&field.attrs)))
-            .collect::<Vec<_>>();
-
-        let mut this = Vec::new();
-        let mut skipped = 0;
-
-        for (i, (mut field, args)) in zip(take(fields), args).enumerate() {
-            let ty = field.ty.clone();
-            let ident = &field.ident;
-            let span = {
-                let ty = ty.span();
-                ident.as_ref().map_or(ty, |ident| {
-                    let ident = ident.span();
-                    ty.join(ident).unwrap_or(ident)
-                })
-            };
-
-            let _span = field
-                .attrs
-                .iter()
-                .filter(|attr| is_optionize(attr))
-                .map(|attr| attr.bracket_token.span.span())
-                .reduce(|a, s| s.join(a).unwrap_or(a))
-                .unwrap_or(span);
-            span!(_span);
-
-            let mut ir = {
-                let local = if let Some(ident) = ident.clone() {
-                    format_ident!("v_{}", ident, span = Span::mixed_site())
-                } else {
-                    format_ident!("v_{}", i, span = Span::mixed_site())
-                };
-
-                let original = match ident {
-                    Some(ident) => ident.clone().into(),
-                    None => Index {
-                        index: i as u32,
-                        span,
-                    }
-                    .into(),
-                };
-
-                FieldIr {
-                    krate: krate.clone(),
-                    ty: ty.clone(),
-                    visibility: field.vis.clone(),
-                    index: i,
-                    span: _span,
-                    original,
-                    local,
-                    ..Default::default()
-                }
-            };
-
-            let (skip, upgrade) = match args.skip {
-                Some(skip) => {
-                    let span = skip.span();
-                    let upgrade = if let Override::Explicit(s) = skip.into_inner() {
-                        s.upgrade
-                    } else {
-                        None
-                    };
-                    (Some(span), upgrade)
-                }
-                None => (None, None),
-            };
-
-            if let Some(span) = skip {
-                if !partial {
-                    errors.push(
-                        Error::custom(
-                            "`skip` attribute is only allowed when `partial` is specified",
-                        )
-                        .with_span(&span),
-                    );
-                    continue;
-                }
-
-                ir.strategy = FieldStrategy::Skip {
-                    upgrade: upgrade.unwrap_or_else(|| {
-                        pq! { <#ty as ::core::default::Default>::default() }
-                    }),
-                };
-
-                skipped += 1;
-                this.push(ir);
-                continue;
-            }
-
-            if let Some(name) = &args.general.name {
-                let Some(ident) = ident.as_ref() else {
-                    errors.push(
-                        Error::custom("`name` attribute cannot be used on unnamed fields")
-                            .with_span(name),
-                    );
-                    continue;
-                };
-                let ident = match format(name, ident) {
-                    Ok(ident) => ident,
-                    Err(e) => {
-                        errors.push(e);
-                        continue;
-                    }
-                };
-                field.ident = Some(ident);
-            }
-
-            args.general.attrs.patch(&mut field.attrs);
-
-            ir.optionized = match &field.ident {
-                Some(ident) => ident.clone().into(),
-                None => Index {
-                    index: (i - skipped) as u32,
-                    span,
-                }
-                .into(),
-            };
-
-            let wrap = !args.flatten.is_present();
-            let Some(nest) = errors.handle(args.nest.map(TypeArg::parse).transpose()) else {
-                continue;
-            };
-            let nest = nest.map(Type::Path);
-
-            {
-                let ty = nest.as_ref().unwrap_or(&ty);
-                field.ty = if wrap {
-                    pq! { ::core::option::Option<#ty> }
-                } else {
-                    ty.clone()
-                };
-            }
-
-            ir.strategy = FieldStrategy::Optionize { wrap, nest };
-
-            this.push(ir);
-            fields.push(field);
-        }
-
-        errors.finish_with(this)
-    }
-
-    fn extract_object(
-        fields: &mut Punctuated<Field, Comma>,
-        krate: Crate,
-        partial: bool,
+        reverse: bool,
     ) -> Result<Vec<Self>> {
         let mut result = Vec::new();
         let mut errors = Error::accumulator();
-        let mut skipped = 0;
-        for (i, mut field) in take(fields).into_iter().enumerate() {
+
+        for (index, mut field) in take(fields).into_iter().enumerate() {
             let Some(args) = errors.handle(FieldArgs::from_attributes(&field.attrs)) else {
                 continue;
             };
-            let span = field.span();
+            let span = {
+                let span = field.ty.span();
+                let span = field.ident.as_ref().map_or(span, |ident| {
+                    span.join(ident.span()).unwrap_or(ident.span())
+                });
+                field
+                    .attrs
+                    .iter()
+                    .filter(|attr| is_optionize(attr))
+                    .map(|attr| attr.bracket_token.span.span())
+                    .reduce(|span, other| span.join(other).unwrap_or(span))
+                    .unwrap_or(span)
+            };
             span!(span);
-            let object_member: Member = field.ident.clone().map(Into::into).unwrap_or_else(|| {
-                Index {
-                    index: (i - skipped) as u32,
-                    span,
-                }
-                .into()
-            });
-            let original = if let Some(name) = args.name.as_ref() {
-                let Some(ident) = field.ident.as_ref() else {
-                    errors.push(
-                        Error::custom("`name` cannot be used on unnamed fields").with_span(name),
-                    );
-                    continue;
+
+            let (original, optionized) = {
+                let member = |index| {
+                    field.ident.clone().map(Into::into).unwrap_or_else(|| {
+                        Index {
+                            index: index as u32,
+                            span,
+                        }
+                        .into()
+                    })
                 };
-                let Some(ident) = errors.handle(format::<Ident>(name, ident)) else {
-                    continue;
-                };
-                ident.into()
-            } else {
-                field.ident.clone().map(Into::into).unwrap_or_else(|| {
-                    Index {
-                        index: i as u32,
-                        span,
+                let mut original = member(index);
+                let mut optionized = member(fields.len());
+                if let Some(name) = args.name.as_ref() {
+                    let Some(ident) = field.ident.as_ref() else {
+                        errors.push(
+                            Error::custom("`name` attribute cannot be used on unnamed fields")
+                                .with_span(name),
+                        );
+                        continue;
+                    };
+                    let Some(ident) = errors.handle(format::<Ident>(name, ident)) else {
+                        continue;
+                    };
+                    if reverse {
+                        original = ident.into();
+                    } else {
+                        optionized = ident.clone().into();
+                        field.ident = Some(ident);
                     }
-                    .into()
-                })
+                }
+                (original, optionized)
             };
             let mut ir = Self {
                 krate: krate.clone(),
                 ty: field.ty.clone(),
                 visibility: field.vis.clone(),
-                index: i,
+                index,
                 span,
+                local: format_ident!(
+                    "v_{}",
+                    member_to_string(&original),
+                    span = Span::mixed_site()
+                ),
                 original,
-                optionized: object_member,
-                local: format_ident!("v_{}", i, span = Span::mixed_site()),
+                optionized,
                 ..Default::default()
             };
+
             if let Some(skip) = args.skip {
                 if !partial {
                     errors.push(
@@ -740,35 +616,47 @@ impl FieldIr {
                 let upgrade = skip
                     .into_inner()
                     .explicit()
-                    .and_then(|s| s.upgrade)
+                    .and_then(|skip| skip.upgrade)
                     .unwrap_or_else(|| pq! { <#ty as ::core::default::Default>::default() });
                 ir.strategy = FieldStrategy::Skip { upgrade };
-                skipped += 1;
                 result.push(ir);
                 continue;
             }
+
             let wrap = !args.flatten.is_present();
-            let object_ty = &field.ty;
-            let payload: Type = if wrap {
-                pq! { <#object_ty as #krate::__private::OptionField>::Value }
-            } else {
-                object_ty.clone()
-            };
             let Some(nest) = errors.handle(args.nest.map(TypeArg::parse).transpose()) else {
                 continue;
             };
-            let nest = nest.map(|subject_ty| {
-                ir.ty = Type::Path(subject_ty);
-                payload.clone()
-            });
-            if nest.is_none() {
-                ir.ty = payload;
-            }
+            let nest = nest.map(Type::Path);
+            let nest = if reverse {
+                let ty = &field.ty;
+                let ty: Type = if wrap {
+                    pq! { <#ty as #krate::__private::OptionField>::Value }
+                } else {
+                    ty.clone()
+                };
+                if let Some(nest) = nest {
+                    ir.ty = nest;
+                    Some(ty)
+                } else {
+                    ir.ty = ty;
+                    None
+                }
+            } else {
+                let ty = nest.as_ref().unwrap_or(&field.ty);
+                field.ty = if wrap {
+                    pq! { ::core::option::Option<#ty> }
+                } else {
+                    ty.clone()
+                };
+                nest
+            };
             ir.strategy = FieldStrategy::Optionize { wrap, nest };
             args.general.attrs.patch(&mut field.attrs);
             result.push(ir);
             fields.push(field);
         }
+
         errors.finish_with(result)
     }
 }
@@ -1240,11 +1128,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         Fields::Unit => &mut Default::default(),
     };
 
-    let originals = if reverse {
-        FieldIr::extract_object(fields, krate.clone(), partial.is_some())?
-    } else {
-        FieldIr::extract(fields, krate.clone(), partial.is_some())?
-    };
+    let originals = FieldIr::extract(fields, krate.clone(), partial.is_some(), reverse)?;
     let optionizeds = originals
         .iter()
         .filter(|f| matches!(f.strategy, FieldStrategy::Optionize { .. }))
@@ -1606,4 +1490,37 @@ pub fn proc(args: TokenStream, input: &TokenStream) -> Result<TokenStream> {
             #error
         }
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_attributes_do_not_hide_later_field_errors() {
+        let messages = parse(
+            Crate::default(),
+            quote! {
+                struct Config {
+                    #[optionize(skip, flatten)]
+                    first: u32,
+                    #[optionize(name = "{}")]
+                    r#type: u32,
+                }
+            },
+        )
+        .expect_err("both field errors must be reported")
+        .flatten()
+        .into_iter()
+        .map(|error| error.to_string())
+        .collect::<Vec<_>>();
+
+        assert_eq!(messages.len(), 2, "{messages:?}");
+        assert!(messages.iter().any(|message| {
+            message.contains("`skip` attribute cannot be combined with other attributes")
+        }));
+        assert!(messages.iter().any(|message| {
+            message.contains("expected identifier") && message.contains("`type`")
+        }));
+    }
 }

@@ -233,6 +233,31 @@ fn reverse_tuple_and_unit_paths_support_upgrading() {
 }
 
 #[test]
+fn reverse_tuple_skips_preserve_subject_indices_and_compact_object_fields() {
+    use optionize::{Retain, Schema};
+
+    #[optionized]
+    #[optionize(subject = proto::TupleSubject, partial(upgradable))]
+    struct PartialTuplePatch(#[optionize(skip(upgrade = 7))] u32, Option<String>);
+
+    let mut subject = proto::TupleSubject(9, String::from("old"));
+    let mut patch = PartialTuplePatch(Some(String::from("new")));
+    let view = patch.view();
+    assert!(view.v_0.is_none());
+    assert_eq!(view.v_1.map(String::as_str), Some("new"));
+    assert!(patch.retain(&subject));
+    subject.load(patch);
+    assert_eq!(subject.0, 9);
+    assert_eq!(subject.1, "new");
+
+    let patch: PartialTuplePatch = subject.downgrade();
+    assert_eq!(patch.0.as_deref(), Some("new"));
+    let subject = patch.upgrade().unwrap();
+    assert_eq!(subject.0, 7);
+    assert_eq!(subject.1, "new");
+}
+
+#[test]
 fn reverse_nested_subject_types_preserve_nested_patch_types() {
     let mut subject = proto::ContainerSubject {
         nested: proto::NestedSubject { value: 1 },
