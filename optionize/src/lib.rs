@@ -100,6 +100,33 @@
 //! assert_eq!(o.upgrade().unwrap(), User { id: 1, active: true });
 //! ```
 //!
+//! ### Using a subject defined elsewhere
+//! Put the macro on the local object and specify `subject = ...`. Its ordinary
+//! fields are already `Option<T>`; `flatten` fields keep their declared types.
+//! Field `name` attributes name the corresponding subject field in this mode.
+//! The local object also supplies the mapping descriptor, so generic bounds use
+//! `PartialOptionized<Subject, Object>` or `Optionized<Subject, Object>`.
+//! No attributes or trait implementations are needed in the subject's crate.
+//!
+//! ```rust
+//! use optionize::{optionized, Optionizable, Optionized};
+//! mod model {
+//!     #[derive(Debug, PartialEq)]
+//!     pub struct Config { pub enabled: bool, pub label: String }
+//! }
+//! #[optionized]
+//! #[optionize(subject = model::Config)]
+//! struct ConfigPatch {
+//!     enabled: Option<bool>,
+//!     #[optionize(name = "label")]
+//!     name: Option<String>,
+//! }
+//! let mut config = model::Config { enabled: false, label: "before".into() };
+//! config.load(ConfigPatch { enabled: Some(true), name: None });
+//! let patch: ConfigPatch = config.downgrade();
+//! assert!(patch.upgrade().unwrap().enabled);
+//! ```
+//!
 //! ### Overriding derived attributes
 //! The generated struct inherits all attributes (e.g., `#[derive(...)]`) from the original struct by default.
 //! Using `attrs(...)` allows you to **completely override** the attributes on the generated struct.
@@ -377,17 +404,26 @@ pub use optionize_macros::optionized;
 #[cfg(test)]
 mod tests;
 
+mod retain;
+
+pub use retain::{Retain, Schema};
+
 #[doc(hidden)]
 pub mod __private {
     pub extern crate alloc;
 
+    pub use crate::retain::*;
     pub use optionize_macros::Optionize;
 }
 
 /// Represents the relationship between a generated optionized struct and its target original struct.
 /// Allows extracting partial data from a full struct, applying partial data to a full struct,
 /// and merging two partial structs together.
-pub trait PartialOptionized<Subject>: Sized {
+/// `Descriptor` defaults to the subject. With `#[optionize(subject = ...)]`, the
+/// local object supplies the descriptor instead. The macro generates the
+/// borrowing implementation; complete subjects also implement this trait as an
+/// identity mapping (patching and merging replace the complete value).
+pub trait PartialOptionized<Subject, Descriptor = Subject>: Sized {
     /// Consumes the subject and converts it into its optionized version.
     /// This acts as a downgrade, populating every field with `Some(value)`.
     fn optionize(subject: Subject) -> Self;
@@ -401,6 +437,35 @@ pub trait PartialOptionized<Subject>: Sized {
     /// By default, `Some` values from the `other` struct will overwrite values in `self`.
     /// `None` values from the `other` struct will leave `self` unchanged.
     fn merge(&mut self, other: Self);
+
+    /// Borrows the fields managed by this mapping in its shared layout.
+    fn view<'a>(
+        &'a self,
+    ) -> <<Descriptor as Schema<Subject>>::Layout as __private::Layout>::Ref<'a>
+    where
+        Descriptor: Schema<Subject>,
+        <Descriptor as Schema<Subject>>::Layout: 'a;
+}
+
+impl<Subject: Schema<Subject>> PartialOptionized<Subject> for Subject {
+    fn optionize(subject: Subject) -> Self {
+        subject
+    }
+
+    fn patch(self, subject: &mut Subject) {
+        *subject = self;
+    }
+
+    fn merge(&mut self, other: Self) {
+        *self = other;
+    }
+
+    fn view<'a>(&'a self) -> <<Subject as Schema<Subject>>::Layout as __private::Layout>::Ref<'a>
+    where
+        <Subject as Schema<Subject>>::Layout: 'a,
+    {
+        Self::full_view(self)
+    }
 }
 
 /// Computes a patch from a borrowed baseline and an owned next value.
@@ -450,7 +515,7 @@ pub trait PartialOptionized<Subject>: Sized {
 /// assert!(!current.enabled);
 /// assert_eq!(current.socket_mark, None);
 /// ```
-pub trait Diff<Subject>: PartialOptionized<Subject> {
+pub trait Diff<Subject, Descriptor = Subject>: PartialOptionized<Subject, Descriptor> {
     /// Produces a patch that updates the managed fields of `base` to `next`.
     /// Skipped fields are not part of the patch.
     fn diff(base: &Subject, next: Subject) -> Self;
@@ -458,7 +523,9 @@ pub trait Diff<Subject>: PartialOptionized<Subject> {
 
 /// Provides extension methods on the original subject struct to easily work with its
 /// `PartialOptionized` counterpart without having to import and specify the partial type.
-pub trait Optionizable<Object: PartialOptionized<Self>>: Sized {
+pub trait Optionizable<Object: PartialOptionized<Self, Descriptor>, Descriptor = Self>:
+    Sized
+{
     /// Loads values from the provided partial struct into `self`.
     /// Any `Some` field in the partial struct will overwrite the corresponding field in `self`.
     fn load(&mut self, object: Object) {
@@ -540,7 +607,9 @@ pub trait Optionizable<Object: PartialOptionized<Self>>: Sized {
     label = "Nested type lacks upgrade logic",
     note = "Ensure the subject of `{Self}` is not annotated partial, or is annotated with `#[optionize(partial(upgradable))]`"
 )]
-pub trait Optionized<Subject>: PartialOptionized<Subject> {
+pub trait Optionized<Subject, Descriptor = Subject>:
+    PartialOptionized<Subject, Descriptor>
+{
     type Errors: IntoIterator<Item: core::error::Error + Send + Sync + 'static>;
 
     /// Validates that all fields inside the optionized struct that are required for upgrading
