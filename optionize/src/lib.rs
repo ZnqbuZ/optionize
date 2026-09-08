@@ -8,6 +8,7 @@
 //! - [Struct-level Attributes](#struct-level-attributes)
 //!   - [Renaming the generated struct](#renaming-the-generated-struct)
 //!   - [Using a user-defined object struct](#using-a-user-defined-object-struct)
+//!   - [Using a subject defined elsewhere](#using-a-subject-defined-elsewhere)
 //!   - [Overriding derived attributes](#overriding-derived-attributes)
 //!   - [Upgrading and the `partial` attribute](#upgrading-and-the-partial-attribute)
 //!   - [Generics and the `marked` attribute](#generics-and-the-marked-attribute)
@@ -20,6 +21,7 @@
 //! - [Trait Operations](#trait-operations)
 //!   - [Downgrading & Loading](#downgrading--loading)
 //!   - [Patching & Merging](#patching--merging)
+//!   - [Retaining changes](#retaining-changes)
 //!   - [Validation & Upgrading](#validation--upgrading)
 //! - [Validation Errors](#validation-errors)
 //!
@@ -103,10 +105,18 @@
 //! ### Using a subject defined elsewhere
 //! Put the macro on the local object and specify `subject = ...`. Its ordinary
 //! fields are already `Option<T>`; `flatten` fields keep their declared types.
+//! Aliases for `Option<T>` also work. Like `object`, `subject` accepts a string
+//! template or an unquoted type path. It cannot be combined with `object`,
+//! struct-level `name`, or struct-level `attrs`.
 //! Field `name` attributes name the corresponding subject field in this mode.
+//! A `nest` attribute names the nested subject; its field already supplies the
+//! nested object type. A `skip` field declares an unmanaged subject field using
+//! its subject type and is removed from the local object.
 //! The local object also supplies the mapping descriptor, so generic bounds use
 //! `PartialOptionized<Subject, Object>` or `Optionized<Subject, Object>`.
 //! No attributes or trait implementations are needed in the subject's crate.
+//! Comparing two partial representations requires the same descriptor; separate
+//! reverse mappings use their respective object types as descriptors.
 //!
 //! ```rust
 //! use optionize::{optionized, Optionizable, Optionized};
@@ -158,8 +168,9 @@
 //! ```
 //!
 //! ### Upgrading and the `partial` attribute
-//! To support converting the partial struct back into the full struct, you must specify `partial(upgradable)`.
-//! This implements the `Optionized` trait, providing `.validate()` and `.upgrade()` methods.
+//! By default, generated structs implement `Optionized`, providing `.validate()`
+//! and `.upgrade()`. `partial` disables upgrading; use `partial(upgradable)` to
+//! keep upgrading while enabling partial-only features such as `skip`.
 //! ```rust
 //! use optionize::{optionized, Optionized};
 //!
@@ -329,6 +340,59 @@
 //! assert_eq!(p1.b, Some(3)); // Filled
 //! ```
 //!
+//! ### Retaining changes
+//! `.retain(&baseline)` removes updates already present in a complete or partial
+//! baseline, without cloning values. It returns `true` if updates remain and
+//! `false` if the whole patch can be omitted relative to that baseline. Missing
+//! baseline fields are unknown, so updates to them stay in the patch.
+//!
+//! ```rust
+//! use optionize::{optionized, Retain};
+//!
+//! #[optionized]
+//! struct Config { enabled: bool, socket_mark: Option<u32> }
+//!
+//! let current = Config { enabled: true, socket_mark: Some(7) };
+//! let mut patch = ConfigOptional {
+//!     enabled: Some(true),
+//!     socket_mark: Some(None),
+//! };
+//! assert!(patch.retain(&current));
+//! assert_eq!(patch.enabled, None);
+//! assert_eq!(patch.socket_mark, Some(None)); // Still needs to clear the value.
+//!
+//! let baseline = ConfigOptional { enabled: None, socket_mark: Some(None) };
+//! assert!(!patch.retain(&baseline));
+//! assert_eq!(patch.socket_mark, None);
+//! ```
+//!
+//! The macro provides `Retain` automatically when the compared fields support
+//! equality. `skip` fields are ignored, and nested patches recurse without
+//! requiring equality on the whole nested subject. `flatten` fields stay stored
+//! but contribute to the result, so `false` need not mean every field is `None`.
+//! Patching, merging, and upgrading do not require comparison support:
+//!
+//! ```rust
+//! use optionize::{optionized, Optionized};
+//! struct NoEq;
+//! #[optionized]
+//! struct Config { value: NoEq }
+//! let patch = ConfigOptional { value: Some(NoEq) };
+//! let _: Config = patch.upgrade().unwrap();
+//! ```
+//!
+//! Calling `retain` requires that support:
+//!
+//! ```compile_fail
+//! use optionize::{optionized, Retain};
+//! struct NoEq;
+//! #[optionized]
+//! struct Config { value: NoEq }
+//! let baseline = Config { value: NoEq };
+//! let mut patch = ConfigOptional { value: Some(NoEq) };
+//! patch.retain(&baseline);
+//! ```
+//!
 //! ### Validation & Upgrading
 //! Call `.validate()` to ensure all required fields are present. Call `.upgrade()` to convert it to the original type.
 //! ```rust
@@ -359,10 +423,12 @@ use derive_more::{AsMut, AsRef, Deref, DerefMut, Error, From, Into, IntoIterator
 ///
 /// This macro generates a new struct (by default named `{OriginalName}Optional`) and implements the `PartialOptionized`
 /// trait to allow seamless conversion, patching, and merging between the full and the partial struct.
+/// It also provides [`Retain`] automatically when the compared fields support
+/// equality; no additional attribute is needed.
 ///
 /// ## Struct-level attributes
 ///
-/// `#[optionize(name = "...", object = ..., attrs(...), partial(...), diff)]`
+/// `#[optionize(name = "...", object = ..., subject = ..., attrs(...), partial(...))]`
 ///
 /// - `name`: Overrides the generated struct's name. Use `{}` as a placeholder for the original struct name.
 /// - `object`: Uses a user-defined optionized struct instead of generating one. The macro will only generate
@@ -370,9 +436,14 @@ use derive_more::{AsMut, AsRef, Deref, DerefMut, Error, From, Into, IntoIterator
 ///   Accepts a string template (`"pb::{}Optional<T>"`) or an unquoted type path
 ///   (`pb::Config::<T>`). In strings, `{}` is replaced with the subject's name.
 ///   Generic arguments must be explicit; unquoted generic paths use `::<T>`.
-///   This cannot be combined with `name` or `attrs`.
-/// - `diff`: Generates [`Diff`] for the optionized struct. Compared fields must
-///   implement `PartialEq`; these bounds only apply to the diff implementation.
+///   This cannot be combined with `subject`, `name`, `attrs`, or `partial(marked)`.
+/// - `subject`: Treats the annotated local struct as the object of an existing
+///   subject, which may come from another crate. Declare ordinary object fields
+///   as `Option<T>` (aliases also work). Accepts the same string-template and
+///   unquoted-path syntax as `object`. The local object supplies the descriptor,
+///   so generic bounds use `PartialOptionized<Subject, Object>` and
+///   `Optionized<Subject, Object>`; ordinary method calls infer it.
+///   This cannot be combined with `object`, struct-level `name`, or struct-level `attrs`.
 /// - `attrs`: By default, the generated struct inherits all attributes from the original struct (except `#[optionize(...)]`).
 ///   If you provide `attrs(...)`, it **completely overrides** this behavior. You must list all attributes the generated struct should have.
 ///   For example, `#[optionize(attrs(derive(Debug)))]` makes the generated struct *only* derive `Debug`.
@@ -388,14 +459,18 @@ use derive_more::{AsMut, AsRef, Deref, DerefMut, Error, From, Into, IntoIterator
 /// `#[optionize(name = "...", attrs(...), flatten, skip(...), nest = "...")]`
 ///
 /// - `name`: Renames the field in the generated struct. Use `{}` as a placeholder for the original field name or index.
+///   With `subject = ...`, names the corresponding subject field instead.
 /// - `attrs`: Similarly to the struct-level `attrs`, this overrides the attributes applied to the generated field.
 /// - `flatten`: Instructs the macro **not** to wrap the field's type in `Option<T>`. The field will have the exact same type in the generated struct.
 /// - `skip`: Removes the field entirely from the generated struct.
 ///   - Requires `partial` or `partial(upgradable)` on the struct.
+///   - With `subject = ...`, declare the unmanaged subject field with its subject type;
+///     the macro removes it from the local object.
 ///   - If skipping fields leaves a generic parameter unused in a generated object, use `marked` to consume it.
 ///   - `upgrade = expr`: Provides the expression used to instantiate this field when upgrading. If not provided, it defaults to `<FieldType as core::default::Default>::default()`.
-/// - `nest = "Type"`: Delegates the optionization of this field to another type that implements `PartialOptionized` (and `Optionized` if `upgradable`).
-///   Usually, this is used for nested struct fields that have themselves been `#[optionized]`.
+/// - `nest = Type` or `nest = "Type"`: Delegates this field to a nested object that implements
+///   `PartialOptionized` (and `Optionized` when upgrading is enabled). With `subject = ...`,
+///   name the nested subject instead; the declared field already supplies its object type.
 ///
 /// ## Field Visibility
 /// The generated struct and its fields **strictly retain the visibility** of the original struct and its fields.
@@ -468,59 +543,6 @@ impl<Subject: Schema<Subject>> PartialOptionized<Subject> for Subject {
     }
 }
 
-/// Computes a patch from a borrowed baseline and an owned next value.
-///
-/// Enable the generated implementation with `#[optionize(diff)]`. The result is
-/// the existing optionized struct, including when using `object = "..."`.
-/// Values move out of `next`, so no `Clone` bound is required.
-///
-/// Generated implementations follow the same field strategies as patching:
-///
-/// - Ordinary fields use `PartialEq`: equal values produce `None`, and changed
-///   values produce `Some(next.field)`. An optional field is still wrapped, so
-///   clearing it produces `Some(None)`.
-/// - `flatten` fields always carry the next value, without a comparison.
-/// - `skip` fields are ignored and keep their baseline value when patched.
-/// - `nest` fields recurse through the nested patch's `Diff` implementation.
-///   Wrapped nested fields also compare the entire nested subject using
-///   `PartialEq` to omit unchanged values. Flattened nested fields always recurse.
-///
-/// Only compared field types need `PartialEq`; the subject itself does not.
-/// These bounds do not affect `PartialOptionized` or `Optionized` implementations.
-/// Diff is explicitly enabled because a concrete field without `PartialEq`
-/// cannot satisfy a conditional diff implementation.
-///
-/// ```rust
-/// use optionize::{optionized, Diff, Optionizable};
-///
-/// #[optionized]
-/// #[optionize(diff)]
-/// struct Config {
-///     enabled: bool,
-///     label: String,
-///     socket_mark: Option<u32>,
-/// }
-///
-/// let mut current = Config {
-///     enabled: true, label: "peer".into(), socket_mark: Some(7),
-/// };
-/// let next = Config {
-///     enabled: false, label: "peer".into(), socket_mark: None,
-/// };
-/// let patch = ConfigOptional::diff(&current, next);
-/// assert_eq!(patch.enabled, Some(false));
-/// assert_eq!(patch.label, None);
-/// assert_eq!(patch.socket_mark, Some(None));
-/// current.load(patch);
-/// assert!(!current.enabled);
-/// assert_eq!(current.socket_mark, None);
-/// ```
-pub trait Diff<Subject, Descriptor = Subject>: PartialOptionized<Subject, Descriptor> {
-    /// Produces a patch that updates the managed fields of `base` to `next`.
-    /// Skipped fields are not part of the patch.
-    fn diff(base: &Subject, next: Subject) -> Self;
-}
-
 /// Provides extension methods on the original subject struct to easily work with its
 /// `PartialOptionized` counterpart without having to import and specify the partial type.
 pub trait Optionizable<Object: PartialOptionized<Self, Descriptor>, Descriptor = Self>:
@@ -544,7 +566,7 @@ pub trait Optionizable<Object: PartialOptionized<Self, Descriptor>, Descriptor =
 ///
 /// `Subject` is a trait parameter so a crate can implement this trait for an
 /// external object (e.g. generated protobuf) when the subject is local. There is
-/// one implementation per `(Self, Subject)` pair, rather than one subject per object.
+/// one implementation per `(Self, Subject, Descriptor)` combination, rather than one subject per object.
 /// When the complete subject type is uniquely determined, method calls infer it.
 /// Generic code can name the subject in its bound:
 ///

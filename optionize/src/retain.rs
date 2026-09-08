@@ -1,5 +1,3 @@
-use core::marker::PhantomData;
-
 use crate::PartialOptionized;
 
 /// The common borrowed field representation selected by a schema.
@@ -10,29 +8,7 @@ pub trait Layout {
         Self: 'a;
 }
 
-/// A field whose complete value is either known or absent from the baseline.
-#[doc(hidden)]
-pub struct Field<T>(PhantomData<fn() -> T>);
-
-impl<T> Layout for Field<T> {
-    type Ref<'a>
-        = Option<&'a T>
-    where
-        T: 'a;
-}
-
-impl<L: Layout, R: Layout> Layout for (L, R) {
-    type Ref<'a>
-        = (L::Ref<'a>, R::Ref<'a>)
-    where
-        Self: 'a;
-}
-
-impl Layout for () {
-    type Ref<'a> = ();
-}
-
-/// Selects the common field layout for a subject and its partial representations.
+/// Selects the common borrowed view of a subject and its partial representations.
 ///
 /// The `optionized` macro implements this for its subject automatically. A local
 /// descriptor can implement it for an external subject without changing that
@@ -68,318 +44,26 @@ impl<T> OptionField for Option<T> {
     type Value = T;
 }
 
+/// Compares one borrowed field without overlapping another field's bounds.
+///
+/// The index keeps higher-ranked bounds distinct when field types normalize to
+/// the same type or differ only in their lifetimes.
+#[doc(hidden)]
+pub trait Equal<const INDEX: usize> {
+    fn equal(self, other: Self) -> bool;
+}
+
+impl<T: PartialEq + ?Sized, const INDEX: usize> Equal<INDEX> for &T {
+    fn equal(self, other: Self) -> bool {
+        PartialEq::eq(self, other)
+    }
+}
+
 /// A complete nested value or another object's partial view of that value.
 #[doc(hidden)]
 pub enum NestedRef<'a, S: 'a, L: Layout + 'a> {
     Full(&'a S),
     Partial(L::Ref<'a>),
-}
-
-/// The explicit layout parameter makes its lifetime part of this type's bounds.
-#[doc(hidden)]
-#[allow(clippy::type_complexity)]
-pub struct Branch<S, D: Schema<S>, L: Layout = <D as Schema<S>>::Layout>(
-    PhantomData<fn() -> (S, D, L)>,
-);
-
-#[doc(hidden)]
-pub type Nested<S, D = S> = Branch<S, D>;
-
-impl<S, D, L> Layout for Branch<S, D, L>
-where
-    D: Schema<S, Layout = L>,
-    L: Layout,
-{
-    type Ref<'a>
-        = Option<NestedRef<'a, S, L>>
-    where
-        Self: 'a;
-}
-
-/// A strategy's mutable access to one layout or a group of layouts.
-#[doc(hidden)]
-pub trait Access<L: Layout> {
-    type Mut<'a>
-    where
-        Self: 'a,
-        L: 'a;
-}
-
-/// Removes redundant `Some` values from an ordinary optional field.
-#[doc(hidden)]
-pub struct Take;
-
-/// Ignores a field omitted from this partial representation.
-#[doc(hidden)]
-pub struct Skip;
-
-/// Keeps a flattened field and reports whether its value still changes baseline.
-#[doc(hidden)]
-pub struct Always;
-
-/// Recursively reduces an optional nested patch.
-#[doc(hidden)]
-pub struct TakeNested<P>(PhantomData<fn() -> P>);
-
-/// Recursively reduces a flattened nested patch.
-#[doc(hidden)]
-pub struct AlwaysNested<P>(PhantomData<fn() -> P>);
-
-impl<T> Access<Field<T>> for Take {
-    type Mut<'a>
-        = &'a mut Option<T>
-    where
-        T: 'a;
-}
-
-impl<L: Layout> Access<L> for Skip {
-    type Mut<'a>
-        = ()
-    where
-        L: 'a;
-}
-
-impl<T> Access<Field<T>> for Always {
-    type Mut<'a>
-        = &'a mut T
-    where
-        T: 'a;
-}
-
-impl<S, D, L> Access<Branch<S, D, L>> for Take
-where
-    D: Schema<S, Layout = L>,
-    L: Layout,
-{
-    type Mut<'a>
-        = &'a mut Option<S>
-    where
-        Branch<S, D, L>: 'a;
-}
-
-impl<S, D, L> Access<Branch<S, D, L>> for Always
-where
-    D: Schema<S, Layout = L>,
-    L: Layout,
-{
-    type Mut<'a>
-        = &'a mut S
-    where
-        Branch<S, D, L>: 'a;
-}
-
-impl<P, S, D, L> Access<Branch<S, D, L>> for TakeNested<P>
-where
-    D: Schema<S, Layout = L>,
-    L: Layout,
-{
-    type Mut<'a>
-        = &'a mut Option<P>
-    where
-        Self: 'a,
-        Branch<S, D, L>: 'a;
-}
-
-impl<P, S, D, L> Access<Branch<S, D, L>> for AlwaysNested<P>
-where
-    D: Schema<S, Layout = L>,
-    L: Layout,
-{
-    type Mut<'a>
-        = &'a mut P
-    where
-        Self: 'a,
-        Branch<S, D, L>: 'a;
-}
-
-impl<L, R, A, B> Access<(L, R)> for (A, B)
-where
-    L: Layout,
-    R: Layout,
-    A: Access<L>,
-    B: Access<R>,
-{
-    type Mut<'a>
-        = (A::Mut<'a>, B::Mut<'a>)
-    where
-        Self: 'a,
-        (L, R): 'a;
-}
-
-impl Access<()> for () {
-    type Mut<'a> = ();
-}
-
-/// Borrows the fields that a generated object is able to update.
-#[doc(hidden)]
-pub trait FieldAccess<S, D: Schema<S> = S>: PartialOptionized<S, D> {
-    type Access: Access<D::Layout>;
-
-    fn fields_mut<'a>(&'a mut self) -> <Self::Access as Access<D::Layout>>::Mut<'a>
-    where
-        Self::Access: 'a,
-        D::Layout: 'a;
-}
-
-/// Comparison is implemented on generic strategies, not concrete user structs.
-#[doc(hidden)]
-pub trait Comparable<L: Layout>: Access<L> {
-    /// Returns whether updates remain after all fields have been visited.
-    fn retain<'a, 'b>(fields: Self::Mut<'a>, baseline: L::Ref<'b>) -> bool
-    where
-        Self: 'a,
-        L: 'a + 'b;
-}
-
-impl<T: PartialEq> Comparable<Field<T>> for Take {
-    fn retain<'a, 'b>(fields: &'a mut Option<T>, baseline: Option<&'b T>) -> bool
-    where
-        T: 'a + 'b,
-    {
-        if let (Some(value), Some(baseline)) = (fields.as_ref(), baseline)
-            && value == baseline
-        {
-            *fields = None;
-        }
-        fields.is_some()
-    }
-}
-
-impl<L: Layout> Comparable<L> for Skip {
-    fn retain<'a, 'b>(_: (), _: L::Ref<'b>) -> bool
-    where
-        L: 'a + 'b,
-    {
-        false
-    }
-}
-
-impl<T: PartialEq> Comparable<Field<T>> for Always {
-    fn retain<'a, 'b>(fields: &'a mut T, baseline: Option<&'b T>) -> bool
-    where
-        T: 'a + 'b,
-    {
-        baseline.is_none_or(|baseline| &*fields != baseline)
-    }
-}
-
-impl<S, D, L> Comparable<Branch<S, D, L>> for Take
-where
-    S: PartialEq,
-    D: Schema<S, Layout = L>,
-    L: Layout,
-{
-    fn retain<'a, 'b>(fields: Self::Mut<'a>, baseline: Option<NestedRef<'b, S, L>>) -> bool
-    where
-        Branch<S, D, L>: 'a + 'b,
-    {
-        if let (Some(value), Some(NestedRef::Full(baseline))) = (fields.as_ref(), baseline)
-            && value == baseline
-        {
-            *fields = None;
-        }
-        fields.is_some()
-    }
-}
-
-impl<S, D, L> Comparable<Branch<S, D, L>> for Always
-where
-    S: PartialEq,
-    D: Schema<S, Layout = L>,
-    L: Layout,
-{
-    fn retain<'a, 'b>(fields: Self::Mut<'a>, baseline: Option<NestedRef<'b, S, L>>) -> bool
-    where
-        Branch<S, D, L>: 'a + 'b,
-    {
-        match baseline {
-            Some(NestedRef::Full(baseline)) => &*fields != baseline,
-            _ => true,
-        }
-    }
-}
-
-impl<P, S, D, L> Comparable<Branch<S, D, L>> for TakeNested<P>
-where
-    D: Schema<S, Layout = L>,
-    L: Layout,
-    P: FieldAccess<S, D>,
-    P::Access: Comparable<L>,
-{
-    fn retain<'a, 'b>(fields: Self::Mut<'a>, baseline: Option<NestedRef<'b, S, L>>) -> bool
-    where
-        Self: 'a,
-        Branch<S, D, L>: 'a + 'b,
-    {
-        let Some(patch) = fields.as_mut() else {
-            return false;
-        };
-        let Some(baseline) = baseline else {
-            // A present patch adds presence when merged into an absent field,
-            // even when the nested patch contains no updates of its own.
-            return true;
-        };
-        let baseline = match baseline {
-            NestedRef::Full(subject) => D::full_view(subject),
-            NestedRef::Partial(view) => view,
-        };
-        let remains = <P::Access as Comparable<L>>::retain(patch.fields_mut(), baseline);
-        if !remains {
-            *fields = None;
-        }
-        remains
-    }
-}
-
-impl<P, S, D, L> Comparable<Branch<S, D, L>> for AlwaysNested<P>
-where
-    D: Schema<S, Layout = L>,
-    L: Layout,
-    P: FieldAccess<S, D>,
-    P::Access: Comparable<L>,
-{
-    fn retain<'a, 'b>(fields: Self::Mut<'a>, baseline: Option<NestedRef<'b, S, L>>) -> bool
-    where
-        Self: 'a,
-        Branch<S, D, L>: 'a + 'b,
-    {
-        let Some(baseline) = baseline else {
-            return true;
-        };
-        let baseline = match baseline {
-            NestedRef::Full(subject) => D::full_view(subject),
-            NestedRef::Partial(view) => view,
-        };
-        <P::Access as Comparable<L>>::retain(fields.fields_mut(), baseline)
-    }
-}
-
-impl<L, R, A, B> Comparable<(L, R)> for (A, B)
-where
-    L: Layout,
-    R: Layout,
-    A: Comparable<L>,
-    B: Comparable<R>,
-{
-    fn retain<'a, 'b>(fields: Self::Mut<'a>, baseline: <(L, R) as Layout>::Ref<'b>) -> bool
-    where
-        Self: 'a,
-        (L, R): 'a + 'b,
-    {
-        let left = A::retain(fields.0, baseline.0);
-        let right = B::retain(fields.1, baseline.1);
-        left | right
-    }
-}
-
-impl Comparable<()> for () {
-    fn retain<'a, 'b>(_: (), _: ()) -> bool
-    where
-        Self: 'a,
-        (): 'a + 'b,
-    {
-        false
-    }
 }
 
 /// Removes updates already represented by a borrowed baseline.
@@ -395,311 +79,263 @@ impl Comparable<()> for () {
 /// Neither the baseline nor the patch's remaining values are cloned.
 ///
 /// Generated objects gain this trait automatically when their compared field
-/// types implement `PartialEq`. Other operations remain available without those
+/// types support equality. Other operations remain available without those
 /// comparison bounds.
-pub trait Retain<S, D: Schema<S> = S>: FieldAccess<S, D> {
-    fn retain<'a, B: PartialOptionized<S, D>>(&'a mut self, baseline: &'a B) -> bool
+pub trait Retain<S, D: Schema<S> = S>: PartialOptionized<S, D> {
+    /// Retains changes relative to the shared borrowed field representation.
+    #[doc(hidden)]
+    fn retain_view<'a>(&mut self, baseline: <D::Layout as Layout>::Ref<'a>) -> bool
     where
-        Self::Access: 'a,
+        D::Layout: 'a;
+
+    /// Removes redundant updates and reports whether any changes remain.
+    fn retain<'a, B: PartialOptionized<S, D>>(&mut self, baseline: &'a B) -> bool
+    where
+        D::Layout: 'a,
+    {
+        self.retain_view(baseline.view())
+    }
+}
+
+/// Adapts a borrowed nested patch to its complete or partial baseline.
+///
+/// Generated implementations place a higher-ranked bound on the borrowed patch
+/// so unavailable nested comparison does not restrict patching and upgrading.
+#[doc(hidden)]
+pub trait NestedRetain<S, D: Schema<S> = S, const INDEX: usize = 0> {
+    fn retain_nested<'a>(self, baseline: NestedRef<'a, S, D::Layout>) -> bool
+    where
+        S: 'a,
         D::Layout: 'a;
 }
 
-impl<P, S, D> Retain<S, D> for P
+impl<P, S, D, const INDEX: usize> NestedRetain<S, D, INDEX> for &mut P
 where
     D: Schema<S>,
-    P: FieldAccess<S, D>,
-    P::Access: Comparable<D::Layout>,
+    P: Retain<S, D>,
 {
-    fn retain<'a, B: PartialOptionized<S, D>>(&'a mut self, baseline: &'a B) -> bool
+    fn retain_nested<'a>(self, baseline: NestedRef<'a, S, D::Layout>) -> bool
     where
-        Self::Access: 'a,
+        S: 'a,
         D::Layout: 'a,
     {
-        <P::Access as Comparable<D::Layout>>::retain(self.fields_mut(), baseline.view())
+        let baseline = match baseline {
+            NestedRef::Full(subject) => D::full_view(subject),
+            NestedRef::Partial(view) => view,
+        };
+        self.retain_view(baseline)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    extern crate alloc;
+
+    use alloc::string::String;
+    use core::marker::PhantomData;
+
     use super::*;
 
-    #[test]
-    fn later_fields_are_processed_when_an_earlier_change_remains() {
-        let mut first = Some(1);
-        let mut second = Some(2);
-        let remains = <(Take, Take) as Comparable<(Field<i32>, Field<i32>)>>::retain(
-            (&mut first, &mut second),
-            (Some(&3), Some(&2)),
-        );
-        assert!(remains);
-        assert_eq!(first, Some(1));
-        assert_eq!(second, None);
+    struct Subject<T> {
+        value: T,
     }
 
-    #[test]
-    fn a_skipped_field_does_not_need_partial_eq() {
-        struct NoEq;
-        assert!(!<Skip as Comparable<Field<NoEq>>>::retain((), Some(&NoEq)));
+    struct Patch<T> {
+        value: Option<T>,
     }
 
-    #[test]
-    fn optional_values_distinguish_unknown_clear_and_set() {
-        let mut clear = Some(None::<u32>);
-        assert!(<Take as Comparable<Field<Option<u32>>>>::retain(
-            &mut clear, None,
-        ));
-        assert_eq!(clear, Some(None));
-        assert!(<Take as Comparable<Field<Option<u32>>>>::retain(
-            &mut clear,
-            Some(&Some(7)),
-        ));
-        assert!(!<Take as Comparable<Field<Option<u32>>>>::retain(
-            &mut clear,
-            Some(&None),
-        ));
-        assert_eq!(clear, None);
+    struct SubjectLayout<T>(PhantomData<fn() -> Subject<T>>);
+    struct View<'a, T> {
+        value: Option<&'a T>,
     }
 
-    #[test]
-    fn flatten_keeps_values_while_reporting_changes() {
-        let mut value = None::<u32>;
-        assert!(!<Always as Comparable<Field<Option<u32>>>>::retain(
-            &mut value,
-            Some(&None),
-        ));
-        assert_eq!(value, None);
-        assert!(<Always as Comparable<Field<Option<u32>>>>::retain(
-            &mut value,
-            Some(&Some(7)),
-        ));
+    impl<T> Layout for SubjectLayout<T> {
+        type Ref<'a>
+            = View<'a, T>
+        where
+            Self: 'a;
     }
 
-    struct Inner<'s> {
-        optional: &'s str,
-        flattened: u32,
-    }
+    impl<T> Schema<Subject<T>> for Subject<T> {
+        type Layout = SubjectLayout<T>;
 
-    struct InnerPatch<'s> {
-        optional: Option<&'s str>,
-        flattened: u32,
-    }
-
-    impl<'s> Schema<Inner<'s>> for Inner<'s> {
-        type Layout = (Field<&'s str>, Field<u32>);
-
-        fn full_view<'a>(subject: &'a Inner<'s>) -> <Self::Layout as Layout>::Ref<'a>
+        fn full_view<'a>(subject: &'a Subject<T>) -> View<'a, T>
         where
             Self::Layout: 'a,
         {
-            (Some(&subject.optional), Some(&subject.flattened))
+            View {
+                value: Some(&subject.value),
+            }
         }
     }
 
-    impl<'s> PartialOptionized<Inner<'s>> for InnerPatch<'s> {
-        fn optionize(subject: Inner<'s>) -> Self {
+    impl<T> PartialOptionized<Subject<T>> for Patch<T> {
+        fn optionize(subject: Subject<T>) -> Self {
             Self {
-                optional: Some(subject.optional),
-                flattened: subject.flattened,
+                value: Some(subject.value),
             }
         }
 
-        fn patch(self, subject: &mut Inner<'s>) {
-            if let Some(value) = self.optional {
-                subject.optional = value;
+        fn patch(self, subject: &mut Subject<T>) {
+            if let Some(value) = self.value {
+                subject.value = value;
             }
-            subject.flattened = self.flattened;
         }
 
         fn merge(&mut self, other: Self) {
-            if other.optional.is_some() {
-                self.optional = other.optional;
+            if other.value.is_some() {
+                self.value = other.value;
             }
-            self.flattened = other.flattened;
         }
 
-        fn view<'a>(&'a self) -> <<Inner<'s> as Schema<Inner<'s>>>::Layout as Layout>::Ref<'a>
+        fn view<'a>(&'a self) -> <<Subject<T> as Schema<Subject<T>>>::Layout as Layout>::Ref<'a>
         where
-            <Inner<'s> as Schema<Inner<'s>>>::Layout: 'a,
+            <Subject<T> as Schema<Subject<T>>>::Layout: 'a,
         {
-            (self.optional.as_ref(), Some(&self.flattened))
+            View {
+                value: self.value.as_ref(),
+            }
         }
     }
 
-    impl<'s> FieldAccess<Inner<'s>> for InnerPatch<'s> {
-        type Access = (Take, Always);
-
-        fn fields_mut<'a>(
-            &'a mut self,
-        ) -> <Self::Access as Access<<Inner<'s> as Schema<Inner<'s>>>::Layout>>::Mut<'a>
+    impl<T> Retain<Subject<T>> for Patch<T>
+    where
+        for<'a> &'a T: Equal<0>,
+    {
+        fn retain_view<'a>(&mut self, baseline: View<'a, T>) -> bool
         where
-            Self::Access: 'a,
-            <Inner<'s> as Schema<Inner<'s>>>::Layout: 'a,
+            SubjectLayout<T>: 'a,
         {
-            (&mut self.optional, &mut self.flattened)
+            if let (Some(value), Some(baseline)) = (self.value.as_ref(), baseline.value)
+                && Equal::<0>::equal(value, baseline)
+            {
+                self.value = None;
+            }
+            self.value.is_some()
         }
     }
 
-    #[test]
-    fn nested_borrowed_values_and_flattened_fields_can_clear_the_parent() {
-        extern crate alloc;
-        let owned = alloc::string::String::from("borrowed");
-        let baseline = Inner {
-            optional: owned.as_str(),
-            flattened: 7,
-        };
-        let mut patch = Some(InnerPatch {
-            optional: Some(owned.as_str()),
-            flattened: 7,
-        });
-        assert!(!<TakeNested<InnerPatch<'_>> as Comparable<
-            Nested<Inner<'_>>,
-        >>::retain(
-            &mut patch, Some(NestedRef::Full(&baseline))
-        ));
-        assert!(patch.is_none());
-    }
-
-    #[test]
-    fn nested_partial_baselines_preserve_unknown_values() {
-        let baseline = InnerPatch {
-            optional: None,
-            flattened: 7,
-        };
-        let mut patch = Some(InnerPatch {
-            optional: Some("new"),
-            flattened: 7,
-        });
-        assert!(<TakeNested<InnerPatch<'_>> as Comparable<
-            Nested<Inner<'_>>,
-        >>::retain(
-            &mut patch, Some(NestedRef::Partial(baseline.view())),
-        ));
-        assert_eq!(patch.as_ref().unwrap().optional, Some("new"));
-
-        patch.as_mut().unwrap().optional = None;
-        assert!(!<TakeNested<InnerPatch<'_>> as Comparable<
-            Nested<Inner<'_>>,
-        >>::retain(
-            &mut patch, Some(NestedRef::Partial(baseline.view())),
-        ));
-        assert!(patch.is_none());
-    }
-
-    #[test]
-    fn nested_unknown_baselines_keep_presence_and_flattened_updates() {
-        let mut optional = Some(InnerPatch {
-            optional: None,
-            flattened: 0,
-        });
-        assert!(<TakeNested<InnerPatch<'_>> as Comparable<
-            Nested<Inner<'_>>,
-        >>::retain(&mut optional, None));
-        assert!(optional.is_some());
-
-        let mut flattened = InnerPatch {
-            optional: None,
-            flattened: 0,
-        };
-        assert!(<AlwaysNested<InnerPatch<'_>> as Comparable<
-            Nested<Inner<'_>>,
-        >>::retain(&mut flattened, None));
-    }
-
-    #[test]
-    fn public_retain_compares_a_partial_baseline() {
-        let baseline = InnerPatch {
-            optional: Some("same"),
-            flattened: 7,
-        };
-        let mut patch = InnerPatch {
-            optional: Some("same"),
-            flattened: 7,
-        };
-        assert!(!patch.retain(&baseline));
-        assert_eq!(patch.optional, None);
-        assert_eq!(patch.flattened, 7);
+    fn trim<P, B, S, D>(patch: &mut P, baseline: &B) -> bool
+    where
+        P: Retain<S, D>,
+        B: PartialOptionized<S, D>,
+        D: Schema<S>,
+    {
+        patch.retain(baseline)
     }
 
     #[test]
     fn generic_retain_accepts_borrowed_values_without_lifetime_bounds() {
-        fn trim<P, B, S, D>(patch: &mut P, baseline: &B) -> bool
-        where
-            P: Retain<S, D>,
-            B: PartialOptionized<S, D>,
-            D: Schema<S>,
-        {
-            patch.retain(baseline)
-        }
-
-        extern crate alloc;
-        let owned = alloc::string::String::from("borrowed");
-        let baseline = InnerPatch {
-            optional: Some(owned.as_str()),
-            flattened: 7,
+        let owned = String::from("borrowed");
+        let baseline = Subject {
+            value: owned.as_str(),
         };
-        let mut patch = InnerPatch {
-            optional: Some(owned.as_str()),
-            flattened: 7,
+        let mut patch = Patch {
+            value: Some(owned.as_str()),
         };
-
         assert!(!trim(&mut patch, &baseline));
-        assert_eq!(patch.optional, None);
-        assert_eq!(baseline.optional, Some(owned.as_str()));
-    }
-
-    struct Empty;
-    struct EmptyPatch;
-
-    impl Schema<Empty> for Empty {
-        type Layout = ();
-
-        fn full_view<'a>(_: &'a Empty) -> <Self::Layout as Layout>::Ref<'a>
-        where
-            Self::Layout: 'a,
-        {
-        }
-    }
-
-    impl PartialOptionized<Empty> for EmptyPatch {
-        fn optionize(_: Empty) -> Self {
-            Self
-        }
-
-        fn patch(self, _: &mut Empty) {}
-
-        fn merge(&mut self, _: Self) {}
-
-        fn view<'a>(&'a self) -> <<Empty as Schema<Empty>>::Layout as Layout>::Ref<'a>
-        where
-            <Empty as Schema<Empty>>::Layout: 'a,
-        {
-        }
-    }
-
-    impl FieldAccess<Empty> for EmptyPatch {
-        type Access = ();
-
-        fn fields_mut<'a>(
-            &'a mut self,
-        ) -> <Self::Access as Access<<Empty as Schema<Empty>>::Layout>>::Mut<'a>
-        where
-            Self::Access: 'a,
-            <Empty as Schema<Empty>>::Layout: 'a,
-        {
-        }
+        assert_eq!(patch.value, None);
+        assert_eq!(baseline.value, owned.as_str());
     }
 
     #[test]
-    fn empty_nested_patch_preserves_presence_only_when_unknown() {
-        let mut patch = Some(EmptyPatch);
-        assert!(<TakeNested<EmptyPatch> as Comparable<Nested<Empty>>>::retain(&mut patch, None,));
-        assert!(patch.is_some());
-        assert!(
-            !<TakeNested<EmptyPatch> as Comparable<Nested<Empty>>>::retain(
-                &mut patch,
-                Some(NestedRef::Partial(())),
-            )
-        );
-        assert!(patch.is_none());
+    fn nested_adapter_handles_full_and_partial_baselines_without_clone() {
+        #[derive(PartialEq)]
+        struct NoClone(String);
+
+        let baseline = Subject {
+            value: NoClone(String::from("same")),
+        };
+        let mut patch = Patch {
+            value: Some(NoClone(String::from("same"))),
+        };
+        assert!(!NestedRetain::<Subject<NoClone>>::retain_nested(
+            &mut patch,
+            NestedRef::Full(&baseline),
+        ));
+        assert!(patch.value.is_none());
+
+        let baseline = Patch::<NoClone> { value: None };
+        patch.value = Some(NoClone(String::from("changed")));
+        assert!(NestedRetain::<Subject<NoClone>>::retain_nested(
+            &mut patch,
+            NestedRef::Partial(baseline.view()),
+        ));
+        assert!(patch.value.is_some());
+    }
+
+    #[test]
+    fn clear_values_are_distinct_from_unknown_baseline_fields() {
+        let mut patch = Patch { value: Some(None) };
+        let unknown = Patch::<Option<u32>> { value: None };
+        assert!(trim(&mut patch, &unknown));
+        assert_eq!(patch.value, Some(None));
+
+        let known_clear = Patch::<Option<u32>> { value: Some(None) };
+        assert!(!trim(&mut patch, &known_clear));
+        assert_eq!(patch.value, None);
+    }
+
+    #[test]
+    fn equality_is_not_required_for_other_partial_operations() {
+        struct NoEq;
+        let mut subject = Subject { value: NoEq };
+        let mut patch = Patch { value: None };
+        patch.merge(Patch { value: Some(NoEq) });
+        patch.patch(&mut subject);
+    }
+
+    #[test]
+    fn indexed_equality_distinguishes_fields_with_different_lifetimes() {
+        fn both_equal<'s, 't>(left: &(&'s str, &'t str), right: &(&'s str, &'t str)) -> bool
+        where
+            for<'a> &'a &'s str: Equal<0>,
+            for<'a> &'a &'t str: Equal<1>,
+        {
+            Equal::<0>::equal(&left.0, &right.0) & Equal::<1>::equal(&left.1, &right.1)
+        }
+
+        let first = String::from("first");
+        let second = String::from("second");
+        let values = (first.as_str(), second.as_str());
+        assert!(both_equal(&values, &values));
+    }
+
+    #[test]
+    fn indexed_nested_bounds_distinguish_normalized_field_aliases() {
+        fn trim_two<T>(
+            first: &mut Patch<T>,
+            second: &mut <Option<Patch<T>> as OptionField>::Value,
+            baseline: &Subject<T>,
+        ) -> bool
+        where
+            for<'a> &'a mut Patch<T>: NestedRetain<Subject<T>, Subject<T>, 0>,
+            for<'a> &'a mut <Option<Patch<T>> as OptionField>::Value:
+                NestedRetain<Subject<T>, Subject<T>, 1>,
+        {
+            let first = NestedRetain::<Subject<T>, Subject<T>, 0>::retain_nested(
+                first,
+                NestedRef::Full(baseline),
+            );
+            let second = NestedRetain::<Subject<T>, Subject<T>, 1>::retain_nested(
+                second,
+                NestedRef::Full(baseline),
+            );
+            first | second
+        }
+
+        let owned = String::from("borrowed");
+        let baseline = Subject {
+            value: owned.as_str(),
+        };
+        let mut first = Patch {
+            value: Some(owned.as_str()),
+        };
+        let mut second = Patch {
+            value: Some(owned.as_str()),
+        };
+        assert!(!trim_two(&mut first, &mut second, &baseline));
+        assert!(first.value.is_none());
+        assert!(second.value.is_none());
     }
 }
