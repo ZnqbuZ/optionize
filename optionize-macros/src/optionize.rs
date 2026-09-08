@@ -13,11 +13,7 @@ use syn::ext::IdentExt;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::token::{Brace, Bracket, Comma, Paren, Pound};
-use syn::{
-    AttrStyle, Attribute, Data, DeriveInput, Expr, Field, Fields, FieldsNamed, FieldsUnnamed,
-    Index, Lit, LitStr, Member, Meta, Path, Type, TypePath, WherePredicate, parse_quote,
-    parse_quote_spanned as pqs, parse2,
-};
+use syn::{AttrStyle, Attribute, Data, DeriveInput, Expr, Field, Fields, FieldsNamed, FieldsUnnamed, Index, Lit, LitStr, Member, Meta, Path, Type, TypePath, WherePredicate, parse_quote, parse_quote_spanned as pqs, parse2, Lifetime, Visibility, PathArguments};
 
 // region args
 
@@ -357,7 +353,7 @@ impl Default for FieldStrategy {
 struct FieldIr {
     krate: Crate,
     ty: Type,
-    visibility: syn::Visibility,
+    visibility: Visibility,
     index: usize,
     span: Span,
     original: Member,
@@ -371,7 +367,7 @@ impl Default for FieldIr {
         Self {
             krate: Default::default(),
             ty: parse_quote!(()),
-            visibility: syn::Visibility::Inherited,
+            visibility: Visibility::Inherited,
             index: 0,
             span: Span::call_site(),
             original: format_ident!("_").into(),
@@ -410,7 +406,7 @@ impl FieldIr {
         }
     }
 
-    fn view_type(&self, lifetime: &syn::Lifetime) -> TokenStream {
+    fn view_type(&self, lifetime: &Lifetime) -> TokenStream {
         expand! { self => { krate, ty } }
         if let Some(descriptor) = self.nested_descriptor() {
             q! { ::core::option::Option<<#descriptor as #krate::Schema<#ty>>::View<#lifetime>> }
@@ -452,7 +448,7 @@ impl FieldIr {
         }
     }
 
-    fn retain_where(&self, lifetime: &syn::Lifetime) -> Option<WherePredicate> {
+    fn retain_where(&self, lifetime: &Lifetime) -> Option<WherePredicate> {
         expand! { self => { krate, ty, strategy, index } }
         match strategy {
             FieldStrategy::Skip { .. } => None,
@@ -1171,7 +1167,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         let ty = q! { #path };
         let mut constructor = path;
         for segment in &mut constructor.path.segments {
-            if let syn::PathArguments::AngleBracketed(arguments) = &mut segment.arguments {
+            if let PathArguments::AngleBracketed(arguments) = &mut segment.arguments {
                 arguments.colon2_token.get_or_insert_with(Default::default);
             }
         }
@@ -1356,7 +1352,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
             );
             let lifetime = |prefix| {
                 let ident = fresh_ident(prefix, &names);
-                syn::Lifetime::new(&format!("'{ident}"), ident.span())
+                Lifetime::new(&format!("'{ident}"), ident.span())
             };
             (
                 fresh_ident("__OptionizeView", &names),
@@ -1380,7 +1376,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         let (_, type_generics, _) = generics.split_for_impl();
 
         {
-            let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
+            let (impl_generics, _, where_clause) = generics.split_for_impl();
             let fields = originals.iter().map(|field| {
                 let visibility = &field.visibility;
                 let member = field.view_member();
