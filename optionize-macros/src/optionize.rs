@@ -154,35 +154,33 @@ struct PartialArgs {
 }
 
 #[derive(Debug)]
-enum TypeArg<T> {
+enum TypeArg {
     Str(LitStr),
-    Parsed(T),
+    Path(TypePath),
 }
 
-impl<T: syn::parse::Parse> FromMeta for TypeArg<T> {
+impl FromMeta for TypeArg {
     fn from_expr(expr: &Expr) -> Result<Self> {
         match expr {
             Expr::Lit(lit) if let Lit::Str(value) = &lit.lit => Ok(Self::Str(value.clone())),
             Expr::Group(group) => Self::from_expr(&group.expr),
-            _ => parse2(expr.to_token_stream())
-                .map(Self::Parsed)
-                .map_err(Error::from),
+            _ => TypePath::from_expr(expr).map(Self::Path),
         }
     }
 }
 
-impl<T: syn::parse::Parse> TypeArg<T> {
-    fn parse(self) -> Result<T> {
+impl TypeArg {
+    fn parse(self) -> Result<TypePath> {
         match self {
             Self::Str(value) => value.parse().map_err(Error::from),
-            Self::Parsed(ty) => Ok(ty),
+            Self::Path(path) => Ok(path),
         }
     }
 
-    fn format(self, ident: &Ident) -> Result<T> {
+    fn format(self, ident: &Ident) -> Result<TypePath> {
         match self {
             Self::Str(pattern) => format(&pattern, ident),
-            Self::Parsed(ty) => Ok(ty),
+            Self::Path(path) => Ok(path),
         }
     }
 }
@@ -194,8 +192,8 @@ struct StructArgs {
     #[darling(flatten)]
     general: GeneralArgs,
     partial: Option<SpannedValue<Override<PartialArgs>>>,
-    object: Option<TypeArg<TypePath>>,
-    subject: Option<TypeArg<TypePath>>,
+    object: Option<TypeArg>,
+    subject: Option<TypeArg>,
 }
 
 impl StructArgs {
@@ -250,7 +248,7 @@ struct FieldArgs {
     #[darling(flatten)]
     general: GeneralArgs,
     flatten: Flag,
-    nest: Option<TypeArg<Type>>,
+    nest: Option<TypeArg>,
     skip: Option<SpannedValue<Override<SkipArgs>>>,
 }
 
@@ -665,6 +663,7 @@ impl FieldIr {
             let Some(nest) = errors.handle(args.nest.map(TypeArg::parse).transpose()) else {
                 continue;
             };
+            let nest = nest.map(Type::Path);
 
             {
                 let ty = nest.as_ref().unwrap_or(&ty);
@@ -768,7 +767,7 @@ impl FieldIr {
                 continue;
             };
             let nest = nest.map(|subject_ty| {
-                ir.ty = subject_ty;
+                ir.ty = Type::Path(subject_ty);
                 payload.clone()
             });
             if nest.is_none() {
