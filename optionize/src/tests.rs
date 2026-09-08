@@ -269,9 +269,9 @@ fn test_marked_struct() {
 #[optionized]
 #[optionize(partial(marked(name = _marker), upgradable))]
 #[derive(Debug, PartialEq)]
-struct MarkedGeneric<T: Default> {
+struct MarkedGeneric<Value: Default> {
     #[optionize(skip)]
-    a: T,
+    a: Value,
 }
 
 #[test]

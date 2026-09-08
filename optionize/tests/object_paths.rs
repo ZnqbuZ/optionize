@@ -2,55 +2,55 @@ use optionize::{Optionizable, Optionized, PartialOptionized, optionized};
 
 mod wire {
     #[derive(Debug, PartialEq)]
-    pub struct Named<T> {
-        pub value: Option<T>,
+    pub struct Named<Value> {
+        pub value: Option<Value>,
     }
 
     #[derive(Debug, PartialEq)]
-    pub struct Tuple<T>(pub Option<T>);
+    pub struct Tuple<Value>(pub Option<Value>);
 
     pub struct Empty;
 
-    pub struct Borrowed<'a, T, const N: usize> {
-        pub values: Option<&'a [T; N]>,
+    pub struct Borrowed<'v, Value, const N: usize> {
+        pub values: Option<&'v [Value; N]>,
     }
 
     pub struct FormattedOptional {
         pub value: Option<u32>,
     }
 
-    pub struct Bare<T> {
-        pub value: Option<T>,
+    pub struct Bare<Value> {
+        pub value: Option<Value>,
     }
 
-    pub struct BareBorrowed<'a, T, const N: usize> {
-        pub values: Option<&'a [T; N]>,
+    pub struct BareBorrowed<'v, Value, const N: usize> {
+        pub values: Option<&'v [Value; N]>,
     }
 
-    pub struct GenericFormattedOp<T> {
-        pub value: Option<T>,
+    pub struct GenericFormattedOp<Value> {
+        pub value: Option<Value>,
     }
 
-    pub struct ForwardedTemplateOp<T> {
-        pub value: Option<T>,
+    pub struct ForwardedTemplateOp<Value> {
+        pub value: Option<Value>,
     }
 
-    pub struct ForwardedPath<T> {
-        pub value: Option<T>,
+    pub struct ForwardedPath<Value> {
+        pub value: Option<Value>,
     }
 }
 
 #[optionized]
-#[optionize(object = "crate::wire::Named<T>")]
+#[optionize(object = "crate::wire::Named<Value>")]
 #[derive(Debug, PartialEq)]
-pub struct Named<T> {
-    value: T,
+pub struct Named<Value> {
+    value: Value,
 }
 
 #[optionized]
-#[optionize(object = "self::wire::Tuple<T>")]
+#[optionize(object = "self::wire::Tuple<Value>")]
 #[derive(Debug, PartialEq)]
-pub struct Tuple<T>(T);
+pub struct Tuple<Value>(Value);
 
 #[optionized]
 #[optionize(object = "wire::Empty")]
@@ -58,9 +58,9 @@ pub struct Tuple<T>(T);
 pub struct Empty;
 
 #[optionized]
-#[optionize(object = "wire::Borrowed<'a, T, N>")]
-pub struct Borrowed<'a, T, const N: usize> {
-    values: &'a [T; N],
+#[optionize(object = "wire::Borrowed<'v, Value, N>")]
+pub struct Borrowed<'v, Value, const N: usize> {
+    values: &'v [Value; N],
 }
 
 #[optionized]
@@ -70,21 +70,21 @@ pub struct Formatted {
 }
 
 #[optionized]
-#[optionize(object = crate::wire::Bare::<T>)]
-pub struct Bare<T> {
-    value: T,
+#[optionize(object = crate::wire::Bare::<Value>)]
+pub struct Bare<Value> {
+    value: Value,
 }
 
 #[optionized]
-#[optionize(object = wire::BareBorrowed::<'a, T, N>)]
-pub struct BareBorrowed<'a, T, const N: usize> {
-    values: &'a [T; N],
+#[optionize(object = wire::BareBorrowed::<'v, Value, N>)]
+pub struct BareBorrowed<'v, Value, const N: usize> {
+    values: &'v [Value; N],
 }
 
 #[optionized]
-#[optionize(object = "wire::{}Op<T>")]
-pub struct GenericFormatted<T> {
-    value: T,
+#[optionize(object = "wire::{}Op<Value>")]
+pub struct GenericFormatted<Value> {
+    value: Value,
 }
 
 macro_rules! forwarded_objects {
@@ -92,16 +92,16 @@ macro_rules! forwarded_objects {
         $(
             #[optionized]
             #[optionize(object = $object)]
-            pub struct $name<T> {
-                value: T,
+            pub struct $name<Value> {
+                value: Value,
             }
         )+
     };
 }
 
 forwarded_objects! {
-    ForwardedTemplate => "wire::{}Op<T>",
-    ForwardedBare => wire::ForwardedPath::<T>,
+    ForwardedTemplate => "wire::{}Op<Value>",
+    ForwardedBare => wire::ForwardedPath::<Value>,
 }
 
 #[test]

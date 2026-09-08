@@ -1,6 +1,6 @@
 //! `optionize` is a procedural macro to generate optionized versions of structs for partial configurations, updates, and builders.
 //!
-//! The generated structs wrap their fields in `Option<T>` (unless explicitly overridden), allowing you to define partial state.
+//! The generated structs wrap their fields in `Option<Value>` (unless explicitly overridden), allowing you to define partial state.
 //! It also generates corresponding implementations for parsing, merging, downgrading, and upgrading to the original struct.
 //!
 //! ## Table of Contents
@@ -15,7 +15,7 @@
 //! - [Field-level Attributes](#field-level-attributes)
 //!   - [Renaming fields](#renaming-fields)
 //!   - [Overriding field attributes](#overriding-field-attributes)
-//!   - [Flattening fields (Disabling `Option<T>` wrapping)](#flattening-fields)
+//!   - [Flattening fields (Disabling `Option<Value>` wrapping)](#flattening-fields)
 //!   - [Skipping fields during upgrade](#skipping-fields-during-upgrade)
 //!   - [Nesting other optionized structs](#nesting-other-optionized-structs)
 //! - [Trait Operations](#trait-operations)
@@ -75,11 +75,11 @@
 //! The macro will only generate the trait implementations and will expect your object struct to match the
 //! fields it would normally generate (including `#[optionize(name = ...)]`, `flatten`, `skip`, and `nest` rules).
 //! `object` accepts a string template or an unquoted type path, such as
-//! `object = "pb::{}Optional<T>"` or `object = pb::UserOptional::<T>`.
+//! `object = "pb::{}Optional<Value>"` or `object = pb::UserOptional::<Value>`.
 //! In strings, `{}` is replaced with the subject's name before parsing the type path.
 //! Write generic arguments explicitly; the subject's generic arguments are not
 //! automatically appended to an existing object type. Unquoted generic paths use
-//! `::<T>` because attribute values are parsed as expressions; strings may use `<T>`.
+//! `::<Value>` because attribute values are parsed as expressions; strings may use `<Value>`.
 //! ```rust
 //! use optionize::{optionized, Optionized};
 //!
@@ -104,8 +104,8 @@
 //!
 //! ### Using a subject defined elsewhere
 //! Put the macro on the local object and specify `subject = ...`. Its ordinary
-//! fields are already `Option<T>`; `flatten` fields keep their declared types.
-//! Aliases for `Option<T>` also work. Like `object`, `subject` accepts a string
+//! fields are already `Option<Value>`; `flatten` fields keep their declared types.
+//! Aliases for `Option<Value>` also work. Like `object`, `subject` accepts a string
 //! template or an unquoted type path. It cannot be combined with `object`,
 //! struct-level `name`, or struct-level `attrs`.
 //! Field `name` attributes name the corresponding subject field in this mode.
@@ -164,7 +164,7 @@
 //!     a: u32,
 //! }
 //!
-//! fn assert_clone<T: Clone>() {}
+//! fn assert_clone<Value: Clone>() {}
 //! assert_clone::<AttrBeforeOptional>();
 //! ```
 //!
@@ -196,9 +196,9 @@
 //! #[optionized]
 //! #[optionize(partial(marked(name = _marker), upgradable))]
 //! #[derive(Debug)]
-//! struct Generic<D: Clone + Default> {
+//! struct Generic<Data: Clone + Default> {
 //!     #[optionize(skip)]
-//!     data: D,
+//!     data: Data,
 //! }
 //!
 //! let generic_optional = GenericOptional::<i32> { _marker: PhantomData };
@@ -235,7 +235,7 @@
 //! ```
 //!
 //! ### Flattening fields
-//! `flatten` prevents the macro from wrapping the field's type in `Option<T>`. The field will have the exact same type in the generated struct.
+//! `flatten` prevents the macro from wrapping the field's type in `Option<Value>`. The field will have the exact same type in the generated struct.
 //! ```rust
 //! use optionize::{optionized, Optionized};
 //!
@@ -378,10 +378,10 @@
 //!
 //! ```rust
 //! use optionize::{Retain, Schema};
-//! fn trim<P, S, B>(patch: &mut P, baseline: &B) -> bool
+//! fn trim<Patch, Subject, Baseline>(patch: &mut Patch, baseline: &Baseline) -> bool
 //! where
-//!     P: Retain<S>,
-//!     B: Schema<S, P>,
+//!     Patch: Retain<Subject>,
+//!     Baseline: Schema<Subject, Patch>,
 //! {
 //!     patch.retain(baseline)
 //! }
@@ -452,7 +452,7 @@ use core::fmt;
 use core::fmt::Display;
 use derive_more::{AsMut, AsRef, Deref, DerefMut, Error, From, Into, IntoIterator};
 
-/// Generates an optionized version of a struct, replacing its fields with `Option<T>` where applicable,
+/// Generates an optionized version of a struct, replacing its fields with `Option<Value>` where applicable,
 /// and implements conversion and merge logic for partial updates and builders.
 ///
 /// This macro generates a new struct (by default named `{OriginalName}Optional`) and implements the `PartialOptionized`
@@ -467,13 +467,13 @@ use derive_more::{AsMut, AsRef, Deref, DerefMut, Error, From, Into, IntoIterator
 /// - `name`: Overrides the generated struct's name. Use `{}` as a placeholder for the original struct name.
 /// - `object`: Uses a user-defined optionized struct instead of generating one. The macro will only generate
 ///   trait implementations and will expect your object struct to match the fields it would normally generate.
-///   Accepts a string template (`"pb::{}Optional<T>"`) or an unquoted type path
-///   (`pb::Config::<T>`). In strings, `{}` is replaced with the subject's name.
-///   Generic arguments must be explicit; unquoted generic paths use `::<T>`.
+///   Accepts a string template (`"pb::{}Optional<Value>"`) or an unquoted type path
+///   (`pb::Config::<Value>`). In strings, `{}` is replaced with the subject's name.
+///   Generic arguments must be explicit; unquoted generic paths use `::<Value>`.
 ///   This cannot be combined with `subject`, `name`, `attrs`, or `partial(marked)`.
 /// - `subject`: Treats the annotated local struct as the object of an existing
 ///   subject, which may come from another crate. Declare ordinary object fields
-///   as `Option<T>` (aliases also work). Accepts the same string-template and
+///   as `Option<Value>` (aliases also work). Accepts the same string-template and
 ///   unquoted-path syntax as `object`. Generic update bounds use
 ///   `PartialOptionized<Subject>` and `Optionized<Subject>`. For `retain`, generic
 ///   baseline bounds use `Schema<Subject, Object>`; ordinary calls infer the mapping.
@@ -495,7 +495,7 @@ use derive_more::{AsMut, AsRef, Deref, DerefMut, Error, From, Into, IntoIterator
 /// - `name`: Renames the field in the generated struct. Use `{}` as a placeholder for the original field name or index.
 ///   With `subject = ...`, names the corresponding subject field instead.
 /// - `attrs`: Similarly to the struct-level `attrs`, this overrides the attributes applied to the generated field.
-/// - `flatten`: Instructs the macro **not** to wrap the field's type in `Option<T>`. The field will have the exact same type in the generated struct.
+/// - `flatten`: Instructs the macro **not** to wrap the field's type in `Option<Value>`. The field will have the exact same type in the generated struct.
 /// - `skip`: Removes the field entirely from the generated struct.
 ///   - Requires `partial` or `partial(upgradable)` on the struct.
 ///   - With `subject = ...`, declare the unmanaged subject field with its subject type;
@@ -537,7 +537,7 @@ pub mod __private {
 /// use optionize::{optionized, PartialOptionized};
 /// #[optionized]
 /// struct Config { enabled: bool }
-/// fn accept_partial<P: PartialOptionized<Config>>(_: P) {}
+/// fn accept_partial<Patch: PartialOptionized<Config>>(_: Patch) {}
 /// accept_partial(ConfigOptional { enabled: Some(true) });
 /// accept_partial(Config { enabled: true });
 /// ```
@@ -584,9 +584,9 @@ pub trait Optionizable<Object: PartialOptionized<Self>>: Sized {
 ///
 /// ```rust
 /// use optionize::Optionized;
-/// fn upgrade<P, S>(partial: P) -> Result<S, P::Errors>
+/// fn upgrade<Patch, Subject>(partial: Patch) -> Result<Subject, Patch::Errors>
 /// where
-///     P: Optionized<S>,
+///     Patch: Optionized<Subject>,
 /// {
 ///     partial.upgrade()
 /// }
@@ -621,7 +621,7 @@ pub trait Optionizable<Object: PartialOptionized<Self>>: Sized {
 /// ```
 ///
 /// Even one generic implementation needs type information if a subject parameter
-/// cannot be determined from the object. Here `T` exists only on `Full<T>`:
+/// cannot be determined from the object. Here `Value` exists only on `Full<Value>`:
 ///
 /// ```compile_fail,E0282
 /// use core::marker::PhantomData;
@@ -629,10 +629,10 @@ pub trait Optionizable<Object: PartialOptionized<Self>>: Sized {
 /// struct Patch { value: Option<u32> }
 /// #[optionized]
 /// #[optionize(object = "Patch", partial(upgradable))]
-/// struct Full<T> {
+/// struct Full<Value> {
 ///     value: u32,
 ///     #[optionize(skip)]
-///     marker: PhantomData<T>,
+///     marker: PhantomData<Value>,
 /// }
 /// let _ = Patch { value: Some(1) }.upgrade().unwrap();
 /// ```
@@ -792,13 +792,13 @@ impl Display for ErrorCollection {
 }
 
 impl FromIterator<Error> for ErrorCollection {
-    fn from_iter<I: IntoIterator<Item = Error>>(iter: I) -> Self {
+    fn from_iter<Iterable: IntoIterator<Item = Error>>(iter: Iterable) -> Self {
         iter.into_iter().collect::<Vec<_>>().into()
     }
 }
 
 impl Extend<Error> for ErrorCollection {
-    fn extend<T: IntoIterator<Item = Error>>(&mut self, iter: T) {
+    fn extend<Iterable: IntoIterator<Item = Error>>(&mut self, iter: Iterable) {
         self.errors.extend(iter);
     }
 }

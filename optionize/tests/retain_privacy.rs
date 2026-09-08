@@ -46,21 +46,21 @@ pub mod models {
     }
 
     #[derive(PartialEq)]
-    struct PrivateBorrowed<'a>(&'a str);
+    struct PrivateBorrowed<'s>(&'s str);
 
     #[optionized]
-    pub struct Borrowed<'a> {
-        value: PrivateBorrowed<'a>,
+    pub struct Borrowed<'s> {
+        value: PrivateBorrowed<'s>,
     }
 
-    impl<'a> Borrowed<'a> {
-        pub fn new(value: &'a str) -> Self {
+    impl<'s> Borrowed<'s> {
+        pub fn new(value: &'s str) -> Self {
             Self {
                 value: PrivateBorrowed(value),
             }
         }
 
-        pub fn value(&self) -> &'a str {
+        pub fn value(&self) -> &'s str {
             self.value.0
         }
     }
@@ -92,29 +92,29 @@ pub mod models {
     }
 
     #[optionized]
-    pub struct LifetimeNames<'__optionize, '__optionize_> {
-        first: &'__optionize str,
-        second: &'__optionize_ str,
+    pub struct LifetimeNames<'v, 'v_> {
+        first: &'v str,
+        second: &'v_ str,
     }
 
-    impl<'a, 'b> LifetimeNames<'a, 'b> {
-        pub fn new(first: &'a str, second: &'b str) -> Self {
+    impl<'v, 'v_> LifetimeNames<'v, 'v_> {
+        pub fn new(first: &'v str, second: &'v_ str) -> Self {
             Self { first, second }
         }
 
-        pub fn values(&self) -> (&'a str, &'b str) {
+        pub fn values(&self) -> (&'v str, &'v_ str) {
             (self.first, self.second)
         }
     }
 
     #[optionized]
-    #[optionize(subject = proto::GenericSubject::<T>, partial(marked, upgradable))]
-    pub struct ReverseMarked<T> {
-        value: Option<T>,
+    #[optionize(subject = proto::GenericSubject::<Value>, partial(marked, upgradable))]
+    pub struct ReverseMarked<Value> {
+        value: Option<Value>,
     }
 
-    impl<T> ReverseMarked<T> {
-        pub fn new(value: Option<T>) -> Self {
+    impl<Value> ReverseMarked<Value> {
+        pub fn new(value: Option<Value>) -> Self {
             Self {
                 value,
                 _marker: PhantomData,
@@ -123,10 +123,10 @@ pub mod models {
     }
 
     #[optionized]
-    #[optionize(subject = proto::GenericSubject::<T>, partial(marked, upgradable))]
-    pub struct ReverseSkipped<T: Default> {
+    #[optionize(subject = proto::GenericSubject::<Value>, partial(marked, upgradable))]
+    pub struct ReverseSkipped<Value: Default> {
         #[optionize(skip)]
-        value: T,
+        value: Value,
     }
 
     #[optionized]
@@ -203,6 +203,59 @@ fn generated_borrow_lifetimes_avoid_user_names() {
         patch.upgrade().unwrap().values(),
         (first.as_str(), second.as_str())
     );
+}
+
+#[test]
+fn generated_borrow_lifetimes_avoid_field_and_where_clause_binders() {
+    use optionize::{PartialOptionized, Schema, optionized};
+
+    #[optionized]
+    #[optionize(partial(marked))]
+    struct CallbackConfig<Callback>
+    where
+        Callback: for<'s> Fn(&'s str),
+    {
+        #[optionize(skip)]
+        first: for<'v> fn(&'v str),
+        #[optionize(skip)]
+        second: Callback,
+        value: u32,
+    }
+
+    fn assert_first(value: &str) {
+        assert_eq!(value, "first");
+    }
+
+    fn assert_second(value: &str) {
+        assert_eq!(value, "second");
+    }
+
+    let first = String::from("first");
+    let second = String::from("second");
+    let mut baseline = CallbackConfig {
+        first: assert_first,
+        second: assert_second,
+        value: 1,
+    };
+    let view = baseline.view();
+    assert_eq!(view.v_value, Some(&1));
+    view.v_first.unwrap()(&first);
+    view.v_second.unwrap()(&second);
+
+    let patch = CallbackConfig {
+        first: assert_second,
+        second: assert_second,
+        value: 2,
+    }
+    .downgrade();
+    let view = patch.view();
+    assert_eq!(view.v_value, Some(&2));
+    assert!(view.v_first.is_none());
+    assert!(view.v_second.is_none());
+    patch.patch(&mut baseline);
+    assert_eq!(baseline.value, 2);
+    (baseline.first)(&first);
+    (baseline.second)(&second);
 }
 
 #[test]

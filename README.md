@@ -1,6 +1,6 @@
 # optionize
 
-A Rust library providing macros and traits to easily generate and manage "optionized" versions of structs. An optionized struct has its fields wrapped in `Option<T>` (by default), which is extremely useful for configurations, builders, and partial updates (patching).
+A Rust library providing macros and traits to easily generate and manage "optionized" versions of structs. An optionized struct has its fields wrapped in `Option<Value>` (by default), which is extremely useful for configurations, builders, and partial updates (patching).
 
 ## Core Concepts
 
@@ -62,8 +62,8 @@ You can customize the generated struct and its fields using the `#[optionize(...
 ### Struct Attributes
 
 - `#[optionize(name = "CustomPrefix{}CustomSuffix")]`: Set the name of the generated optionized struct. `{}` will be replaced with the original struct name.
-- `#[optionize(object = pb::Config::<T>)]` or `#[optionize(object = "pb::{}Optional<T>")]`: Use an existing struct through an unquoted type path or a string template. In strings, `{}` is replaced with the subject's name. Write generic arguments explicitly; unquoted generic paths use `::<T>`. The subject must be local when the object is from another crate.
-- `#[optionize(subject = model::Config)]` or `#[optionize(subject = "model::Config")]`: Treat the annotated struct as the optionized object of an existing subject. Write its fields as `Option<T>` yourself; aliases for `Option<T>` also work. The subject may come from another crate; see the example below.
+- `#[optionize(object = pb::Config::<Value>)]` or `#[optionize(object = "pb::{}Optional<Value>")]`: Use an existing struct through an unquoted type path or a string template. In strings, `{}` is replaced with the subject's name. Write generic arguments explicitly; unquoted generic paths use `::<Value>`. The subject must be local when the object is from another crate.
+- `#[optionize(subject = model::Config)]` or `#[optionize(subject = "model::Config")]`: Treat the annotated struct as the optionized object of an existing subject. Write its fields as `Option<Value>` yourself; aliases for `Option<Value>` also work. The subject may come from another crate; see the example below.
 - `#[optionize(attrs(derive(Debug, Default)))]`: Replace the attributes inherited by the generated struct.
 - `#[optionize(partial(upgradable))]`: By default, the generated struct implements both `PartialOptionized` and `Optionized`. If you only want partial updates and don't need upgrading, use `#[optionize(partial)]`. If you want both while using `partial` specific features (like `skip`), use `#[optionize(partial(upgradable))]`.
 - `#[optionize(partial(marked))]`: Adds a `PhantomData` marker to the generated struct, typing it strictly to the original struct.
@@ -84,7 +84,7 @@ struct Config {
 ### Field Attributes
 
 - `#[optionize(name = "prefix_{}_suffix")]`: Rename a field in the optionized struct. `{}` will be replaced with the original field name. With `subject = ...`, this instead names the corresponding subject field.
-- `#[optionize(flatten)]`: Do not wrap the field in `Option<T>`. Patching always assigns the field, including `None`; nested fields delegate to their patch implementation.
+- `#[optionize(flatten)]`: Do not wrap the field in `Option<Value>`. Patching always assigns the field, including `None`; nested fields delegate to their patch implementation.
 - `#[optionize(nest = NestedTypeOptional)]` or `#[optionize(nest = "NestedTypeOptional")]`: Recursively apply optionize logic to a nested optionized struct. With `subject = ...`, name the nested subject type instead. Allows deep patching, retaining changes, and upgrading.
 - `#[optionize(skip)]` / `#[optionize(skip(upgrade = "expr"))]`: Completely omit the field from the generated optionized struct. Only allowed when `partial` is specified on the struct. When upgrading, it uses `Default::default()` or the provided `upgrade` expression. With `subject = ...`, declare the unmanaged subject field with its subject type; the macro removes that field from the local object.
 
@@ -227,9 +227,9 @@ let mut patch = ConfigPatch {
 };
 assert!(!patch.retain(&current));
 
-fn trim<B: Schema<model::Config, ConfigPatch>>(
+fn trim<Baseline: Schema<model::Config, ConfigPatch>>(
     patch: &mut ConfigPatch,
-    baseline: &B,
+    baseline: &Baseline,
 ) -> bool {
     patch.retain(baseline)
 }
@@ -251,32 +251,32 @@ the annotated field already supplies its nested object type.
 ## Traits Overview
 
 - **`PartialOptionized<Subject>`**: Implemented for objects; provides `optionize()`, `patch()`, and `merge()`.
-- **`Schema<Subject, Descriptor = Self>`**: Defines `View<'a>` and provides `view()`, which returns the descriptor's shared borrowed view. Generated objects own the view through `Schema<Subject>`; subjects expose complete baselines through `Schema<Subject, Object>`.
+- **`Schema<Subject, Descriptor = Self>`**: Defines `View<'v>` and provides `view()`, which returns the descriptor's shared borrowed view. Generated objects own the view through `Schema<Subject>`; subjects expose complete baselines through `Schema<Subject, Object>`.
 - **`Retain<Subject, Descriptor = Self>`**: Provides `retain(&mut self, &baseline) -> bool` when the mapped fields support comparison. The baseline implements `Schema<Subject, Descriptor>`.
 - **`Optionizable<Object>`**: Automatically implemented for the subject. Provides `load()` and `downgrade()`.
 - **`Optionized<Subject>`**: Provides `validate()`, `upgrade()`, and `unsafe upgrade_unchecked()`. `upgrade()` returns `Result<Subject, Self::Errors>` and consumes the partial on both success and failure.
 
 ### Migrating to 0.5
 
-Replace `P: Optionized<Subject = S>` with `P: Optionized<S>`, and replace
-`<P as Optionized>::Errors` with `<P as Optionized<S>>::Errors`. Manual implementations
-remove `type Subject` and return `S` from `upgrade_unchecked`.
+Replace `Patch: Optionized<Subject = Subject>` with `Patch: Optionized<Subject>`, and replace
+`<Patch as Optionized>::Errors` with `<Patch as Optionized<Subject>>::Errors`. Manual implementations
+remove `type Subject` and return `Subject` from `upgrade_unchecked`.
 
 The shared traits support either an external protobuf object with a local subject
 or an external subject with a local object. Uniqueness applies to
 `(object, subject)` combinations for `PartialOptionized` and `Optionized`. Calls infer the target when its
 complete type is uniquely determined. For multiple targets, annotate the upgraded
-result or use `Optionized::<S>::validate(&partial)`. A generic parameter that only
+result or use `Optionized::<Subject>::validate(&partial)`. A generic parameter that only
 appears on the subject still needs type information, even with one implementation.
 
 An existing generic `object = "Patch"` should now spell its arguments explicitly,
-for example `object = "pb::Patch<T>"`. Generated object names still inherit the
+for example `object = "pb::Patch<Value>"`. Generated object names still inherit the
 subject's generic parameters automatically.
 
 `Diff` and `#[optionize(diff)]` have been removed. To compare two full values,
 convert the next value into its patch with `downgrade()`, then call
 `patch.retain(&baseline)`. An existing patch can call `retain` directly. Manual
-implementations expose borrowed fields through `Schema::View<'a>` and
+implementations expose borrowed fields through `Schema::View<'v>` and
 `Schema::view()`; the macros generate these automatically.
 
 `PartialOptionized`, `Optionized`, and `Optionizable` no longer take a descriptor
@@ -287,10 +287,10 @@ construction into `Schema`.
 `Schema<Subject, Descriptor = Self>` replaces its associated `Descriptor` type
 with a trait parameter. The object implements `Schema<Subject>` and owns the
 shared view. Complete subjects and other baselines implement
-`Schema<Subject, Object>`, reuse `<Object as Schema<Subject>>::View<'a>`, and
+`Schema<Subject, Object>`, reuse `<Object as Schema<Subject>>::View<'v>`, and
 construct that view in `view()`. `Schema::full_view()` is no longer needed.
 `Retain` also defaults its descriptor to `Self`, so generic baseline bounds use
-`B: Schema<Subject, Object>` instead of `B: PartialOptionized<Subject, Descriptor>`.
+`Baseline: Schema<Subject, Object>` instead of `Baseline: PartialOptionized<Subject, Descriptor>`.
 These rules apply to both local and external subjects.
 
 ## Crates in this workspace

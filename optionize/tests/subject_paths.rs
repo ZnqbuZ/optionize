@@ -50,25 +50,25 @@ struct RenamedSubjectPatch {
 }
 
 #[optionized]
-#[optionize(subject = proto::GenericSubject::<T>)]
+#[optionize(subject = proto::GenericSubject::<Value>)]
 #[derive(Debug)]
-struct GenericPatch<T> {
-    value: Option<T>,
+struct GenericPatch<Value> {
+    value: Option<Value>,
 }
 
-type Maybe<T> = Option<T>;
+type Maybe<Value> = Option<Value>;
 
 #[optionized]
-#[optionize(subject = "proto::GenericSubject<T>")]
+#[optionize(subject = "proto::GenericSubject<Value>")]
 #[derive(Debug)]
-struct AliasedPatch<T> {
-    value: Maybe<T>,
+struct AliasedPatch<Value> {
+    value: Maybe<Value>,
 }
 
 #[optionized]
-#[optionize(subject = proto::BorrowedSubject::<'a, T, N>)]
-struct BorrowedPatch<'a, T, const N: usize> {
-    values: Option<&'a [T; N]>,
+#[optionize(subject = proto::BorrowedSubject::<'v, Value, N>)]
+struct BorrowedPatch<'v, Value, const N: usize> {
+    values: Option<&'v [Value; N]>,
 }
 
 #[optionized]

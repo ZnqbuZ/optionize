@@ -35,8 +35,8 @@ struct Uncomparable {
 
 #[optionized]
 #[derive(Debug)]
-struct Generic<T> {
-    value: T,
+struct Generic<Value> {
+    value: Value,
 }
 
 // Neither nested subject implements PartialEq.
@@ -68,10 +68,10 @@ struct Flattened {
 #[optionized]
 #[optionize(partial(marked))]
 #[derive(Debug)]
-struct Marked<T> {
+struct Marked<Value> {
     value: u32,
     #[optionize(skip)]
-    ignored: T,
+    ignored: Value,
 }
 
 #[optionized]
@@ -120,15 +120,15 @@ struct ForeignContainerPatch {
 
 #[optionized]
 #[derive(Debug)]
-struct Borrowed<'a> {
-    value: &'a str,
+struct Borrowed<'s> {
+    value: &'s str,
 }
 
 #[optionized]
 #[derive(Debug)]
-struct BorrowedContainer<'a> {
-    #[optionize(nest = BorrowedOptional::<'a>)]
-    nested: Borrowed<'a>,
+struct BorrowedContainer<'s> {
+    #[optionize(nest = BorrowedOptional::<'s>)]
+    nested: Borrowed<'s>,
 }
 
 #[optionized]
@@ -148,25 +148,28 @@ struct RenamedBaseline {
 }
 
 impl Schema<Values, ValuesOptional> for RenamedBaseline {
-    type View<'a> = <ValuesOptional as Schema<Values>>::View<'a>;
+    type View<'v> = <ValuesOptional as Schema<Values>>::View<'v>;
     // The generated view is named through its associated type.
     #[allow(clippy::field_reassign_with_default)]
-    fn view<'a>(&'a self) -> <ValuesOptional as Schema<Values>>::View<'a>
+    fn view<'s>(&'s self) -> <ValuesOptional as Schema<Values>>::View<'s>
     where
-        Values: 'a,
+        Values: 's,
     {
-        let mut view: <ValuesOptional as Schema<Values>>::View<'a> = Default::default();
+        let mut view: <ValuesOptional as Schema<Values>>::View<'s> = Default::default();
         view.v_enabled = self.active.as_ref();
         view.v_label = self.title.as_ref();
         view
     }
 }
 
-fn retain_generic<S, D, P, B>(patch: &mut P, baseline: &B) -> bool
+fn retain_generic<Subject, Descriptor, Patch, Baseline>(
+    patch: &mut Patch,
+    baseline: &Baseline,
+) -> bool
 where
-    D: optionize::Schema<S>,
-    P: Retain<S, D>,
-    B: Schema<S, D>,
+    Descriptor: optionize::Schema<Subject>,
+    Patch: Retain<Subject, Descriptor>,
+    Baseline: Schema<Subject, Descriptor>,
 {
     patch.retain(baseline)
 }
@@ -598,12 +601,12 @@ fn nested_objects_do_not_require_subject_schema_implementations() {
     }
 
     impl optionize::Schema<Child> for ChildPatch {
-        type View<'a> = Option<&'a u32>;
+        type View<'v> = Option<&'v u32>;
 
-        fn view<'a>(&'a self) -> <Self as optionize::Schema<Child>>::View<'a>
+        fn view<'s>(&'s self) -> <Self as optionize::Schema<Child>>::View<'s>
         where
-            Child: 'a,
-            Self: 'a,
+            Child: 's,
+            Self: 's,
         {
             self.value.as_ref()
         }
@@ -630,13 +633,13 @@ fn nested_objects_do_not_require_subject_schema_implementations() {
     }
 
     impl Retain<Child, ChildPatch> for ChildPatch {
-        fn retain_view<'a>(
+        fn retain_view<'v>(
             &mut self,
-            baseline: <Self as optionize::Schema<Child>>::View<'a>,
+            baseline: <Self as optionize::Schema<Child>>::View<'v>,
         ) -> bool
         where
-            Child: 'a,
-            Self: 'a,
+            Child: 'v,
+            Self: 'v,
         {
             if self.value.as_ref() == baseline {
                 self.value = None;

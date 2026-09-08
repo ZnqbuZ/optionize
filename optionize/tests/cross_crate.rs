@@ -41,34 +41,34 @@ struct NullableContainer {
 }
 
 #[optionized]
-#[optionize(object = proto::Generic::<T>)]
+#[optionize(object = proto::Generic::<Value>)]
 #[derive(Debug, PartialEq)]
-struct GenericTarget<T> {
-    value: T,
+struct GenericTarget<Value> {
+    value: Value,
 }
 
 #[optionized]
 #[optionize(partial(marked, upgradable))]
 #[derive(Debug, PartialEq)]
-struct GenericNested<T, P> {
-    #[optionize(nest = "P")]
-    nested: T,
+struct GenericNested<Subject, Patch> {
+    #[optionize(nest = "Patch")]
+    nested: Subject,
     #[optionize(skip)]
-    marker: PhantomData<P>,
+    marker: PhantomData<Patch>,
 }
 
 #[optionized]
 #[optionize(object = "proto::ErasedGeneric", partial(upgradable))]
 #[derive(Debug, PartialEq)]
-struct TargetOnlyGeneric<T> {
+struct TargetOnlyGeneric<Value> {
     value: u32,
     #[optionize(skip)]
-    marker: PhantomData<T>,
+    marker: PhantomData<Value>,
 }
 
-fn convert<P, S>(patch: P) -> Result<S, P::Errors>
+fn convert<Patch, Subject>(patch: Patch) -> Result<Subject, Patch::Errors>
 where
-    P: Optionized<S>,
+    Patch: Optionized<Subject>,
 {
     patch.upgrade()
 }
@@ -129,11 +129,11 @@ fn shared_object_upgrade_infers_from_the_return_type() {
 
 #[test]
 fn shared_object_retain_infers_the_mapping_from_the_baseline() {
-    fn trim<S, D, P, B>(patch: &mut P, baseline: &B) -> bool
+    fn trim<Subject, Descriptor, Patch, Baseline>(patch: &mut Patch, baseline: &Baseline) -> bool
     where
-        D: Schema<S>,
-        P: Retain<S, D>,
-        B: Schema<S, D>,
+        Descriptor: Schema<Subject>,
+        Patch: Retain<Subject, Descriptor>,
+        Baseline: Schema<Subject, Descriptor>,
     {
         patch.retain(baseline)
     }

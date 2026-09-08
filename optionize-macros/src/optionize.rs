@@ -271,7 +271,7 @@ impl FieldArgs {
 
 // region utils
 
-fn format<T: syn::parse::Parse>(pattern: &LitStr, ident: &Ident) -> Result<T> {
+fn format<Parsed: syn::parse::Parse>(pattern: &LitStr, ident: &Ident) -> Result<Parsed> {
     let value = pattern.value().replace("{}", &ident.unraw().to_string());
     LitStr::new(&value, pattern.span())
         .parse()
@@ -410,12 +410,12 @@ impl FieldIr {
         }
     }
 
-    fn view_type(&self, borrow: &syn::Lifetime) -> TokenStream {
+    fn view_type(&self, lifetime: &syn::Lifetime) -> TokenStream {
         expand! { self => { krate, ty } }
         if let Some(descriptor) = self.nested_descriptor() {
-            q! { ::core::option::Option<<#descriptor as #krate::Schema<#ty>>::View<#borrow>> }
+            q! { ::core::option::Option<<#descriptor as #krate::Schema<#ty>>::View<#lifetime>> }
         } else {
-            q! { ::core::option::Option<&#borrow #ty> }
+            q! { ::core::option::Option<&#lifetime #ty> }
         }
     }
 
@@ -452,12 +452,12 @@ impl FieldIr {
         }
     }
 
-    fn retain_where(&self, borrow: &syn::Lifetime) -> Option<WherePredicate> {
+    fn retain_where(&self, lifetime: &syn::Lifetime) -> Option<WherePredicate> {
         expand! { self => { krate, ty, strategy, index } }
         match strategy {
             FieldStrategy::Skip { .. } => None,
             FieldStrategy::Optionize { nest: None, .. } => {
-                Some(pq! { for<#borrow> &#borrow #ty: #krate::__private::Equal<#index> })
+                Some(pq! { for<#lifetime> &#lifetime #ty: #krate::__private::Equal<#index> })
             }
             FieldStrategy::Optionize {
                 nest: Some(nest), ..
@@ -465,7 +465,7 @@ impl FieldIr {
                 let descriptor = self.nested_descriptor().unwrap();
                 // The unused binder defers concrete comparison bounds until
                 // Retain is used, keeping other operations available without it.
-                Some(pq! { for<#borrow> #nest: #krate::Retain<#ty, #descriptor> })
+                Some(pq! { for<#lifetime> #nest: #krate::Retain<#ty, #descriptor> })
             }
         }
     }
@@ -829,12 +829,12 @@ impl FieldIr {
     }
 }
 
-struct Optionize<'l> {
-    field: &'l FieldIr,
-    subject: &'l Ident,
+struct Optionize<'f, 'i> {
+    field: &'f FieldIr,
+    subject: &'i Ident,
 }
 
-impl<'l> ToTokens for Optionize<'l> {
+impl ToTokens for Optionize<'_, '_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         expand! {
             self.field => {
@@ -866,12 +866,12 @@ impl<'l> ToTokens for Optionize<'l> {
     }
 }
 
-struct Patch<'l> {
-    field: &'l FieldIr,
-    subject: &'l Ident,
+struct Patch<'f, 'i> {
+    field: &'f FieldIr,
+    subject: &'i Ident,
 }
 
-impl<'l> ToTokens for Patch<'l> {
+impl ToTokens for Patch<'_, '_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         expand! {
             self.field => {
@@ -912,12 +912,12 @@ impl<'l> ToTokens for Patch<'l> {
     }
 }
 
-struct Merge<'l> {
-    field: &'l FieldIr,
-    other: &'l Ident,
+struct Merge<'f, 'i> {
+    field: &'f FieldIr,
+    other: &'i Ident,
 }
 
-impl<'l> ToTokens for Merge<'l> {
+impl ToTokens for Merge<'_, '_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         expand! {
             self.field => {
@@ -960,15 +960,15 @@ impl<'l> ToTokens for Merge<'l> {
     }
 }
 
-struct Validate<'l> {
-    field: &'l FieldIr,
-    subject: &'l TokenStream,
-    object: &'l TokenStream,
-    failed: &'l Ident,
-    errors: &'l Ident,
+struct Validate<'f, 't, 'i> {
+    field: &'f FieldIr,
+    subject: &'t TokenStream,
+    object: &'t TokenStream,
+    failed: &'i Ident,
+    errors: &'i Ident,
 }
 
-impl<'l> ToTokens for Validate<'l> {
+impl ToTokens for Validate<'_, '_, '_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         expand! {
             self.field => {
@@ -1058,9 +1058,9 @@ impl<'l> ToTokens for Validate<'l> {
     }
 }
 
-struct Upgrade<'l>(&'l FieldIr);
+struct Upgrade<'f>(&'f FieldIr);
 
-impl<'l> ToTokens for Upgrade<'l> {
+impl ToTokens for Upgrade<'_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         expand! {
             self.0 => {
@@ -1091,9 +1091,9 @@ impl<'l> ToTokens for Upgrade<'l> {
     }
 }
 
-struct UpgradeSkip<'l>(&'l FieldIr);
+struct UpgradeSkip<'f>(&'f FieldIr);
 
-impl<'l> ToTokens for UpgradeSkip<'l> {
+impl ToTokens for UpgradeSkip<'_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         expand! {
             self.0 => {
@@ -1109,9 +1109,9 @@ impl<'l> ToTokens for UpgradeSkip<'l> {
     }
 }
 
-struct UpgradeFieldValue<'l>(&'l FieldIr);
+struct UpgradeFieldValue<'f>(&'f FieldIr);
 
-impl<'l> ToTokens for UpgradeFieldValue<'l> {
+impl ToTokens for UpgradeFieldValue<'_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         expand! { self.0 => { original, local } }
         tokens.extend(q! { #original: #local, });
@@ -1142,15 +1142,6 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
     }
 
     let this = format_ident!("self", span = Span::mixed_site());
-    let mut borrow_name = "__optionize".to_owned();
-    while subject
-        .generics
-        .lifetimes()
-        .any(|parameter| parameter.lifetime.ident == borrow_name)
-    {
-        borrow_name.push('_');
-    }
-    let borrow = syn::Lifetime::new(&format!("'{borrow_name}"), Span::mixed_site());
     let args = StructArgs::from_attributes(&subject.attrs)?;
     let source = q! { #[derive(#krate::__private::Optionize)] #subject };
     let reverse = args.subject.is_some();
@@ -1332,147 +1323,185 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
     }
     let declarations = take(&mut output);
 
-    let mut where_clause = where_clause.cloned().unwrap_or_else(|| pq! { where });
-    let mut where_predicates = HashSet::new();
-    macro_rules! where_clause_extend {
-        ($map:expr) => {
+    let where_clause = {
+        let mut where_clause = where_clause.cloned().unwrap_or_else(|| pq! { where });
+        let mut predicates = where_clause
+            .predicates
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>();
+        where_clause.predicates.extend(
+            optionizeds
+                .iter()
+                .flat_map(|field| field.partial_optionized_where())
+                .filter(|predicate| predicates.insert(predicate.clone())),
+        );
+        where_clause
+    };
+
+    {
+        let (view_ident, view_lifetime, self_lifetime) = {
+            let mut names = HashSet::new();
+            let fields = originals.iter().map(|field| {
+                let ty = &field.ty;
+                let nest = match &field.strategy {
+                    FieldStrategy::Optionize { nest, .. } => nest.as_ref(),
+                    FieldStrategy::Skip { .. } => None,
+                };
+                q! { #ty #nest }
+            });
+            collect_idents(
+                q! { #Subject #Object #impl_generics #where_clause #(#fields)* },
+                &mut names,
+            );
+            let lifetime = |prefix| {
+                let ident = fresh_ident(prefix, &names);
+                syn::Lifetime::new(&format!("'{ident}"), ident.span())
+            };
+            (
+                fresh_ident("__OptionizeView", &names),
+                lifetime("v"),
+                lifetime("s"),
+            )
+        };
+        let generics = {
+            let mut generics = object.generics.clone();
+            generics.params.insert(0, parse_quote! { #view_lifetime });
+            let mut where_clause = where_clause.clone();
+            where_clause
+                .predicates
+                .push(pq! { #Subject: #view_lifetime });
+            where_clause
+                .predicates
+                .push(pq! { #Object: #view_lifetime });
+            generics.where_clause = Some(where_clause);
+            generics
+        };
+        let (_, type_generics, _) = generics.split_for_impl();
+
+        {
+            let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
+            let fields = originals.iter().map(|field| {
+                let visibility = &field.visibility;
+                let member = field.view_member();
+                let ty = field.view_type(&view_lifetime);
+                q! { #visibility #member: #ty, }
+            });
+            output.push(q! {
+                // A nominal view keeps private field types out of public associated types.
+                // The anonymous const gives each mapping its own scope without user names.
+                #[doc(hidden)]
+                #[allow(private_bounds)]
+                pub struct #view_ident #impl_generics #where_clause {
+                    #(#fields)*
+                    #[allow(clippy::type_complexity)]
+                    __marker: ::core::marker::PhantomData<fn() -> &#view_lifetime (#Subject, #Object)>,
+                }
+            });
+
+            let fields = originals.iter().map(|field| {
+                let member = field.view_member();
+                q! { #member: ::core::option::Option::None, }
+            });
+            output.push(q! {
+                impl #impl_generics ::core::default::Default for #view_ident #type_generics #where_clause {
+                    fn default() -> Self {
+                        Self { #(#fields)* __marker: ::core::marker::PhantomData }
+                    }
+                }
+            });
+        }
+
+        {
+            let fields = originals.iter().map(|field| {
+                let member = field.view_member();
+                let value = field.view(false, &q! { #this });
+                q! { #member: #value, }
+            });
+            output.push(q! {
+                #[automatically_derived]
+                impl #impl_generics #krate::Schema<#Subject> for #Object #where_clause {
+                    type View<#view_lifetime> = #view_ident #type_generics
+                    where #Subject: #view_lifetime, Self: #view_lifetime;
+                    #[inline]
+                    fn view<#self_lifetime>(&#self_lifetime #this) -> <Self as #krate::Schema<#Subject>>::View<#self_lifetime>
+                    where #Subject: #self_lifetime, Self: #self_lifetime {
+                        #view_ident { #(#fields)* __marker: ::core::marker::PhantomData }
+                    }
+                }
+            });
+        }
+
+        {
+            let mut where_clause = where_clause.clone();
+            let mut predicates = where_clause
+                .predicates
+                .iter()
+                .cloned()
+                .collect::<HashSet<_>>();
+            where_clause.predicates.extend(
+                originals
+                    .iter()
+                    .filter_map(|field| field.retain_where(&view_lifetime))
+                    .filter(|predicate| predicates.insert(predicate.clone())),
+            );
+            let baseline = format_ident!("baseline", span = Span::mixed_site());
+            let remains = format_ident!("remains", span = Span::mixed_site());
+            let fields = originals
+                .iter()
+                .map(|field| field.retain(&baseline, &remains));
+            output.push(q! {
+                #[automatically_derived]
+                impl #impl_generics #krate::Retain<#Subject, #Object> for #Object #where_clause {
+                    #[inline]
+                    fn retain_view<#view_lifetime>(&mut #this, #baseline: #view_ident #type_generics) -> bool
+                    where #Subject: #view_lifetime, #Object: #view_lifetime {
+                        let mut #remains = false;
+                        #(#fields)*
+                        #remains
+                    }
+                }
+            });
+        }
+
+        {
+            // Only complete baselines need nested subject views. Defer these bounds so
+            // concrete nested objects remain usable without subject implementations.
+            let mut where_clause = where_clause.clone();
+            let mut predicates = where_clause
+                .predicates
+                .iter()
+                .cloned()
+                .collect::<HashSet<_>>();
             where_clause.predicates.extend(
                 optionizeds
                     .iter()
-                    .copied()
-                    .flat_map($map)
-                    .filter(|p| where_predicates.insert(p.clone())),
-            )
-        };
+                    .filter_map(|field| -> Option<WherePredicate> {
+                        let descriptor = field.nested_descriptor()?;
+                        let ty = &field.ty;
+                        Some(pq! { for<#view_lifetime> #ty: #krate::Schema<#ty, #descriptor> })
+                    })
+                    .filter(|predicate| predicates.insert(predicate.clone())),
+            );
+            let fields = originals.iter().map(|field| {
+                let member = field.view_member();
+                let value = field.view(true, &q! { #this });
+                q! { #member: #value, }
+            });
+            output.push(q! {
+                #[automatically_derived]
+                impl #impl_generics #krate::Schema<#Subject, #Object> for #Subject #where_clause {
+                    type View<#view_lifetime> = #view_ident #type_generics
+                    where #Subject: #view_lifetime, #Object: #view_lifetime;
+                    #[inline]
+                    fn view<#self_lifetime>(&#self_lifetime #this) -> <#Object as #krate::Schema<#Subject>>::View<#self_lifetime>
+                    where #Subject: #self_lifetime, #Object: #self_lifetime {
+                        #view_ident { #(#fields)* __marker: ::core::marker::PhantomData }
+                    }
+                }
+            });
+        }
     }
-
-    where_clause_extend!(FieldIr::partial_optionized_where);
-
-    #[allow(non_snake_case)]
-    let Descriptor = &Object;
-    let mut type_names = HashSet::new();
-    let field_types = originals.iter().map(|field| {
-        let ty = &field.ty;
-        let nest = match &field.strategy {
-            FieldStrategy::Optionize { nest, .. } => nest.as_ref(),
-            FieldStrategy::Skip { .. } => None,
-        };
-        q! { #ty #nest }
-    });
-    collect_idents(
-        q! { #Subject #Object #impl_generics #where_clause #(#field_types)* },
-        &mut type_names,
-    );
-    let view_ident = fresh_ident("__OptionizeView", &type_names);
-    let mut view_generics = object.generics.clone();
-    view_generics.params.insert(0, parse_quote! { #borrow });
-    view_generics.where_clause = Some(where_clause.clone());
-    view_generics
-        .make_where_clause()
-        .predicates
-        .push(pq! { #Subject: #borrow });
-    view_generics
-        .make_where_clause()
-        .predicates
-        .push(pq! { #Descriptor: #borrow });
-    let (view_impl_generics, view_type_generics, view_where_clause) =
-        view_generics.split_for_impl();
-    let view_fields = originals.iter().map(|field| {
-        let visibility = &field.visibility;
-        let member = field.view_member();
-        let ty = field.view_type(&borrow);
-        q! { #visibility #member: #ty, }
-    });
-    let empty_fields = originals.iter().map(|field| {
-        let member = field.view_member();
-        q! { #member: ::core::option::Option::None, }
-    });
-    let full_fields = originals.iter().map(|field| {
-        let member = field.view_member();
-        let value = field.view(true, &q! { #this });
-        q! { #member: #value, }
-    });
-    let partial_fields = originals.iter().map(|field| {
-        let member = field.view_member();
-        let value = field.view(false, &q! { #this });
-        q! { #member: #value, }
-    });
-    let view = q! { #view_ident { #(#partial_fields)* __marker: ::core::marker::PhantomData } };
-    output.push(q! {
-        // A nominal view keeps private field types out of public associated types.
-        // The anonymous const gives each mapping its own scope without user names.
-        #[doc(hidden)]
-        #[allow(private_bounds)]
-        pub struct #view_ident #view_impl_generics #view_where_clause {
-            #(#view_fields)*
-            #[allow(clippy::type_complexity)]
-            __marker: ::core::marker::PhantomData<fn() -> &#borrow (#Subject, #Object)>,
-        }
-        impl #view_impl_generics ::core::default::Default for #view_ident #view_type_generics #view_where_clause {
-            fn default() -> Self {
-                Self { #(#empty_fields)* __marker: ::core::marker::PhantomData }
-            }
-        }
-        #[automatically_derived]
-        impl #impl_generics #krate::Schema<#Subject> for #Object #where_clause {
-            type View<#borrow> = #view_ident #view_type_generics
-            where #Subject: #borrow, Self: #borrow;
-            #[inline]
-            fn view<#borrow>(&#borrow #this) -> <Self as #krate::Schema<#Subject>>::View<#borrow>
-            where #Subject: #borrow, Self: #borrow { #view }
-        }
-    });
-    let mut retain_where = where_clause.clone();
-    let mut retain_predicates = HashSet::new();
-    retain_where.predicates.extend(
-        originals
-            .iter()
-            .filter_map(|field| field.retain_where(&borrow))
-            .filter(|predicate| retain_predicates.insert(predicate.clone())),
-    );
-    let baseline = format_ident!("baseline", span = Span::mixed_site());
-    let remains = format_ident!("remains", span = Span::mixed_site());
-    let retain = originals
-        .iter()
-        .map(|field| field.retain(&baseline, &remains));
-    output.push(q! {
-        #[automatically_derived]
-        impl #impl_generics #krate::Retain<#Subject, #Descriptor> for #Object #retain_where {
-            #[inline]
-            fn retain_view<#borrow>(&mut #this, #baseline: #view_ident #view_type_generics) -> bool
-            where #Subject: #borrow, #Descriptor: #borrow {
-                let mut #remains = false;
-                #(#retain)*
-                #remains
-            }
-        }
-    });
-    // Only complete baselines need nested subject views. Defer these bounds so
-    // concrete nested objects remain usable without subject implementations.
-    let mut subject_where = where_clause.clone();
-    let mut subject_predicates = where_predicates.clone();
-    subject_where.predicates.extend(
-        optionizeds
-            .iter()
-            .filter_map(|field| -> Option<WherePredicate> {
-                let descriptor = field.nested_descriptor()?;
-                let ty = &field.ty;
-                Some(pq! { for<#borrow> #ty: #krate::Schema<#ty, #descriptor> })
-            })
-            .filter(|predicate| subject_predicates.insert(predicate.clone())),
-    );
-    output.push(q! {
-        #[automatically_derived]
-        impl #impl_generics #krate::Schema<#Subject, #Object> for #Subject #subject_where {
-            type View<#borrow> = #view_ident #view_type_generics
-            where #Subject: #borrow, #Object: #borrow;
-            #[inline]
-            fn view<#borrow>(&#borrow #this) -> <#Object as #krate::Schema<#Subject>>::View<#borrow>
-            where #Subject: #borrow, #Object: #borrow {
-                #view_ident { #(#full_fields)* __marker: ::core::marker::PhantomData }
-            }
-        }
-    });
 
     output.push(q! {
         #[automatically_derived]
@@ -1511,7 +1540,18 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
     };
 
     if let Some(span) = span {
-        where_clause_extend!(FieldIr::optionized_where);
+        let mut where_clause = where_clause;
+        let mut predicates = where_clause
+            .predicates
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>();
+        where_clause.predicates.extend(
+            optionizeds
+                .iter()
+                .flat_map(|field| field.optionized_where())
+                .filter(|predicate| predicates.insert(predicate.clone())),
+        );
 
         let failed = &format_ident!("failed", span = Span::mixed_site());
         let errors = &format_ident!("errors", span = Span::mixed_site());

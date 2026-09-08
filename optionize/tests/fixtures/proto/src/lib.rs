@@ -12,8 +12,8 @@ pub struct Shared {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct Generic<T> {
-    pub value: Option<T>,
+pub struct Generic<Value> {
+    pub value: Option<Value>,
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -30,13 +30,13 @@ pub struct Subject {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct GenericSubject<T> {
-    pub value: T,
+pub struct GenericSubject<Value> {
+    pub value: Value,
 }
 
 #[derive(Debug, PartialEq)]
-pub struct BorrowedSubject<'a, T, const N: usize> {
-    pub values: &'a [T; N],
+pub struct BorrowedSubject<'v, Value, const N: usize> {
+    pub values: &'v [Value; N],
 }
 
 #[derive(Debug, PartialEq)]

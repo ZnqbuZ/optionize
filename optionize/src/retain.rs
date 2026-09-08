@@ -2,24 +2,24 @@ use crate::PartialOptionized;
 
 /// Reads borrowed fields from complete subjects and partial representations.
 ///
-/// `D` selects the shared view and defaults to `Self`. The `optionized` macro
+/// `Descriptor` selects the shared view and defaults to `Self`. The `optionized` macro
 /// implements `Schema<Subject>` for the object and `Schema<Subject, Object>` for
 /// the subject, including subjects from another crate. Other representations
 /// can implement the same schema to act as baselines without patch operations.
-pub trait Schema<S, D = Self>: Sized {
+pub trait Schema<Subject, Descriptor = Self>: Sized {
     /// The borrowed field representation. Generated subject schemas reuse the
     /// object's view type, including recursively constructed nested views.
-    type View<'a>
+    type View<'v>
     where
-        S: 'a,
-        D: 'a,
-        Self: 'a;
+        Subject: 'v,
+        Descriptor: 'v,
+        Self: 'v;
 
     /// Borrows the known fields using the descriptor's shared view.
-    fn view<'a>(&'a self) -> <D as Schema<S>>::View<'a>
+    fn view<'s>(&'s self) -> <Descriptor as Schema<Subject>>::View<'s>
     where
-        S: 'a,
-        D: Schema<S> + 'a;
+        Subject: 's,
+        Descriptor: Schema<Subject> + 's;
 }
 
 /// Extracts the inner value of an optional field, including through type aliases.
@@ -28,8 +28,8 @@ pub trait OptionField {
     type Value;
 }
 
-impl<T> OptionField for Option<T> {
-    type Value = T;
+impl<Value> OptionField for Option<Value> {
+    type Value = Value;
 }
 
 /// Compares one borrowed field without overlapping another field's bounds.
@@ -41,7 +41,7 @@ pub trait Equal<const INDEX: usize> {
     fn equal(self, other: Self) -> bool;
 }
 
-impl<T: PartialEq + ?Sized, const INDEX: usize> Equal<INDEX> for &T {
+impl<Value: PartialEq + ?Sized, const INDEX: usize> Equal<INDEX> for &Value {
     fn equal(self, other: Self) -> bool {
         PartialEq::eq(self, other)
     }
@@ -62,19 +62,21 @@ impl<T: PartialEq + ?Sized, const INDEX: usize> Equal<INDEX> for &T {
 /// Generated objects gain this trait automatically when their compared field
 /// types support equality. Other operations remain available without those
 /// comparison bounds.
-pub trait Retain<S, D: Schema<S> = Self>: PartialOptionized<S> + Schema<S, D> {
+pub trait Retain<Subject, Descriptor: Schema<Subject> = Self>:
+    PartialOptionized<Subject> + Schema<Subject, Descriptor>
+{
     /// Retains changes relative to the shared borrowed field representation.
     #[doc(hidden)]
-    fn retain_view<'a>(&mut self, baseline: D::View<'a>) -> bool
+    fn retain_view<'v>(&mut self, baseline: Descriptor::View<'v>) -> bool
     where
-        S: 'a,
-        D: 'a;
+        Subject: 'v,
+        Descriptor: 'v;
 
     /// Removes redundant updates and reports whether any changes remain.
-    fn retain<'a, B: Schema<S, D>>(&mut self, baseline: &'a B) -> bool
+    fn retain<'b, Baseline: Schema<Subject, Descriptor>>(&mut self, baseline: &'b Baseline) -> bool
     where
-        S: 'a,
-        D: 'a,
+        Subject: 'b,
+        Descriptor: 'b,
     {
         self.retain_view(baseline.view())
     }
@@ -88,26 +90,26 @@ mod tests {
 
     use super::*;
 
-    struct Subject<T> {
-        value: T,
+    struct Config<Value> {
+        value: Value,
     }
 
-    struct Patch<T> {
-        value: Option<T>,
+    struct ConfigPatch<Value> {
+        value: Option<Value>,
     }
 
-    struct View<'a, T> {
-        value: Option<&'a T>,
+    struct View<'v, Value> {
+        value: Option<&'v Value>,
     }
 
-    impl<T> Schema<Subject<T>> for Patch<T> {
-        type View<'a>
-            = View<'a, T>
+    impl<Value> Schema<Config<Value>> for ConfigPatch<Value> {
+        type View<'v>
+            = View<'v, Value>
         where
-            Self: 'a;
-        fn view<'a>(&'a self) -> <Self as Schema<Subject<T>>>::View<'a>
+            Self: 'v;
+        fn view<'s>(&'s self) -> <Self as Schema<Config<Value>>>::View<'s>
         where
-            Subject<T>: 'a,
+            Config<Value>: 's,
         {
             View {
                 value: self.value.as_ref(),
@@ -115,14 +117,14 @@ mod tests {
         }
     }
 
-    impl<T> Schema<Subject<T>, Patch<T>> for Subject<T> {
-        type View<'a>
-            = View<'a, T>
+    impl<Value> Schema<Config<Value>, ConfigPatch<Value>> for Config<Value> {
+        type View<'v>
+            = View<'v, Value>
         where
-            Self: 'a;
-        fn view<'a>(&'a self) -> <Patch<T> as Schema<Subject<T>>>::View<'a>
+            Self: 'v;
+        fn view<'s>(&'s self) -> <ConfigPatch<Value> as Schema<Config<Value>>>::View<'s>
         where
-            Subject<T>: 'a,
+            Config<Value>: 's,
         {
             View {
                 value: Some(&self.value),
@@ -130,14 +132,14 @@ mod tests {
         }
     }
 
-    impl<T> PartialOptionized<Subject<T>> for Patch<T> {
-        fn optionize(subject: Subject<T>) -> Self {
+    impl<Value> PartialOptionized<Config<Value>> for ConfigPatch<Value> {
+        fn optionize(subject: Config<Value>) -> Self {
             Self {
                 value: Some(subject.value),
             }
         }
 
-        fn patch(self, subject: &mut Subject<T>) {
+        fn patch(self, subject: &mut Config<Value>) {
             if let Some(value) = self.value {
                 subject.value = value;
             }
@@ -150,13 +152,13 @@ mod tests {
         }
     }
 
-    impl<T> Retain<Subject<T>> for Patch<T>
+    impl<Value> Retain<Config<Value>> for ConfigPatch<Value>
     where
-        for<'a> &'a T: Equal<0>,
+        for<'v> &'v Value: Equal<0>,
     {
-        fn retain_view<'a>(&mut self, baseline: View<'a, T>) -> bool
+        fn retain_view<'v>(&mut self, baseline: View<'v, Value>) -> bool
         where
-            Subject<T>: 'a,
+            Config<Value>: 'v,
         {
             if let (Some(value), Some(baseline)) = (self.value.as_ref(), baseline.value)
                 && Equal::<0>::equal(value, baseline)
@@ -167,11 +169,11 @@ mod tests {
         }
     }
 
-    fn trim<P, B, S, D>(patch: &mut P, baseline: &B) -> bool
+    fn trim<Patch, Baseline, Subject, Descriptor>(patch: &mut Patch, baseline: &Baseline) -> bool
     where
-        P: Retain<S, D>,
-        B: Schema<S, D>,
-        D: Schema<S>,
+        Patch: Retain<Subject, Descriptor>,
+        Baseline: Schema<Subject, Descriptor>,
+        Descriptor: Schema<Subject>,
     {
         patch.retain(baseline)
     }
@@ -179,10 +181,10 @@ mod tests {
     #[test]
     fn generic_retain_accepts_borrowed_values_without_lifetime_bounds() {
         let owned = String::from("borrowed");
-        let baseline = Subject {
+        let baseline = Config {
             value: owned.as_str(),
         };
-        let mut patch = Patch {
+        let mut patch = ConfigPatch {
             value: Some(owned.as_str()),
         };
         assert!(!trim(&mut patch, &baseline));
@@ -192,19 +194,22 @@ mod tests {
 
     #[test]
     fn retain_bound_includes_the_objects_own_schema() {
-        fn trim_same<S, P: Retain<S>>(patch: &mut P, baseline: &P) -> bool {
+        fn trim_same<Subject, Patch: Retain<Subject>>(patch: &mut Patch, baseline: &Patch) -> bool {
             patch.retain(baseline)
         }
 
-        fn trim_shared<S, D: Schema<S>, P: Retain<S, D>>(patch: &mut P, baseline: &P) -> bool {
+        fn trim_shared<Subject, Descriptor: Schema<Subject>, Patch: Retain<Subject, Descriptor>>(
+            patch: &mut Patch,
+            baseline: &Patch,
+        ) -> bool {
             patch.retain(baseline)
         }
 
         let owned = String::from("borrowed");
-        let baseline = Patch {
+        let baseline = ConfigPatch {
             value: Some(owned.as_str()),
         };
-        let mut patch = Patch {
+        let mut patch = ConfigPatch {
             value: Some(owned.as_str()),
         };
         assert!(!trim_same(&mut patch, &baseline));
@@ -220,21 +225,21 @@ mod tests {
         #[derive(PartialEq)]
         struct NoClone(String);
 
-        let baseline = Subject {
+        let baseline = Config {
             value: NoClone(String::from("same")),
         };
-        let mut patch = Patch {
+        let mut patch = ConfigPatch {
             value: Some(NoClone(String::from("same"))),
         };
-        assert!(!Retain::<Subject<NoClone>>::retain_view(
+        assert!(!Retain::<Config<NoClone>>::retain_view(
             &mut patch,
             baseline.view(),
         ));
         assert!(patch.value.is_none());
 
-        let baseline = Patch::<NoClone> { value: None };
+        let baseline = ConfigPatch::<NoClone> { value: None };
         patch.value = Some(NoClone(String::from("changed")));
-        assert!(Retain::<Subject<NoClone>>::retain_view(
+        assert!(Retain::<Config<NoClone>>::retain_view(
             &mut patch,
             baseline.view(),
         ));
@@ -243,12 +248,12 @@ mod tests {
 
     #[test]
     fn clear_values_are_distinct_from_unknown_baseline_fields() {
-        let mut patch = Patch { value: Some(None) };
-        let unknown = Patch::<Option<u32>> { value: None };
+        let mut patch = ConfigPatch { value: Some(None) };
+        let unknown = ConfigPatch::<Option<u32>> { value: None };
         assert!(trim(&mut patch, &unknown));
         assert_eq!(patch.value, Some(None));
 
-        let known_clear = Patch::<Option<u32>> { value: Some(None) };
+        let known_clear = ConfigPatch::<Option<u32>> { value: Some(None) };
         assert!(!trim(&mut patch, &known_clear));
         assert_eq!(patch.value, None);
     }
@@ -256,18 +261,18 @@ mod tests {
     #[test]
     fn equality_is_not_required_for_other_partial_operations() {
         struct NoEq;
-        let mut subject = Subject { value: NoEq };
-        let mut patch = Patch { value: None };
-        patch.merge(Patch { value: Some(NoEq) });
+        let mut subject = Config { value: NoEq };
+        let mut patch = ConfigPatch { value: None };
+        patch.merge(ConfigPatch { value: Some(NoEq) });
         patch.patch(&mut subject);
     }
 
     #[test]
     fn indexed_equality_distinguishes_fields_with_different_lifetimes() {
-        fn both_equal<'s, 't>(left: &(&'s str, &'t str), right: &(&'s str, &'t str)) -> bool
+        fn both_equal<'s, 's_>(left: &(&'s str, &'s_ str), right: &(&'s str, &'s_ str)) -> bool
         where
-            for<'a> &'a &'s str: Equal<0>,
-            for<'a> &'a &'t str: Equal<1>,
+            for<'s__> &'s__ &'s str: Equal<0>,
+            for<'s__> &'s__ &'s_ str: Equal<1>,
         {
             Equal::<0>::equal(&left.0, &right.0) & Equal::<1>::equal(&left.1, &right.1)
         }
@@ -282,28 +287,28 @@ mod tests {
     fn nested_bounds_handle_normalized_field_aliases() {
         // Exercise the same higher-ranked bounds as the generated impl.
         #[allow(unused_lifetimes)]
-        fn trim_two<T>(
-            first: &mut Patch<T>,
-            second: &mut <Option<Patch<T>> as OptionField>::Value,
-            baseline: &Subject<T>,
+        fn trim_two<Value>(
+            first: &mut ConfigPatch<Value>,
+            second: &mut <Option<ConfigPatch<Value>> as OptionField>::Value,
+            baseline: &Config<Value>,
         ) -> bool
         where
-            for<'a> Patch<T>: Retain<Subject<T>>,
-            for<'a> <Option<Patch<T>> as OptionField>::Value: Retain<Subject<T>>,
+            for<'c> ConfigPatch<Value>: Retain<Config<Value>>,
+            for<'c> <Option<ConfigPatch<Value>> as OptionField>::Value: Retain<Config<Value>>,
         {
-            let first = Retain::<Subject<T>>::retain_view(first, baseline.view());
-            let second = Retain::<Subject<T>>::retain_view(second, baseline.view());
+            let first = Retain::<Config<Value>>::retain_view(first, baseline.view());
+            let second = Retain::<Config<Value>>::retain_view(second, baseline.view());
             first | second
         }
 
         let owned = String::from("borrowed");
-        let baseline = Subject {
+        let baseline = Config {
             value: owned.as_str(),
         };
-        let mut first = Patch {
+        let mut first = ConfigPatch {
             value: Some(owned.as_str()),
         };
-        let mut second = Patch {
+        let mut second = ConfigPatch {
             value: Some(owned.as_str()),
         };
         assert!(!trim_two(&mut first, &mut second, &baseline));
