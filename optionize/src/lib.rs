@@ -358,8 +358,8 @@ use derive_more::{AsMut, AsRef, Deref, DerefMut, Error, From, Into, IntoIterator
 /// - `attrs`: Similarly to the struct-level `attrs`, this overrides the attributes applied to the generated field.
 /// - `flatten`: Instructs the macro **not** to wrap the field's type in `Option<T>`. The field will have the exact same type in the generated struct.
 /// - `skip`: Removes the field entirely from the generated struct.
-///   - **Note**: You can only use `skip` if the struct is marked as `upgradable` (since there must be a way to supply the missing value when upgrading).
-///   - **Note**: If you skip a field that uses a generic type, you **must** use `marked` at the struct level to consume that generic type.
+///   - Requires `partial` or `partial(upgradable)` on the struct.
+///   - If skipping fields leaves a generic parameter unused in a generated object, use `marked` to consume it.
 ///   - `upgrade = expr`: Provides the expression used to instantiate this field when upgrading. If not provided, it defaults to `<FieldType as core::default::Default>::default()`.
 /// - `nest = "Type"`: Delegates the optionization of this field to another type that implements `PartialOptionized` (and `Optionized` if `upgradable`).
 ///   Usually, this is used for nested struct fields that have themselves been `#[optionized]`.
@@ -415,13 +415,73 @@ pub trait Optionizable<Object: PartialOptionized<Self>>: Sized {
 
 /// Implemented on an optionized struct (if marked `upgradable`), allowing validation
 /// of its completeness and a direct upgrade to the original subject struct.
+///
+/// `Subject` is a trait parameter so a crate can implement this trait for an
+/// external object (e.g. generated protobuf) when the subject is local. There is
+/// one implementation per `(Self, Subject)` pair, rather than one subject per object.
+/// When the complete subject type is uniquely determined, method calls infer it.
+/// Generic code can name the subject in its bound:
+///
+/// ```rust
+/// use optionize::Optionized;
+/// fn upgrade<P, S>(partial: P) -> Result<S, P::Errors>
+/// where
+///     P: Optionized<S>,
+/// {
+///     partial.upgrade()
+/// }
+/// ```
+///
+/// If an object has several subjects, select one with the result type for
+/// `upgrade()`, or use `Optionized::<Subject>::validate(&object)` for validation.
+/// A call without enough type information is ambiguous:
+///
+/// ```compile_fail,E0283
+/// use optionize::{optionized, Optionized};
+/// struct Patch { value: Option<u32> }
+/// #[optionized]
+/// #[optionize(object = "Patch")]
+/// struct First { value: u32 }
+/// #[optionized]
+/// #[optionize(object = "Patch")]
+/// struct Second { value: u32 }
+/// Patch { value: Some(1) }.validate().unwrap();
+/// ```
+///
+/// ```compile_fail,E0283
+/// use optionize::{optionized, Optionized};
+/// struct Patch { value: Option<u32> }
+/// #[optionized]
+/// #[optionize(object = "Patch")]
+/// struct First { value: u32 }
+/// #[optionized]
+/// #[optionize(object = "Patch")]
+/// struct Second { value: u32 }
+/// let _ = Patch { value: Some(1) }.upgrade().unwrap();
+/// ```
+///
+/// Even one generic implementation needs type information if a subject parameter
+/// cannot be determined from the object. Here `T` exists only on `Full<T>`:
+///
+/// ```compile_fail,E0282
+/// use core::marker::PhantomData;
+/// use optionize::{optionized, Optionized};
+/// struct Patch { value: Option<u32> }
+/// #[optionized]
+/// #[optionize(object = "Patch", partial(upgradable))]
+/// struct Full<T> {
+///     value: u32,
+///     #[optionize(skip)]
+///     marker: PhantomData<T>,
+/// }
+/// let _ = Patch { value: Some(1) }.upgrade().unwrap();
+/// ```
 #[diagnostic::on_unimplemented(
-    message = "The type `{Self}` cannot be upgraded",
+    message = "The type `{Self}` cannot be upgraded to `{Subject}`",
     label = "Nested type lacks upgrade logic",
     note = "Ensure the subject of `{Self}` is not annotated partial, or is annotated with `#[optionize(partial(upgradable))]`"
 )]
-pub trait Optionized: PartialOptionized<Self::Subject> {
-    type Subject;
+pub trait Optionized<Subject>: PartialOptionized<Subject> {
     type Errors: IntoIterator<Item: core::error::Error + Send + Sync + 'static>;
 
     /// Validates that all fields inside the optionized struct that are required for upgrading
@@ -432,13 +492,13 @@ pub trait Optionized: PartialOptionized<Self::Subject> {
     /// Upgrades the optionized struct into the full subject struct without validating.
     ///
     /// # Safety
-    /// Calling this method when `validate()` would return an error results in undefined behavior
+    /// Calling this method when `Optionized::<Subject>::validate()` would return an error results in undefined behavior
     /// because missing `Option::None` fields will be unwrapped without checks.
-    unsafe fn upgrade_unchecked(self) -> Self::Subject;
+    unsafe fn upgrade_unchecked(self) -> Subject;
 
     /// Validates and upgrades the optionized struct into the full subject struct.
-    /// Returns `Ok(Self::Subject)` if all required fields are present, otherwise returns `Err(Self::Errors)`.
-    fn upgrade(self) -> Result<Self::Subject, Self::Errors> {
+    /// Returns `Ok(Subject)` if all required fields are present, otherwise returns `Err(Self::Errors)`.
+    fn upgrade(self) -> Result<Subject, Self::Errors> {
         self.validate()?;
         Ok(unsafe { self.upgrade_unchecked() })
     }

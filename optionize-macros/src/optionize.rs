@@ -525,10 +525,10 @@ impl FieldIr {
         {
             vec![
                 pq! {
-                    #nest: #krate::Optionized<Subject = #ty>
+                    #nest: #krate::Optionized<#ty>
                 },
                 pq! {
-                    <#nest as #krate::Optionized>::Errors: 'static
+                    <#nest as #krate::Optionized<#ty>>::Errors: 'static
                 },
             ]
         } else {
@@ -679,6 +679,7 @@ impl<'l> ToTokens for Validate<'l> {
         expand! {
             self.field => {
                 krate,
+                ty,
                 original,
                 optionized,
                 strategy,
@@ -738,7 +739,7 @@ impl<'l> ToTokens for Validate<'l> {
 
         let validate = nest.as_ref().map(|nest| {
             q! {
-                if let ::core::result::Result::Err(e) = <#nest as #krate::Optionized>::validate(#local) {
+                if let ::core::result::Result::Err(e) = <#nest as #krate::Optionized<#ty>>::validate(#local) {
                     #failed = true;
                     #errors.extend(::core::iter::IntoIterator::into_iter(e).map(#nest_map_err));
                 }
@@ -769,6 +770,7 @@ impl<'l> ToTokens for Upgrade<'l> {
         expand! {
             self.0 => {
                 krate,
+                ty,
                 optionized,
                 strategy,
                 local,
@@ -787,7 +789,7 @@ impl<'l> ToTokens for Upgrade<'l> {
         }
         if let Some(nest) = nest {
             tokens.extend(q! {
-                let #local = unsafe { <#nest as #krate::Optionized>::upgrade_unchecked(#local) };
+                let #local = unsafe { <#nest as #krate::Optionized<#ty>>::upgrade_unchecked(#local) };
             })
         }
     }
@@ -1015,14 +1017,14 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         };
     }
 
+    where_clause_extend!(FieldIr::partial_optionized_where);
+
     output.push(q! {
         #[automatically_derived]
         impl #impl_generics #krate::Optionizable<#Object> for #subject #type_generics #where_clause {}
     });
 
     {
-        where_clause_extend!(FieldIr::partial_optionized_where);
-
         let subject = &format_ident!("subject", span = Span::mixed_site());
 
         let optionize = {
@@ -1076,8 +1078,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
 
         output.push(qs! { span =>
             #[automatically_derived]
-            impl #impl_generics #krate::Optionized for #Object #where_clause {
-                type Subject = #Subject;
+            impl #impl_generics #krate::Optionized<#Subject> for #Object #where_clause {
                 type Errors = #krate::ErrorCollection;
                 #[inline]
                 fn validate(&self) -> ::core::result::Result<(), Self::Errors> {
@@ -1091,7 +1092,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                     }
                 }
                 #[inline]
-                unsafe fn upgrade_unchecked(self) -> Self::Subject {
+                unsafe fn upgrade_unchecked(self) -> #Subject {
                     #(#skips)*
                     #(#upgrades)*
                     #subject

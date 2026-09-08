@@ -15,7 +15,7 @@ Add `optionize` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-optionize = "0.1"
+optionize = "0.5"
 ```
 
 ## Basic Example
@@ -61,7 +61,8 @@ You can customize the generated struct and its fields using the `#[optionize(...
 ### Struct Attributes
 
 - `#[optionize(name = "CustomPrefix{}CustomSuffix")]`: Set the name of the generated optionized struct. `{}` will be replaced with the original struct name.
-- `#[optionize(attrs(derive(Debug, Default)))]`: Add attributes (like `derive`) to the generated struct.
+- `#[optionize(object = "pb::Config<T>")]`: Use an existing struct through a complete type path. Write generic arguments explicitly. The subject must be local when the object is from another crate.
+- `#[optionize(attrs(derive(Debug, Default)))]`: Replace the attributes inherited by the generated struct.
 - `#[optionize(partial(upgradable))]`: By default, the generated struct implements both `PartialOptionized` and `Optionized`. If you only want partial updates and don't need upgrading, use `#[optionize(partial)]`. If you want both while using `partial` specific features (like `skip`), use `#[optionize(partial(upgradable))]`.
 - `#[optionize(partial(marked))]`: Adds a `PhantomData` marker to the generated struct, typing it strictly to the original struct.
 
@@ -81,7 +82,7 @@ struct Config {
 ### Field Attributes
 
 - `#[optionize(name = "prefix_{}_suffix")]`: Rename a field in the optionized struct. `{}` will be replaced with the original field name.
-- `#[optionize(flatten)]`: Do not wrap the field in `Option<T>`. Useful if the field is already an `Option` or you want to handle its absence explicitly.
+- `#[optionize(flatten)]`: Do not wrap the field in `Option<T>`. Patching always assigns the field, including `None`; nested fields delegate to their patch implementation.
 - `#[optionize(nest = "NestedTypeOptional")]`: Recursively apply optionize logic to a nested optionized struct. Allows deep patching and deep upgrading.
 - `#[optionize(skip)]` / `#[optionize(skip(upgrade = "expr"))]`: Completely omit the field from the generated optionized struct. Only allowed when `partial` is specified on the struct. When upgrading, it uses `Default::default()` or the provided `upgrade` expression.
 
@@ -107,7 +108,7 @@ struct Outer {
 
 ### Upgrading and Error Handling
 
-Optionized structs implement the `Optionized` trait, allowing you to `upgrade()` them back into the full struct. If any required fields are missing (`None`), it returns a detailed `UpgradeErrorCollection`.
+Optionized structs implement `Optionized<Subject>`, allowing you to `upgrade()` them back into the full struct. If any required fields are missing (`None`), the generated implementation returns an `ErrorCollection`.
 
 ```rust
 use optionize::{optionized, Optionized};
@@ -128,9 +129,8 @@ fn main() {
     
     match result {
         Ok(user) => println!("Upgraded!"),
-        Err((errors, original_partial)) => {
-            // `errors` implements Display for beautifully formatted error messages.
-            // Notice that ownership of `original_partial` is given back to you on failure!
+        Err(errors) => {
+            // Call validate() before upgrade() if you need to retain an invalid partial.
             println!("{}", errors);
         }
     }
@@ -148,7 +148,23 @@ Upgrade failed with 1 error(s):
 
 - **`PartialOptionized<Subject>`**: Provides `optionize()`, `patch()`, and `merge()`.
 - **`Optionizable<Object>`**: Automatically implemented for the original struct. Provides `load()` and `downgrade()`.
-- **`Optionized<Subject>`**: Provides `upgrade()`. Returns `Result<Subject, (UpgradeErrors, Self)>` where errors contain the specific missing fields or nested failures, and the original partial struct is returned in the `Err` variant so you don't lose the data.
+- **`Optionized<Subject>`**: Provides `validate()`, `upgrade()`, and `unsafe upgrade_unchecked()`. `upgrade()` returns `Result<Subject, Self::Errors>` and consumes the partial on both success and failure.
+
+### Migrating to 0.5
+
+Replace `P: Optionized<Subject = S>` with `P: Optionized<S>`, and replace
+`<P as Optionized>::Errors` with `<P as Optionized<S>>::Errors`. Manual implementations
+remove `type Subject` and return `S` from `upgrade_unchecked`.
+
+The shared trait now supports an external protobuf object with a local subject.
+Uniqueness applies to `(object, subject)` pairs. Calls infer the target when its
+complete type is uniquely determined. For multiple targets, annotate the upgraded
+result or use `Optionized::<S>::validate(&partial)`. A generic parameter that only
+appears on the subject still needs type information, even with one implementation.
+
+An existing generic `object = "Patch"` should now spell its arguments explicitly,
+for example `object = "pb::Patch<T>"`. Generated object names still inherit the
+subject's generic parameters automatically.
 
 ## Crates in this workspace
 
