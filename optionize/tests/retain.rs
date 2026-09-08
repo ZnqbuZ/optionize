@@ -598,13 +598,12 @@ fn borrowed_fields_do_not_require_static_lifetimes() {
 }
 
 #[test]
-fn object_schemas_forward_borrowed_subject_views() {
+fn subject_views_use_the_same_type_as_object_schemas() {
     use optionize::Schema;
 
     let text = String::from("borrowed through the object schema");
     let baseline = Borrowed { value: &text };
-    let view: <Borrowed<'_> as Schema<Borrowed<'_>>>::View<'_> =
-        <BorrowedOptional<'_> as Schema<Borrowed<'_>>>::full_view(&baseline);
+    let view: <BorrowedOptional<'_> as Schema<Borrowed<'_>>>::View<'_> = baseline.view();
 
     assert_eq!(view.v_value.copied(), Some(text.as_str()));
     let mut patch = BorrowedOptional { value: Some(&text) };
@@ -644,6 +643,95 @@ fn complete_subjects_can_be_used_as_nested_objects() {
         subject.view().v_child.unwrap().v_value.copied(),
         Some(second.as_str())
     );
+}
+
+#[test]
+fn nested_objects_do_not_require_subject_identity_implementations() {
+    struct Child {
+        value: u32,
+    }
+
+    struct ChildPatch {
+        value: Option<u32>,
+    }
+
+    impl optionize::Schema<Child> for ChildPatch {
+        type Descriptor = Self;
+        type View<'a> = Option<&'a u32>;
+    }
+
+    impl PartialOptionized<Child, ChildPatch> for ChildPatch {
+        fn optionize(subject: Child) -> Self {
+            Self {
+                value: Some(subject.value),
+            }
+        }
+
+        fn patch(self, subject: &mut Child) {
+            if let Some(value) = self.value {
+                subject.value = value;
+            }
+        }
+
+        fn merge(&mut self, other: Self) {
+            if other.value.is_some() {
+                self.value = other.value;
+            }
+        }
+
+        fn view<'a>(&'a self) -> <Self as optionize::Schema<Child>>::View<'a>
+        where
+            Child: 'a,
+            Self: 'a,
+        {
+            self.value.as_ref()
+        }
+    }
+
+    impl Retain<Child, ChildPatch> for ChildPatch {
+        fn retain_view<'a>(
+            &mut self,
+            baseline: <Self as optionize::Schema<Child>>::View<'a>,
+        ) -> bool
+        where
+            Child: 'a,
+            Self: 'a,
+        {
+            if self.value.as_ref() == baseline {
+                self.value = None;
+            }
+            self.value.is_some()
+        }
+    }
+
+    // Child deliberately has no PartialOptionized implementation.
+    #[optionized]
+    #[optionize(partial)]
+    struct Parent {
+        #[optionize(nest = ChildPatch)]
+        child: Child,
+    }
+
+    let mut patch = ParentOptional {
+        child: Some(ChildPatch { value: Some(1) }),
+    };
+    assert_eq!(patch.view().v_child.unwrap().copied(), Some(1));
+    patch.merge(ParentOptional {
+        child: Some(ChildPatch { value: Some(2) }),
+    });
+
+    let mut subject = Parent {
+        child: Child { value: 0 },
+    };
+    patch.patch(&mut subject);
+    assert_eq!(subject.child.value, 2);
+    let mut patch = subject.downgrade();
+    assert_eq!(patch.view().v_child.unwrap().copied(), Some(2));
+    let baseline = ParentOptional {
+        child: Some(ChildPatch { value: Some(2) }),
+    };
+    assert!(!patch.retain(&baseline));
+    assert!(patch.child.is_none());
 }
 
 #[test]

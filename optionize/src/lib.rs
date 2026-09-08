@@ -513,8 +513,10 @@ pub mod __private {
 /// and merging two partial structs together.
 /// `Descriptor` defaults to the subject. With `#[optionize(subject = ...)]`, the
 /// local object supplies the descriptor instead. The macro generates the
-/// borrowing implementation; complete subjects also implement this trait as an
-/// identity mapping (patching and merging replace the complete value).
+/// implementations for both the object and the complete subject. The subject's
+/// identity mapping constructs a full view; patching and merging replace the
+/// complete value. Handwritten mappings implement this trait for the subject
+/// explicitly when they need complete baselines.
 pub trait PartialOptionized<Subject, Descriptor = Subject>: Sized {
     /// Consumes the subject and converts it into its optionized version.
     /// This acts as a downgrade, populating every field with `Some(value)`.
@@ -535,27 +537,6 @@ pub trait PartialOptionized<Subject, Descriptor = Subject>: Sized {
     where
         Subject: 'a,
         Descriptor: Schema<Subject> + 'a;
-}
-
-impl<Subject: Schema<Subject>> PartialOptionized<Subject> for Subject {
-    fn optionize(subject: Subject) -> Self {
-        subject
-    }
-
-    fn patch(self, subject: &mut Subject) {
-        *subject = self;
-    }
-
-    fn merge(&mut self, other: Self) {
-        *self = other;
-    }
-
-    fn view<'a>(&'a self) -> <Subject as Schema<Subject>>::View<'a>
-    where
-        Subject: 'a,
-    {
-        Self::full_view(self)
-    }
 }
 
 /// Provides extension methods on the original subject struct to easily work with its

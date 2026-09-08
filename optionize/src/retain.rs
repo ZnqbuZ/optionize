@@ -5,23 +5,19 @@ use crate::PartialOptionized;
 /// The `optionized` macro implements this for the object and its mapping
 /// descriptor. By default, the subject supplies the descriptor and the object's
 /// schema forwards to it. With `subject = ...`, the local object supplies the
-/// descriptor. Partial representations
-/// compared with one another must use the same descriptor.
+/// descriptor. Partial representations compared with one another must use the
+/// same descriptor. Both subjects and objects construct their views through
+/// [`PartialOptionized::view`].
 pub trait Schema<S> {
     /// Selects the descriptor used by `PartialOptionized` and `Retain` when this
     /// type is a nested object. Generated descriptors select `Self`; forwarding
-    /// schemas select that descriptor and reuse its view and `full_view`.
+    /// schemas select that descriptor and reuse its view type.
     type Descriptor: Schema<S>;
 
     /// The borrowed fields, including recursively constructed nested views.
     type View<'a>
     where
         S: 'a,
-        Self: 'a;
-
-    /// Borrows every field of a complete subject without cloning its values.
-    fn full_view<'a>(subject: &'a S) -> Self::View<'a>
-    where
         Self: 'a;
 }
 
@@ -109,13 +105,24 @@ mod tests {
             = View<'a, T>
         where
             Self: 'a;
+    }
 
-        fn full_view<'a>(subject: &'a Subject<T>) -> View<'a, T>
+    impl<T> PartialOptionized<Subject<T>> for Subject<T> {
+        fn optionize(subject: Self) -> Self {
+            subject
+        }
+        fn patch(self, subject: &mut Self) {
+            *subject = self;
+        }
+        fn merge(&mut self, other: Self) {
+            *self = other;
+        }
+        fn view<'a>(&'a self) -> <Subject<T> as Schema<Subject<T>>>::View<'a>
         where
             Self: 'a,
         {
             View {
-                value: Some(&subject.value),
+                value: Some(&self.value),
             }
         }
     }
@@ -202,7 +209,7 @@ mod tests {
         };
         assert!(!Retain::<Subject<NoClone>>::retain_view(
             &mut patch,
-            Subject::full_view(&baseline),
+            baseline.view(),
         ));
         assert!(patch.value.is_none());
 
@@ -265,8 +272,8 @@ mod tests {
             for<'a> Patch<T>: Retain<Subject<T>>,
             for<'a> <Option<Patch<T>> as OptionField>::Value: Retain<Subject<T>>,
         {
-            let first = Retain::<Subject<T>>::retain_view(first, Subject::full_view(baseline));
-            let second = Retain::<Subject<T>>::retain_view(second, Subject::full_view(baseline));
+            let first = Retain::<Subject<T>>::retain_view(first, baseline.view());
+            let second = Retain::<Subject<T>>::retain_view(second, baseline.view());
             first | second
         }
 

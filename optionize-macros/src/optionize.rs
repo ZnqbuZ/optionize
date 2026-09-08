@@ -431,7 +431,7 @@ impl FieldIr {
         expand! { self => { krate, ty, original, optionized, strategy } }
         if full {
             if let Some(descriptor) = self.nested_descriptor() {
-                return q! { ::core::option::Option::Some(<#descriptor as #krate::Schema<#ty>>::full_view(&#root.#original)) };
+                return q! { ::core::option::Option::Some(<#ty as #krate::PartialOptionized<#ty, #descriptor>>::view(&#root.#original)) };
             }
             return q! { ::core::option::Option::Some(&#root.#original) };
         }
@@ -1397,7 +1397,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
     });
     let full_fields = originals.iter().map(|field| {
         let member = field.view_member();
-        let value = field.view(true, &q! { subject });
+        let value = field.view(true, &q! { #this });
         q! { #member: #value, }
     });
     let partial_fields = originals.iter().map(|field| {
@@ -1425,11 +1425,6 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
             type Descriptor = Self;
             type View<#borrow> = #view_ident #view_type_generics
             where #Subject: #borrow, Self: #borrow;
-            #[inline]
-            fn full_view<#borrow>(subject: &#borrow #Subject) -> Self::View<#borrow>
-            where Self: #borrow {
-                #view_ident { #(#full_fields)* __marker: ::core::marker::PhantomData }
-            }
         }
     });
     if !reverse {
@@ -1439,11 +1434,6 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                 type Descriptor = #Descriptor;
                 type View<#borrow> = <#Descriptor as #krate::Schema<#Subject>>::View<#borrow>
                 where #Subject: #borrow, Self: #borrow;
-                #[inline]
-                fn full_view<#borrow>(subject: &#borrow #Subject) -> Self::View<#borrow>
-                where Self: #borrow {
-                    <#Descriptor as #krate::Schema<#Subject>>::full_view(subject)
-                }
             }
         });
     }
@@ -1472,24 +1462,36 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
             }
         }
     });
-    if reverse {
-        output.push(q! {
-            #[automatically_derived]
-            impl #impl_generics #krate::PartialOptionized<#Subject, #Descriptor> for #Subject #where_clause {
-                #[inline]
-                fn optionize(subject: #Subject) -> Self { subject }
-                #[inline]
-                fn patch(#this, subject: &mut #Subject) { *subject = #this; }
-                #[inline]
-                fn merge(&mut #this, other: Self) { *#this = other; }
-                #[inline]
-                fn view<#borrow>(&#borrow #this) -> <#Descriptor as #krate::Schema<#Subject>>::View<#borrow>
-                where #Subject: #borrow, #Descriptor: #borrow {
-                    <#Descriptor as #krate::Schema<#Subject>>::full_view(#this)
-                }
+    // Only complete baselines need nested subject views. Defer these bounds so
+    // concrete nested objects remain usable without subject implementations.
+    let mut subject_where = where_clause.clone();
+    let mut subject_predicates = where_predicates.clone();
+    subject_where.predicates.extend(
+        optionizeds
+            .iter()
+            .filter_map(|field| -> Option<WherePredicate> {
+                let descriptor = field.nested_descriptor()?;
+                let ty = &field.ty;
+                Some(pq! { for<#borrow> #ty: #krate::PartialOptionized<#ty, #descriptor> })
+            })
+            .filter(|predicate| subject_predicates.insert(predicate.clone())),
+    );
+    output.push(q! {
+        #[automatically_derived]
+        impl #impl_generics #krate::PartialOptionized<#Subject, #Descriptor> for #Subject #subject_where {
+            #[inline]
+            fn optionize(subject: #Subject) -> Self { subject }
+            #[inline]
+            fn patch(#this, subject: &mut #Subject) { *subject = #this; }
+            #[inline]
+            fn merge(&mut #this, other: Self) { *#this = other; }
+            #[inline]
+            fn view<#borrow>(&#borrow #this) -> <#Descriptor as #krate::Schema<#Subject>>::View<#borrow>
+            where #Subject: #borrow, #Descriptor: #borrow {
+                #view_ident { #(#full_fields)* __marker: ::core::marker::PhantomData }
             }
-        });
-    }
+        }
+    });
 
     output.push(q! {
         #[automatically_derived]
