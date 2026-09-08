@@ -10,7 +10,7 @@ use syn::spanned::Spanned;
 use syn::token::{Bracket, Pound};
 use syn::{AttrStyle, Attribute, Expr, Lit, LitStr, Meta, Path, TypePath, parse_quote};
 
-use super::syntax::{format, is_optionize};
+use super::utils::{format, is_optionize};
 
 #[derive(Debug, Default)]
 struct MetaList(Vec<Meta>);

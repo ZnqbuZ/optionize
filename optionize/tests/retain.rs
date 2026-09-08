@@ -3,7 +3,7 @@
 use core::marker::PhantomData;
 
 use optionize::{Optionizable, Optionized, PartialOptionized, Retain, Schema, optionized};
-use optionize_test_proto as proto;
+use optionize_test_models as proto;
 
 #[optionized]
 #[derive(Debug)]

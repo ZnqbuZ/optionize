@@ -1,5 +1,5 @@
 use optionize::{Optionizable, Optionized, PartialOptionized, optionized};
-use optionize_test_proto as proto;
+use optionize_test_models as proto;
 
 #[optionized]
 #[optionize(subject = proto::Subject, partial(upgradable))]

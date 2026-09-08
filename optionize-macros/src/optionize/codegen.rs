@@ -2,7 +2,7 @@ use proc_macro2::{Ident, Span, TokenStream};
 use quote::{ToTokens, format_ident};
 
 use super::field::{FieldIr, FieldStrategy};
-use super::syntax::{member_to_string, span};
+use super::utils::{member_to_string, span};
 
 macro_rules! expand {
     ($target:expr => { $($field:ident $(: $bind:pat)?),* $(,)? }) => {

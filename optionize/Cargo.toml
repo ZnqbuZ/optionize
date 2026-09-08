@@ -17,4 +17,4 @@ optionize-macros = { workspace = true }
 derive_more = { version = "2.1.1", features = ["full"] }
 
 [dev-dependencies]
-optionize-test-proto = { path = "tests/fixtures/proto" }
+optionize-test-models = { path = "tests/fixtures/models" }

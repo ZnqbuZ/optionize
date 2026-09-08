@@ -1,7 +1,7 @@
 mod args;
 mod codegen;
 mod field;
-mod syntax;
+mod utils;
 
 use darling::ast::NestedMeta;
 use darling::util::Override;
@@ -22,7 +22,7 @@ use codegen::{
     Merge, Optionize, Patch, Retain, Upgrade, UpgradeFieldValue, UpgradeSkip, Validate, View,
 };
 use field::{FieldIr, FieldStrategy};
-use syntax::{collect_idents, format, fresh_ident, span};
+use utils::{collect_idents, format, new_ident, span};
 
 #[derive(Debug, Clone, Copy)]
 enum StructStyle {
@@ -255,8 +255,8 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
     };
 
     {
-        let (view_ident, view_lifetime, self_lifetime) = {
-            let mut names = HashSet::new();
+        let (view, view_lifetime, self_lifetime) = {
+            let mut idents = HashSet::new();
             let fields = originals.iter().map(|field| {
                 let ty = &field.ty;
                 let nest = match &field.strategy {
@@ -267,17 +267,17 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
             });
             collect_idents(
                 q! { #Subject #Object #impl_generics #where_clause #(#fields)* },
-                &mut names,
+                &mut idents,
             );
-            let lifetime = |prefix| {
-                let ident = fresh_ident(prefix, &names);
+            let new_lifetime = |lifetime| {
+                let ident = new_ident(lifetime, &idents);
                 Lifetime::new(&format!("'{ident}"), ident.span())
             };
-            let view_ident = format::<Ident>(&pq! { "__Optionize{}View" }, subject)?;
+            let view = format::<Ident>(&pq! { "__{}OptionizeView" }, subject)?;
             (
-                fresh_ident(&view_ident.to_string(), &names),
-                lifetime("v"),
-                lifetime("s"),
+                new_ident(&view.to_string(), &idents),
+                new_lifetime("v"),
+                new_lifetime("s"),
             )
         };
         let generics = {
@@ -321,7 +321,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                 // The anonymous const keeps the helper out of the surrounding namespace.
                 #[doc(hidden)]
                 #[allow(private_bounds)]
-                pub struct #view_ident #impl_generics #where_clause {
+                pub struct #view #impl_generics #where_clause {
                     #(#fields)*
                     #[allow(clippy::type_complexity)]
                     __marker: ::core::marker::PhantomData<fn() -> &#view_lifetime (#Subject, #Object)>,
@@ -333,7 +333,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                 q! { #local: ::core::option::Option::None, }
             });
             output.push(q! {
-                impl #impl_generics ::core::default::Default for #view_ident #type_generics #where_clause {
+                impl #impl_generics ::core::default::Default for #view #type_generics #where_clause {
                     fn default() -> Self {
                         Self { #(#fields)* __marker: ::core::marker::PhantomData }
                     }
@@ -349,12 +349,12 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
             output.push(q! {
                 #[automatically_derived]
                 impl #impl_generics #krate::Schema<#Subject> for #Object #where_clause {
-                    type View<#view_lifetime> = #view_ident #type_generics
+                    type View<#view_lifetime> = #view #type_generics
                     where #Subject: #view_lifetime, Self: #view_lifetime;
                     #[inline]
                     fn view<#self_lifetime>(&#self_lifetime #this) -> <Self as #krate::Schema<#Subject>>::View<#self_lifetime>
                     where #Subject: #self_lifetime, Self: #self_lifetime {
-                        #view_ident { #(#fields)* __marker: ::core::marker::PhantomData }
+                        #view { #(#fields)* __marker: ::core::marker::PhantomData }
                     }
                 }
             });
@@ -397,7 +397,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                 #[automatically_derived]
                 impl #impl_generics #krate::Retain<#Subject, #Object> for #Object #where_clause {
                     #[inline]
-                    fn retain_view<#view_lifetime>(&mut #this, #baseline: #view_ident #type_generics) -> bool
+                    fn retain_view<#view_lifetime>(&mut #this, #baseline: #view #type_generics) -> bool
                     where #Subject: #view_lifetime, #Object: #view_lifetime {
                         let mut #remains = false;
                         #(#fields)*
@@ -440,12 +440,12 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
             output.push(q! {
                 #[automatically_derived]
                 impl #impl_generics #krate::Schema<#Subject, #Object> for #Subject #where_clause {
-                    type View<#view_lifetime> = #view_ident #type_generics
+                    type View<#view_lifetime> = #view #type_generics
                     where #Subject: #view_lifetime, #Object: #view_lifetime;
                     #[inline]
                     fn view<#self_lifetime>(&#self_lifetime #this) -> <#Object as #krate::Schema<#Subject>>::View<#self_lifetime>
                     where #Subject: #self_lifetime, #Object: #self_lifetime {
-                        #view_ident { #(#fields)* __marker: ::core::marker::PhantomData }
+                        #view { #(#fields)* __marker: ::core::marker::PhantomData }
                     }
                 }
             });

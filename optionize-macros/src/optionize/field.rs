@@ -8,7 +8,7 @@ use syn::token::Comma;
 use syn::{Expr, Field, Index, Member, Type, Visibility, parse_quote};
 
 use super::args::{Crate, FieldArgs, TypeArg};
-use super::syntax::{format, is_optionize, member_to_string, span};
+use super::utils::{format, is_optionize, member_to_string, span};
 
 #[derive(Debug)]
 pub(super) enum FieldStrategy {

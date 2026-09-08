@@ -26,29 +26,30 @@ pub(super) fn member_to_string(member: &Member) -> String {
     }
 }
 
-pub(super) fn collect_idents(tokens: TokenStream, names: &mut HashSet<String>) {
+pub(super) fn collect_idents(tokens: TokenStream, idents: &mut HashSet<String>) {
     for token in tokens {
         match token {
             proc_macro2::TokenTree::Ident(ident) => {
-                names.insert(ident.unraw().to_string());
+                idents.insert(ident.unraw().to_string());
             }
-            proc_macro2::TokenTree::Group(group) => collect_idents(group.stream(), names),
+            proc_macro2::TokenTree::Group(group) => collect_idents(group.stream(), idents),
             _ => {}
         }
     }
 }
 
-pub(super) fn fresh_ident(prefix: &str, names: &HashSet<String>) -> Ident {
-    let mut name = prefix.to_owned();
-    while names.contains(&name) {
-        name.push('_');
+pub(super) fn new_ident(name: &str, idents: &HashSet<String>) -> Ident {
+    let (mut ident, mut i) = (name.to_owned(), 0);
+    while idents.contains(&ident) {
+        ident = format!("{name}{i:X}");
+        i += 1;
     }
-    format_ident!("{name}", span = Span::mixed_site())
+    format_ident!("{ident}", span = Span::mixed_site())
 }
 
 macro_rules! span {
     ($span:expr) => {
-        $crate::optionize::syntax::span!(@impl $span, $)
+        $crate::optionize::utils::span!(@impl $span, $)
     };
 
     (@impl $span:expr, $_:tt) => {

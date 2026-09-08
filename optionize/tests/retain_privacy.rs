@@ -4,7 +4,7 @@ pub mod models {
     use core::marker::PhantomData;
 
     use optionize::optionized;
-    use optionize_test_proto as proto;
+    use optionize_test_models as proto;
 
     #[derive(PartialEq)]
     struct PrivateEq(u32);
@@ -260,7 +260,7 @@ fn generated_borrow_lifetimes_avoid_field_and_where_clause_binders() {
 
 #[test]
 fn reverse_mappings_can_inject_markers_into_the_declared_object() {
-    use optionize_test_proto as proto;
+    use optionize_test_models as proto;
 
     let baseline = proto::GenericSubject { value: 8_u32 };
     let mut patch = models::ReverseMarked::new(Some(8));
@@ -279,7 +279,7 @@ fn reverse_mappings_can_inject_markers_into_the_declared_object() {
 
 #[test]
 fn reverse_unit_mappings_can_be_marked_and_upgraded() {
-    use optionize_test_proto as proto;
+    use optionize_test_models as proto;
 
     let mut patch: models::ReverseMarkedUnit = proto::UnitSubject.downgrade();
     assert!(!patch.retain(&proto::UnitSubject));
@@ -380,7 +380,7 @@ fn generated_helper_types_avoid_paths_supplied_inside_attribute_strings() {
 #[test]
 fn raw_field_names_preserve_subject_names_in_views_and_renamed_mappings() {
     use optionize::{PartialOptionized, Schema, optionized};
-    use optionize_test_proto as proto;
+    use optionize_test_models as proto;
 
     #[optionized]
     struct RawSubject {
