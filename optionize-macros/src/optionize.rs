@@ -154,26 +154,35 @@ struct PartialArgs {
 }
 
 #[derive(Debug)]
-enum Object {
+enum TypeArg<T> {
     Str(LitStr),
-    Path(TypePath),
+    Parsed(T),
 }
 
-impl FromMeta for Object {
+impl<T: syn::parse::Parse> FromMeta for TypeArg<T> {
     fn from_expr(expr: &Expr) -> Result<Self> {
         match expr {
             Expr::Lit(lit) if let Lit::Str(value) = &lit.lit => Ok(Self::Str(value.clone())),
             Expr::Group(group) => Self::from_expr(&group.expr),
-            _ => TypePath::from_expr(expr).map(Self::Path),
+            _ => parse2(expr.to_token_stream())
+                .map(Self::Parsed)
+                .map_err(Error::from),
         }
     }
 }
 
-impl Object {
-    fn format(self, subject: &Ident) -> Result<TypePath> {
+impl<T: syn::parse::Parse> TypeArg<T> {
+    fn parse(self) -> Result<T> {
         match self {
-            Self::Str(pattern) => format(&pattern, subject),
-            Self::Path(path) => Ok(path),
+            Self::Str(value) => value.parse().map_err(Error::from),
+            Self::Parsed(ty) => Ok(ty),
+        }
+    }
+
+    fn format(self, ident: &Ident) -> Result<T> {
+        match self {
+            Self::Str(pattern) => format(&pattern, ident),
+            Self::Parsed(ty) => Ok(ty),
         }
     }
 }
@@ -185,8 +194,8 @@ struct StructArgs {
     #[darling(flatten)]
     general: GeneralArgs,
     partial: Option<SpannedValue<Override<PartialArgs>>>,
-    object: Option<Object>,
-    subject: Option<Object>,
+    object: Option<TypeArg<TypePath>>,
+    subject: Option<TypeArg<TypePath>>,
 }
 
 impl StructArgs {
@@ -234,23 +243,6 @@ struct SkipArgs {
     upgrade: Option<Expr>,
 }
 
-#[derive(Debug)]
-struct Nest(Type);
-
-impl FromMeta for Nest {
-    fn from_expr(expr: &Expr) -> Result<Self> {
-        match expr {
-            Expr::Lit(literal) if let Lit::Str(value) = &literal.lit => {
-                value.parse().map(Self).map_err(Error::from)
-            }
-            Expr::Group(group) => Self::from_expr(&group.expr),
-            _ => parse2(expr.to_token_stream())
-                .map(Self)
-                .map_err(Error::from),
-        }
-    }
-}
-
 #[derive(Debug, Default, Deref, FromAttributes)]
 #[darling(default, attributes(optionize), and_then = "Self::finalize")]
 struct FieldArgs {
@@ -258,7 +250,7 @@ struct FieldArgs {
     #[darling(flatten)]
     general: GeneralArgs,
     flatten: Flag,
-    nest: Option<Nest>,
+    nest: Option<TypeArg<Type>>,
     skip: Option<SpannedValue<Override<SkipArgs>>>,
 }
 
@@ -670,7 +662,9 @@ impl FieldIr {
             };
 
             let wrap = !args.flatten.is_present();
-            let nest = args.nest.map(|nest| nest.0);
+            let Some(nest) = errors.handle(args.nest.map(TypeArg::parse).transpose()) else {
+                continue;
+            };
 
             {
                 let ty = nest.as_ref().unwrap_or(&ty);
@@ -770,8 +764,11 @@ impl FieldIr {
             } else {
                 object_ty.clone()
             };
-            let nest = args.nest.map(|subject_ty| {
-                ir.ty = subject_ty.0;
+            let Some(nest) = errors.handle(args.nest.map(TypeArg::parse).transpose()) else {
+                continue;
+            };
+            let nest = nest.map(|subject_ty| {
+                ir.ty = subject_ty;
                 payload.clone()
             });
             if nest.is_none() {
