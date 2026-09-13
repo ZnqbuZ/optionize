@@ -3,7 +3,7 @@ use proc_macro2::{Ident, Span, TokenStream};
 use quote::format_ident;
 use std::collections::HashSet;
 use syn::ext::IdentExt;
-use syn::{Attribute, LitStr, Member};
+use syn::{Attribute, LitStr, Member, WhereClause, WherePredicate};
 
 pub(super) fn format<Parsed: syn::parse::Parse>(pattern: &LitStr, ident: &Ident) -> Result<Parsed> {
     let value = pattern.value().replace("{}", &ident.unraw().to_string());
@@ -24,6 +24,22 @@ pub(super) fn member_to_string(member: &Member) -> String {
         Member::Named(ident) => ident.unraw().to_string(),
         Member::Unnamed(index) => index.index.to_string(),
     }
+}
+
+pub(super) fn extend_where_clause(
+    where_clause: &mut WhereClause,
+    predicates: impl IntoIterator<Item = WherePredicate>,
+) {
+    let mut seen = where_clause
+        .predicates
+        .iter()
+        .cloned()
+        .collect::<HashSet<_>>();
+    where_clause.predicates.extend(
+        predicates
+            .into_iter()
+            .filter(|predicate| seen.insert(predicate.clone())),
+    );
 }
 
 pub(super) fn collect_idents(tokens: TokenStream, idents: &mut HashSet<String>) {

@@ -87,27 +87,18 @@ impl ToTokens for Retain<'_, '_> {
                 });
             },
             (true, Some(nest)) => q! {
-                #remains |= {
-                    let changed = match (#this.#optionized.as_mut(), #baseline.#local) {
-                        (::core::option::Option::None, _) => false,
-                        (::core::option::Option::Some(_), ::core::option::Option::None) => true,
-                        (::core::option::Option::Some(value), ::core::option::Option::Some(baseline)) => {
-                            <#nest as #krate::Retain<#ty>>::retain_view(value, baseline)
-                        }
-                    };
-                    if !changed {
-                        #this.#optionized = ::core::option::Option::None;
-                    }
-                    changed
-                };
+                if let (::core::option::Option::Some(value), ::core::option::Option::Some(baseline)) =
+                    (#this.#optionized.as_mut(), #baseline.#local)
+                    && !<#nest as #krate::Retain<#ty>>::retain_view(value, baseline)
+                {
+                    #this.#optionized = ::core::option::Option::None;
+                }
+                #remains |= #this.#optionized.is_some();
             },
             (false, Some(nest)) => q! {
-                #remains |= match #baseline.#local {
-                    ::core::option::Option::None => true,
-                    ::core::option::Option::Some(baseline) => {
-                        <#nest as #krate::Retain<#ty>>::retain_view(&mut #this.#optionized, baseline)
-                    }
-                };
+                #remains |= #baseline.#local.is_none_or(|baseline| {
+                    <#nest as #krate::Retain<#ty>>::retain_view(&mut #this.#optionized, baseline)
+                });
             },
         };
         tokens.extend(retain);
@@ -245,8 +236,7 @@ impl ToTokens for Merge<'_, '_> {
 
 pub(super) struct Validate<'f, 't, 'i> {
     pub(super) field: &'f FieldIr,
-    pub(super) subject: &'t TokenStream,
-    pub(super) object: &'t TokenStream,
+    pub(super) info: &'t TokenStream,
     pub(super) failed: &'i Ident,
     pub(super) errors: &'i Ident,
 }
@@ -266,49 +256,23 @@ impl ToTokens for Validate<'_, '_, '_> {
         let FieldStrategy::Optionize { wrap, nest } = strategy else {
             return;
         };
+        if !*wrap && nest.is_none() {
+            return;
+        }
 
-        let (missing, nested) = {
-            let ty = {
-                let subject = self.subject.to_string();
-                let object = self.object.to_string();
+        let field = {
+            let original = member_to_string(original);
+            let optionized = member_to_string(optionized);
 
-                q! {
-                    #krate::TypeInfo {
-                        subject: #subject,
-                        object: #object,
-                    }
-                }
-            };
-
-            let field = {
-                let original = member_to_string(original);
-                let optionized = member_to_string(optionized);
-
-                if original == optionized {
-                    q! { #krate::FieldInfo::Identical(#original) }
-                } else {
-                    q! { #krate::FieldInfo::Renamed { original: #original, optionized: #optionized } }
-                }
-            };
-
-            (
-                q! {
-                    #krate::Error::Missing {
-                        ty: #ty,
-                        field: #field
-                    }
-                },
-                q! {
-                    |e| #krate::Error::Nested {
-                        ty: #ty,
-                        field: #field,
-                        source: #krate::__private::alloc::boxed::Box::new(e) as _
-                    }
-                },
-            )
+            if original == optionized {
+                q! { #krate::FieldInfo::Identical(#original) }
+            } else {
+                q! { #krate::FieldInfo::Renamed { original: #original, optionized: #optionized } }
+            }
         };
 
         let this = format_ident!("self", span = Span::mixed_site());
+        let info = self.info;
         let failed = self.failed;
         let errors = self.errors;
         let validate = nest.as_ref().map(|nest| {
@@ -320,7 +284,11 @@ impl ToTokens for Validate<'_, '_, '_> {
             q! {
                 if let ::core::result::Result::Err(e) = <#nest as #krate::Optionized<#ty>>::validate(#value) {
                     #failed = true;
-                    #errors.extend(::core::iter::IntoIterator::into_iter(e).map(#nested));
+                    #errors.extend(::core::iter::IntoIterator::into_iter(e).map(|e| #krate::Error::Nested {
+                        ty: #info,
+                        field: #field,
+                        source: #krate::__private::alloc::boxed::Box::new(e) as _,
+                    }));
                 }
             }
         });
@@ -331,7 +299,10 @@ impl ToTokens for Validate<'_, '_, '_> {
                     #validate
                 } else {
                     #failed = true;
-                    #errors.push(#missing);
+                    #errors.push(#krate::Error::Missing {
+                        ty: #info,
+                        field: #field,
+                    });
                 }
             }
         } else {

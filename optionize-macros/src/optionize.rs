@@ -4,7 +4,6 @@ mod field;
 mod utils;
 
 use darling::ast::NestedMeta;
-use darling::util::Override;
 use darling::{Error, FromAttributes, FromMeta, Result};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::{format_ident, quote, quote_spanned as qs};
@@ -14,7 +13,7 @@ use syn::spanned::Spanned;
 use syn::token::{Brace, Paren};
 use syn::{
     Data, DeriveInput, Fields, FieldsNamed, FieldsUnnamed, Index, Lifetime, PathArguments,
-    WherePredicate, parse_quote, parse_quote_spanned as pqs, parse2,
+    parse_quote, parse_quote_spanned as pqs, parse2,
 };
 
 use args::{Crate, OptionizedArgs, StructArgs};
@@ -22,28 +21,12 @@ use codegen::{
     Merge, Optionize, Patch, Retain, Upgrade, UpgradeFieldValue, UpgradeSkip, Validate, View,
 };
 use field::{FieldIr, FieldStrategy};
-use utils::{collect_idents, format, new_ident, span};
-
-#[derive(Debug, Clone, Copy)]
-enum StructStyle {
-    Named,
-    Unnamed,
-    Unit,
-}
+use utils::{collect_idents, extend_where_clause, format, new_ident, span};
 
 fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
     let mut object = parse2::<DeriveInput>(input)?;
     let span = object.span();
     span!(span);
-
-    macro_rules! construct {
-        ($style:expr, $span:expr => [$($ty:tt)+] $($fields:tt)*) => {
-            match $style {
-                StructStyle::Unit => qs! { $span => $($ty)* },
-                _ => qs! { $span => #[allow(clippy::init_numbered_fields)] $($ty)* { $($fields)* } },
-            }
-        };
-    }
 
     let args = StructArgs::from_attributes(&object.attrs)?;
     let reverse = args.subject.is_some();
@@ -103,7 +86,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         q! { #name #type_generics }
     };
 
-    let (subject_style, object_style, originals, marker) = {
+    let (originals, marker) = {
         let data = match &mut object.data {
             Data::Struct(data) => data,
             _ => {
@@ -113,42 +96,14 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
             }
         };
 
-        let subject_style = match &data.fields {
-            Fields::Named(_) => StructStyle::Named,
-            Fields::Unnamed(_) => StructStyle::Unnamed,
-            Fields::Unit => StructStyle::Unit,
+        let originals = {
+            let fields = match &mut data.fields {
+                Fields::Named(fields) => &mut fields.named,
+                Fields::Unnamed(fields) => &mut fields.unnamed,
+                Fields::Unit => &mut Default::default(),
+            };
+            FieldIr::extract(fields, krate.clone(), partial, reverse)?
         };
-        let object_style = if matches!(subject_style, StructStyle::Unit)
-            && let Some(marked) = &marked
-        {
-            let span = marked.span();
-            let punctuated = Default::default();
-            if let Override::Explicit(marked) = marked.as_ref()
-                && marked.name.is_some()
-            {
-                data.fields = Fields::Named(FieldsNamed {
-                    brace_token: Brace(span),
-                    named: punctuated,
-                });
-                StructStyle::Named
-            } else {
-                data.fields = Fields::Unnamed(FieldsUnnamed {
-                    paren_token: Paren(span),
-                    unnamed: punctuated,
-                });
-                StructStyle::Unnamed
-            }
-        } else {
-            subject_style
-        };
-
-        let fields = match &mut data.fields {
-            Fields::Named(fields) => &mut fields.named,
-            Fields::Unnamed(fields) => &mut fields.unnamed,
-            Fields::Unit => &mut Default::default(),
-        };
-
-        let originals = FieldIr::extract(fields, krate.clone(), partial, reverse)?;
 
         let marker = if let Some(marked) = marked {
             let span = marked.span();
@@ -157,9 +112,10 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
             let mut attrs = vec![pqs! { span => #[doc(hidden)] }];
             marked.attrs.patch(&mut attrs);
 
-            let ident = match (subject_style, marked.name) {
-                (StructStyle::Named, None) => {
+            let ident = match (&data.fields, marked.name) {
+                (Fields::Named(fields), None) => {
                     let names = fields
+                        .named
                         .iter()
                         .filter_map(|f| f.ident.as_ref())
                         .map(|i| i.unraw().to_string())
@@ -170,14 +126,13 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                     }
                     Some(format_ident!("{}", ident, span = span))
                 }
-                (StructStyle::Unnamed, Some(name)) => {
+                (Fields::Unnamed(_), Some(name)) => {
                     return Err(Error::custom(
                         "`name` attribute cannot be used on unnamed structs",
                     )
                     .with_span(&name));
                 }
-                (_, Some(name)) => Some(name),
-                _ => None,
+                (_, name) => name,
             };
 
             let (marker, field) = if let Some(ident) = ident {
@@ -190,7 +145,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                 )
             } else {
                 let index = Index {
-                    index: fields.len() as u32,
+                    index: data.fields.len() as u32,
                     span,
                 };
                 (
@@ -202,13 +157,29 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                 )
             };
 
-            fields.push(field);
+            match &mut data.fields {
+                Fields::Named(fields) => fields.named.push(field),
+                Fields::Unnamed(fields) => fields.unnamed.push(field),
+                Fields::Unit => {
+                    data.fields = if field.ident.is_some() {
+                        Fields::Named(FieldsNamed {
+                            brace_token: Brace(span),
+                            named: [field].into_iter().collect(),
+                        })
+                    } else {
+                        Fields::Unnamed(FieldsUnnamed {
+                            paren_token: Paren(span),
+                            unnamed: [field].into_iter().collect(),
+                        })
+                    };
+                }
+            }
             Some(marker)
         } else {
             None
         };
 
-        (subject_style, object_style, originals, marker)
+        (originals, marker)
     };
 
     if reverse {
@@ -221,15 +192,11 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
     let (impl_generics, _, where_clause) = generics.split_for_impl();
     let where_clause = {
         let mut where_clause = where_clause.cloned().unwrap_or_else(|| pq! { where });
-        let mut predicates = where_clause
-            .predicates
-            .iter()
-            .cloned()
-            .collect::<HashSet<_>>();
-        where_clause.predicates.extend(
+        extend_where_clause(
+            &mut where_clause,
             originals
                 .iter()
-                .filter_map(|field| -> Option<[WherePredicate; 2]> {
+                .filter_map(|field| {
                     let FieldIr {
                         ty, strategy, span, ..
                     } = field;
@@ -244,8 +211,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                         pqs! { *span => #nest: #krate::PartialOptionized<#ty> },
                     ])
                 })
-                .flatten()
-                .filter(|predicate| predicates.insert(predicate.clone())),
+                .flatten(),
         );
         where_clause
     };
@@ -361,15 +327,11 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         {
             let where_clause = {
                 let mut where_clause = where_clause.clone();
-                let mut predicates = where_clause
-                    .predicates
-                    .iter()
-                    .cloned()
-                    .collect::<HashSet<_>>();
-                where_clause.predicates.extend(
+                extend_where_clause(
+                    &mut where_clause,
                     originals
                         .iter()
-                        .filter_map(|field| -> Option<WherePredicate> {
+                        .filter_map(|field| {
                             let FieldIr { ty, strategy, index, span, .. } = field;
                             match strategy {
                                 FieldStrategy::Skip { .. } => None,
@@ -382,8 +344,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                                     Some(pqs! { *span => for<#view_lifetime> #nest: #krate::Retain<#ty> })
                                 }
                             }
-                        })
-                        .filter(|predicate| predicates.insert(predicate.clone())),
+                        }),
                 );
                 where_clause
             };
@@ -413,27 +374,20 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
             // concrete nested objects remain usable without subject implementations.
             let where_clause = {
                 let mut where_clause = where_clause.clone();
-                let mut predicates = where_clause
-                    .predicates
-                    .iter()
-                    .cloned()
-                    .collect::<HashSet<_>>();
-                where_clause.predicates.extend(
-                    originals
-                        .iter()
-                        .filter_map(|field| -> Option<WherePredicate> {
-                            let FieldIr {
-                                ty, strategy, span, ..
-                            } = field;
-                            let FieldStrategy::Optionize {
-                                nest: Some(nest), ..
-                            } = strategy
-                            else {
-                                return None;
-                            };
-                            Some(pqs! { *span => for<#view_lifetime> #ty: #krate::Schema<#ty, #nest> })
-                        })
-                        .filter(|predicate| predicates.insert(predicate.clone())),
+                extend_where_clause(
+                    &mut where_clause,
+                    originals.iter().filter_map(|field| {
+                        let FieldIr {
+                            ty, strategy, span, ..
+                        } = field;
+                        let FieldStrategy::Optionize {
+                            nest: Some(nest), ..
+                        } = strategy
+                        else {
+                            return None;
+                        };
+                        Some(pqs! { *span => for<#view_lifetime> #ty: #krate::Schema<#ty, #nest> })
+                    }),
                 );
                 where_clause
             };
@@ -469,10 +423,12 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                 field,
                 subject: &subject,
             });
-            let object = construct!(object_style, span => [Self] #(#fields)* #marker);
             q! {
                 #[inline]
-                fn optionize(#subject: #Subject) -> Self { #object }
+                fn optionize(#subject: #Subject) -> Self {
+                    #[allow(clippy::init_numbered_fields)]
+                    Self { #(#fields)* #marker }
+                }
             }
         };
         let patch = {
@@ -510,15 +466,11 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
     if let Some(span) = upgradable {
         let where_clause = {
             let mut where_clause = where_clause;
-            let mut predicates = where_clause
-                .predicates
-                .iter()
-                .cloned()
-                .collect::<HashSet<_>>();
-            where_clause.predicates.extend(
+            extend_where_clause(
+                &mut where_clause,
                 originals
                     .iter()
-                    .filter_map(|field| -> Option<[WherePredicate; 2]> {
+                    .filter_map(|field| {
                         let FieldIr {
                             ty, strategy, span, ..
                         } = field;
@@ -533,18 +485,21 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                             pqs! { *span => <#nest as #krate::Optionized<#ty>>::Errors: 'static },
                         ])
                     })
-                    .flatten()
-                    .filter(|predicate| predicates.insert(predicate.clone())),
+                    .flatten(),
             );
             where_clause
         };
         let validate = {
+            let info = {
+                let subject = Subject.to_string();
+                let object = Object.to_string();
+                qs! { span => #krate::TypeInfo { subject: #subject, object: #object } }
+            };
             let failed = format_ident!("failed", span = Span::mixed_site());
             let errors = format_ident!("errors", span = Span::mixed_site());
             let fields = originals.iter().map(|field| Validate {
                 field,
-                subject: &Subject,
-                object: &Object,
+                info: &info,
                 failed: &failed,
                 errors: &errors,
             });
@@ -566,13 +521,13 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
             let skips = originals.iter().map(UpgradeSkip);
             let upgrades = originals.iter().map(Upgrade);
             let fields = originals.iter().map(UpgradeFieldValue);
-            let subject = construct!(subject_style, span => [#subject_constructor] #(#fields)*);
             qs! { span =>
                 #[inline]
                 unsafe fn upgrade_unchecked(#this) -> #Subject {
                     #(#skips)*
                     #(#upgrades)*
-                    #subject
+                    #[allow(clippy::init_numbered_fields)]
+                    #subject_constructor { #(#fields)* }
                 }
             }
         };
