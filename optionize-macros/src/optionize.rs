@@ -9,7 +9,6 @@ use darling::{Error, FromAttributes, FromMeta, Result};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::{format_ident, quote, quote_spanned as qs};
 use std::collections::HashSet;
-use std::mem::take;
 use syn::ext::IdentExt;
 use syn::spanned::Spanned;
 use syn::token::{Brace, Paren};
@@ -33,9 +32,9 @@ enum StructStyle {
 }
 
 fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
-    let subject = parse2::<DeriveInput>(input)?;
-    let _span = subject.span();
-    span!(_span);
+    let mut object = parse2::<DeriveInput>(input)?;
+    let span = object.span();
+    span!(span);
 
     macro_rules! construct {
         ($style:expr, $span:expr => [$($ty:tt)+] $($fields:tt)*) => {
@@ -46,184 +45,180 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         };
     }
 
-    let this = format_ident!("self", span = Span::mixed_site());
-    let args = StructArgs::from_attributes(&subject.attrs)?;
-    let source = q! { #[derive(#krate::__private::Optionize)] #subject };
+    let args = StructArgs::from_attributes(&object.attrs)?;
     let reverse = args.subject.is_some();
+    let generated = !reverse && args.object.is_none();
+    let mut declarations = if reverse {
+        TokenStream::new()
+    } else {
+        q! { #[derive(#krate::__private::Optionize)] #object }
+    };
 
-    let (partial, upgradable, marked) = args
-        .partial
-        .map(|partial| {
-            let span = partial.span();
-            let (upgradable, marked) = match partial.into_inner() {
-                Override::Explicit(p) => (
-                    p.upgradable.is_present().then(|| p.upgradable.span()),
-                    p.marked,
-                ),
-                _ => Default::default(),
-            };
-            (Some(span), upgradable, marked)
-        })
-        .unwrap_or_default();
+    let (partial, upgradable, marked) = match args.partial {
+        Some(partial) => {
+            let partial = partial.into_inner().unwrap_or_default();
+            (
+                true,
+                partial
+                    .upgradable
+                    .is_present()
+                    .then(|| partial.upgradable.span()),
+                partial.marked,
+            )
+        }
+        None => (false, Some(span), None),
+    };
 
-    let mut object = subject;
-    let (impl_generics, type_generics, where_clause) = object.generics.split_for_impl();
-
-    let subject = &object.ident.clone();
+    let ident = object.ident.clone();
     #[allow(non_snake_case)]
-    let (Subject, subject_constructor) = if let Some(target) = args.subject {
-        let path = target.format(subject)?;
+    let (Subject, subject_constructor) = if let Some(subject) = args.subject {
+        let mut path = subject.format(&ident)?;
         let ty = q! { #path };
-        let mut constructor = path;
-        for segment in &mut constructor.path.segments {
+        for segment in &mut path.path.segments {
             if let PathArguments::AngleBracketed(arguments) = &mut segment.arguments {
                 arguments.colon2_token.get_or_insert_with(Default::default);
             }
         }
-        (ty, q! { #constructor })
+        (ty, q! { #path })
     } else {
-        (q! { #subject #type_generics }, q! { #subject })
+        let (_, type_generics, _) = object.generics.split_for_impl();
+        (q! { #ident #type_generics }, q! { #ident })
     };
 
-    let has_object = args.object.is_some();
     #[allow(non_snake_case)]
     let Object = if reverse {
-        q! { #subject #type_generics }
+        let (_, type_generics, _) = object.generics.split_for_impl();
+        q! { #ident #type_generics }
     } else if let Some(object) = args.object {
-        let path = object.format(subject)?;
+        let path = object.format(&ident)?;
         q! { #path }
     } else {
+        args.general.attrs.patch(&mut object.attrs);
         object.ident = match &args.general.name {
-            Some(name) => format(name, subject)?,
-            None => format(&pqs! { subject.span() => "{}Optional"}, subject)?,
+            Some(name) => format(name, &ident)?,
+            None => format(&pqs! { ident.span() => "{}Optional"}, &ident)?,
         };
         let name = &object.ident;
+        let (_, type_generics, _) = object.generics.split_for_impl();
         q! { #name #type_generics }
     };
 
-    if !has_object && !reverse {
-        args.general.attrs.patch(&mut object.attrs);
-    }
-
-    let data = match &mut object.data {
-        Data::Struct(data) => data,
-        _ => {
-            return Err(
-                Error::custom("Optionize can only be derived for structs").with_span(&_span)
-            );
-        }
-    };
-
-    let subject_style = match &data.fields {
-        Fields::Named(_) => StructStyle::Named,
-        Fields::Unnamed(_) => StructStyle::Unnamed,
-        Fields::Unit => StructStyle::Unit,
-    };
-    let object_style = if matches!(subject_style, StructStyle::Unit)
-        && let Some(marked) = &marked
-    {
-        let span = marked.span();
-        let punctuated = Default::default();
-        if let Override::Explicit(marked) = marked.as_ref()
-            && marked.name.is_some()
-        {
-            data.fields = Fields::Named(FieldsNamed {
-                brace_token: Brace(span),
-                named: punctuated,
-            });
-            StructStyle::Named
-        } else {
-            data.fields = Fields::Unnamed(FieldsUnnamed {
-                paren_token: Paren(span),
-                unnamed: punctuated,
-            });
-            StructStyle::Unnamed
-        }
-    } else {
-        subject_style
-    };
-
-    let fields = match &mut data.fields {
-        Fields::Named(fields) => &mut fields.named,
-        Fields::Unnamed(fields) => &mut fields.unnamed,
-        Fields::Unit => &mut Default::default(),
-    };
-
-    let originals = FieldIr::extract(fields, krate.clone(), partial.is_some(), reverse)?;
-    let optionizeds = originals
-        .iter()
-        .filter(|f| matches!(f.strategy, FieldStrategy::Optionize { .. }))
-        .collect::<Vec<_>>();
-
-    let marker = if let Some(marked) = marked {
-        let span = marked.span();
-        let marked = marked.into_inner().unwrap_or_default();
-
-        let mut attrs = vec![pqs! { span => #[doc(hidden)] }];
-        marked.attrs.patch(&mut attrs);
-
-        let ident = match (subject_style, marked.name) {
-            (StructStyle::Named, None) => {
-                let names = fields
-                    .iter()
-                    .filter_map(|f| f.ident.as_ref())
-                    .map(|i| i.unraw().to_string())
-                    .collect::<HashSet<_>>();
-                let mut ident = "_marker".to_owned();
-                while names.contains(&ident) {
-                    ident.insert(0, '_');
-                }
-                Some(format_ident!("{}", ident, span = span))
-            }
-            (StructStyle::Unnamed, Some(name)) => {
+    let (subject_style, object_style, originals, marker) = {
+        let data = match &mut object.data {
+            Data::Struct(data) => data,
+            _ => {
                 return Err(
-                    Error::custom("`name` attribute cannot be used on unnamed structs")
-                        .with_span(&name),
+                    Error::custom("Optionize can only be derived for structs").with_span(&span)
                 );
             }
-            (_, Some(name)) => Some(name),
-            _ => None,
         };
 
-        let (marker, field) = if let Some(ident) = ident {
-            (
-                qs! { ident.span() => #ident: ::core::marker::PhantomData, },
-                pqs! { span =>
-                    #(#attrs)*
-                    pub #ident: ::core::marker::PhantomData<fn() -> *const #Subject>
-                },
-            )
+        let subject_style = match &data.fields {
+            Fields::Named(_) => StructStyle::Named,
+            Fields::Unnamed(_) => StructStyle::Unnamed,
+            Fields::Unit => StructStyle::Unit,
+        };
+        let object_style = if matches!(subject_style, StructStyle::Unit)
+            && let Some(marked) = &marked
+        {
+            let span = marked.span();
+            let punctuated = Default::default();
+            if let Override::Explicit(marked) = marked.as_ref()
+                && marked.name.is_some()
+            {
+                data.fields = Fields::Named(FieldsNamed {
+                    brace_token: Brace(span),
+                    named: punctuated,
+                });
+                StructStyle::Named
+            } else {
+                data.fields = Fields::Unnamed(FieldsUnnamed {
+                    paren_token: Paren(span),
+                    unnamed: punctuated,
+                });
+                StructStyle::Unnamed
+            }
         } else {
-            let index = Index {
-                index: fields.len() as u32,
-                span,
-            };
-            (
-                qs! { span => #index: ::core::marker::PhantomData, },
-                pqs! { span =>
-                    #(#attrs)*
-                    pub ::core::marker::PhantomData<fn() -> *const #Subject>
-                },
-            )
+            subject_style
         };
 
-        fields.push(field);
-        Some(marker)
-    } else {
-        None
+        let fields = match &mut data.fields {
+            Fields::Named(fields) => &mut fields.named,
+            Fields::Unnamed(fields) => &mut fields.unnamed,
+            Fields::Unit => &mut Default::default(),
+        };
+
+        let originals = FieldIr::extract(fields, krate.clone(), partial, reverse)?;
+
+        let marker = if let Some(marked) = marked {
+            let span = marked.span();
+            let marked = marked.into_inner().unwrap_or_default();
+
+            let mut attrs = vec![pqs! { span => #[doc(hidden)] }];
+            marked.attrs.patch(&mut attrs);
+
+            let ident = match (subject_style, marked.name) {
+                (StructStyle::Named, None) => {
+                    let names = fields
+                        .iter()
+                        .filter_map(|f| f.ident.as_ref())
+                        .map(|i| i.unraw().to_string())
+                        .collect::<HashSet<_>>();
+                    let mut ident = "_marker".to_owned();
+                    while names.contains(&ident) {
+                        ident.insert(0, '_');
+                    }
+                    Some(format_ident!("{}", ident, span = span))
+                }
+                (StructStyle::Unnamed, Some(name)) => {
+                    return Err(Error::custom(
+                        "`name` attribute cannot be used on unnamed structs",
+                    )
+                    .with_span(&name));
+                }
+                (_, Some(name)) => Some(name),
+                _ => None,
+            };
+
+            let (marker, field) = if let Some(ident) = ident {
+                (
+                    qs! { ident.span() => #ident: ::core::marker::PhantomData, },
+                    pqs! { span =>
+                        #(#attrs)*
+                        pub #ident: ::core::marker::PhantomData<fn() -> *const #Subject>
+                    },
+                )
+            } else {
+                let index = Index {
+                    index: fields.len() as u32,
+                    span,
+                };
+                (
+                    qs! { span => #index: ::core::marker::PhantomData, },
+                    pqs! { span =>
+                        #(#attrs)*
+                        pub ::core::marker::PhantomData<fn() -> *const #Subject>
+                    },
+                )
+            };
+
+            fields.push(field);
+            Some(marker)
+        } else {
+            None
+        };
+
+        (subject_style, object_style, originals, marker)
     };
 
-    let mut output = Vec::new();
     if reverse {
-        output.push(q! { #[derive(#krate::__private::Optionize)] #object });
-    } else {
-        output.push(source);
+        declarations.extend(q! { #[derive(#krate::__private::Optionize)] #object });
+    } else if generated {
+        declarations.extend(q! { #object });
     }
-    if !has_object && !reverse {
-        output.push(q! { #object });
-    }
-    let declarations = take(&mut output);
 
+    let generics = object.generics;
+    let (impl_generics, _, where_clause) = generics.split_for_impl();
     let where_clause = {
         let mut where_clause = where_clause.cloned().unwrap_or_else(|| pq! { where });
         let mut predicates = where_clause
@@ -232,7 +227,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
             .cloned()
             .collect::<HashSet<_>>();
         where_clause.predicates.extend(
-            optionizeds
+            originals
                 .iter()
                 .filter_map(|field| -> Option<[WherePredicate; 2]> {
                     let FieldIr {
@@ -254,6 +249,8 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         );
         where_clause
     };
+    let mut output = TokenStream::new();
+    let this = format_ident!("self", span = Span::mixed_site());
 
     {
         let (view, view_lifetime, self_lifetime) = {
@@ -274,7 +271,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                 let ident = new_ident(lifetime, &idents);
                 Lifetime::new(&format!("'{ident}"), ident.span())
             };
-            let view = format::<Ident>(&pq! { "__{}OptionizeView" }, subject)?;
+            let view = format::<Ident>(&pq! { "__{}OptionizeView" }, &ident)?;
             (
                 new_ident(&view.to_string(), &idents),
                 new_lifetime("v"),
@@ -282,7 +279,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
             )
         };
         let generics = {
-            let mut generics = object.generics.clone();
+            let mut generics = generics.clone();
             generics.params.insert(0, parse_quote! { #view_lifetime });
             let mut where_clause = where_clause.clone();
             where_clause
@@ -317,7 +314,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                 };
                 qs! { *span => #visibility #local: ::core::option::Option<#ty>, }
             });
-            output.push(q! {
+            output.extend(q! {
                 // A nominal view keeps private field types out of public associated types.
                 // The anonymous const keeps the helper out of the surrounding namespace.
                 #[doc(hidden)]
@@ -333,7 +330,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                 let local = &field.local;
                 q! { #local: ::core::option::Option::None, }
             });
-            output.push(q! {
+            output.extend(q! {
                 impl #impl_generics ::core::default::Default for #view #type_generics #where_clause {
                     fn default() -> Self {
                         Self { #(#fields)* __marker: ::core::marker::PhantomData }
@@ -347,7 +344,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                 field,
                 subject: false,
             });
-            output.push(q! {
+            output.extend(q! {
                 #[automatically_derived]
                 impl #impl_generics #krate::Schema<#Subject> for #Object #where_clause {
                     type View<#view_lifetime> = #view #type_generics
@@ -362,31 +359,34 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         }
 
         {
-            let mut where_clause = where_clause.clone();
-            let mut predicates = where_clause
-                .predicates
-                .iter()
-                .cloned()
-                .collect::<HashSet<_>>();
-            where_clause.predicates.extend(
-                originals
+            let where_clause = {
+                let mut where_clause = where_clause.clone();
+                let mut predicates = where_clause
+                    .predicates
                     .iter()
-                    .filter_map(|field| -> Option<WherePredicate> {
-                        let FieldIr { ty, strategy, index, span, .. } = field;
-                        match strategy {
-                            FieldStrategy::Skip { .. } => None,
-                            FieldStrategy::Optionize { nest: None, .. } => {
-                                Some(pqs! { *span => for<#view_lifetime> &#view_lifetime #ty: #krate::__private::Equal<#index> })
+                    .cloned()
+                    .collect::<HashSet<_>>();
+                where_clause.predicates.extend(
+                    originals
+                        .iter()
+                        .filter_map(|field| -> Option<WherePredicate> {
+                            let FieldIr { ty, strategy, index, span, .. } = field;
+                            match strategy {
+                                FieldStrategy::Skip { .. } => None,
+                                FieldStrategy::Optionize { nest: None, .. } => {
+                                    Some(pqs! { *span => for<#view_lifetime> &#view_lifetime #ty: #krate::__private::Equal<#index> })
+                                }
+                                FieldStrategy::Optionize { nest: Some(nest), .. } => {
+                                    // The unused binder defers concrete comparison bounds until
+                                    // Retain is used, keeping other operations available without it.
+                                    Some(pqs! { *span => for<#view_lifetime> #nest: #krate::Retain<#ty> })
+                                }
                             }
-                            FieldStrategy::Optionize { nest: Some(nest), .. } => {
-                                // The unused binder defers concrete comparison bounds until
-                                // Retain is used, keeping other operations available without it.
-                                Some(pqs! { *span => for<#view_lifetime> #nest: #krate::Retain<#ty> })
-                            }
-                        }
-                    })
-                    .filter(|predicate| predicates.insert(predicate.clone())),
-            );
+                        })
+                        .filter(|predicate| predicates.insert(predicate.clone())),
+                );
+                where_clause
+            };
             let baseline = format_ident!("baseline", span = Span::mixed_site());
             let remains = format_ident!("remains", span = Span::mixed_site());
             let fields = originals.iter().map(|field| Retain {
@@ -394,7 +394,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                 baseline: &baseline,
                 remains: &remains,
             });
-            output.push(q! {
+            output.extend(q! {
                 #[automatically_derived]
                 impl #impl_generics #krate::Retain<#Subject, #Object> for #Object #where_clause {
                     #[inline]
@@ -411,34 +411,37 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         {
             // Only complete baselines need nested subject views. Defer these bounds so
             // concrete nested objects remain usable without subject implementations.
-            let mut where_clause = where_clause.clone();
-            let mut predicates = where_clause
-                .predicates
-                .iter()
-                .cloned()
-                .collect::<HashSet<_>>();
-            where_clause.predicates.extend(
-                optionizeds
+            let where_clause = {
+                let mut where_clause = where_clause.clone();
+                let mut predicates = where_clause
+                    .predicates
                     .iter()
-                    .filter_map(|field| -> Option<WherePredicate> {
-                        let FieldIr {
-                            ty, strategy, span, ..
-                        } = field;
-                        let FieldStrategy::Optionize {
-                            nest: Some(nest), ..
-                        } = strategy
-                        else {
-                            return None;
-                        };
-                        Some(pqs! { *span => for<#view_lifetime> #ty: #krate::Schema<#ty, #nest> })
-                    })
-                    .filter(|predicate| predicates.insert(predicate.clone())),
-            );
+                    .cloned()
+                    .collect::<HashSet<_>>();
+                where_clause.predicates.extend(
+                    originals
+                        .iter()
+                        .filter_map(|field| -> Option<WherePredicate> {
+                            let FieldIr {
+                                ty, strategy, span, ..
+                            } = field;
+                            let FieldStrategy::Optionize {
+                                nest: Some(nest), ..
+                            } = strategy
+                            else {
+                                return None;
+                            };
+                            Some(pqs! { *span => for<#view_lifetime> #ty: #krate::Schema<#ty, #nest> })
+                        })
+                        .filter(|predicate| predicates.insert(predicate.clone())),
+                );
+                where_clause
+            };
             let fields = originals.iter().map(|field| View {
                 field,
                 subject: true,
             });
-            output.push(q! {
+            output.extend(q! {
                 #[automatically_derived]
                 impl #impl_generics #krate::Schema<#Subject, #Object> for #Subject #where_clause {
                     type View<#view_lifetime> = #view #type_generics
@@ -453,104 +456,118 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         }
     }
 
-    output.push(q! {
+    output.extend(q! {
         #[automatically_derived]
         impl #impl_generics #krate::Optionizable<#Object> for #Subject #where_clause {}
     });
 
     {
-        let subject = &format_ident!("subject", span = Span::mixed_site());
+        let subject = format_ident!("subject", span = Span::mixed_site());
 
         let optionize = {
-            let optionizes = optionizeds.iter().map(|field| Optionize { field, subject });
-
-            construct!(object_style, _span => [Self] #(#optionizes)* #marker )
+            let fields = originals.iter().map(|field| Optionize {
+                field,
+                subject: &subject,
+            });
+            let object = construct!(object_style, span => [Self] #(#fields)* #marker);
+            q! {
+                #[inline]
+                fn optionize(#subject: #Subject) -> Self { #object }
+            }
         };
-        let patches = optionizeds.iter().map(|field| Patch { field, subject });
-        let other = &format_ident!("other", span = Span::mixed_site());
-        let merges = optionizeds.iter().map(|field| Merge { field, other });
+        let patch = {
+            let fields = originals.iter().map(|field| Patch {
+                field,
+                subject: &subject,
+            });
+            q! {
+                #[inline]
+                fn patch(#this, #subject: &mut #Subject) { #(#fields)* }
+            }
+        };
+        let merge = {
+            let other = format_ident!("other", span = Span::mixed_site());
+            let fields = originals.iter().map(|field| Merge {
+                field,
+                other: &other,
+            });
+            q! {
+                #[inline]
+                fn merge(&mut #this, #other: Self) { #(#fields)* }
+            }
+        };
 
-        output.push(q! {
+        output.extend(q! {
             #[automatically_derived]
             impl #impl_generics #krate::PartialOptionized<#Subject> for #Object #where_clause {
-                #[inline]
-                fn optionize(#subject: #Subject) -> Self { #optionize }
-                #[inline]
-                fn patch(#this, #subject: &mut #Subject) { #(#patches)* }
-                #[inline]
-                fn merge(&mut #this, #other: Self) { #(#merges)* }
+                #optionize
+                #patch
+                #merge
             }
         });
     }
 
-    let span = if partial.is_none() {
-        Some(_span)
-    } else {
-        upgradable
-    };
-
-    if let Some(span) = span {
-        let mut where_clause = where_clause;
-        let mut predicates = where_clause
-            .predicates
-            .iter()
-            .cloned()
-            .collect::<HashSet<_>>();
-        where_clause.predicates.extend(
-            optionizeds
+    if let Some(span) = upgradable {
+        let where_clause = {
+            let mut where_clause = where_clause;
+            let mut predicates = where_clause
+                .predicates
                 .iter()
-                .filter_map(|field| -> Option<[WherePredicate; 2]> {
-                    let FieldIr {
-                        ty, strategy, span, ..
-                    } = field;
-                    let FieldStrategy::Optionize {
-                        nest: Some(nest), ..
-                    } = strategy
-                    else {
-                        return None;
-                    };
-                    Some([
-                        pqs! { *span => #nest: #krate::Optionized<#ty> },
-                        pqs! { *span => <#nest as #krate::Optionized<#ty>>::Errors: 'static },
-                    ])
-                })
-                .flatten()
-                .filter(|predicate| predicates.insert(predicate.clone())),
-        );
-
-        let failed = &format_ident!("failed", span = Span::mixed_site());
-        let errors = &format_ident!("errors", span = Span::mixed_site());
-
-        let validates = optionizeds.iter().map(|field| Validate {
-            field,
-            subject: &Subject,
-            object: &Object,
-            failed,
-            errors,
-        });
-
-        let skips = originals.iter().map(UpgradeSkip);
-        let upgrades = optionizeds.iter().copied().map(Upgrade);
-        let subject = {
-            let fields = originals.iter().map(UpgradeFieldValue);
-            construct!(subject_style, span => [#subject_constructor] #(#fields)*)
+                .cloned()
+                .collect::<HashSet<_>>();
+            where_clause.predicates.extend(
+                originals
+                    .iter()
+                    .filter_map(|field| -> Option<[WherePredicate; 2]> {
+                        let FieldIr {
+                            ty, strategy, span, ..
+                        } = field;
+                        let FieldStrategy::Optionize {
+                            nest: Some(nest), ..
+                        } = strategy
+                        else {
+                            return None;
+                        };
+                        Some([
+                            pqs! { *span => #nest: #krate::Optionized<#ty> },
+                            pqs! { *span => <#nest as #krate::Optionized<#ty>>::Errors: 'static },
+                        ])
+                    })
+                    .flatten()
+                    .filter(|predicate| predicates.insert(predicate.clone())),
+            );
+            where_clause
         };
-
-        output.push(qs! { span =>
-            #[automatically_derived]
-            impl #impl_generics #krate::Optionized<#Subject> for #Object #where_clause {
-                type Errors = #krate::ErrorCollection;
+        let validate = {
+            let failed = format_ident!("failed", span = Span::mixed_site());
+            let errors = format_ident!("errors", span = Span::mixed_site());
+            let fields = originals.iter().map(|field| Validate {
+                field,
+                subject: &Subject,
+                object: &Object,
+                failed: &failed,
+                errors: &errors,
+            });
+            qs! { span =>
                 #[inline]
                 fn validate(&#this) -> ::core::result::Result<(), Self::Errors> {
                     let mut #failed = false;
                     let mut #errors = #krate::ErrorCollection::default();
-                    #(#validates)*
+                    #(#fields)*
                     if !#failed {
                         ::core::result::Result::Ok(())
                     } else {
                         ::core::result::Result::Err(#errors)
                     }
                 }
+            }
+        };
+        let upgrade = {
+            let skips = originals.iter().map(UpgradeSkip);
+            let upgrades = originals.iter().map(Upgrade);
+            let fields = originals.iter().map(UpgradeFieldValue);
+            let subject = construct!(subject_style, span => [#subject_constructor] #(#fields)*);
+            qs! { span =>
                 #[inline]
                 unsafe fn upgrade_unchecked(#this) -> #Subject {
                     #(#skips)*
@@ -558,10 +575,19 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                     #subject
                 }
             }
+        };
+
+        output.extend(qs! { span =>
+            #[automatically_derived]
+            impl #impl_generics #krate::Optionized<#Subject> for #Object #where_clause {
+                type Errors = #krate::ErrorCollection;
+                #validate
+                #upgrade
+            }
         });
     }
 
-    Ok(q! { #(#declarations)* const _: () = { #(#output)* }; })
+    Ok(q! { #declarations const _: () = { #output }; })
 }
 
 pub fn proc(args: TokenStream, input: &TokenStream) -> Result<TokenStream> {

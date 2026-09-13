@@ -64,15 +64,15 @@ pub(super) struct Retain<'f, 'i> {
 impl ToTokens for Retain<'_, '_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         expand! { self.field => { krate, ty, optionized, strategy, index, local } }
+        let FieldStrategy::Optionize { wrap, nest } = strategy else {
+            return;
+        };
+
         let this = format_ident!("self", span = Span::mixed_site());
         let baseline = self.baseline;
         let remains = self.remains;
-        let retain = match strategy {
-            FieldStrategy::Skip { .. } => return,
-            FieldStrategy::Optionize {
-                wrap: true,
-                nest: None,
-            } => q! {
+        let retain = match (wrap, nest) {
+            (true, None) => q! {
                 if let (::core::option::Option::Some(value), ::core::option::Option::Some(baseline)) =
                     (#this.#optionized.as_ref(), #baseline.#local)
                     && #krate::__private::Equal::<#index>::equal(value, baseline)
@@ -81,34 +81,27 @@ impl ToTokens for Retain<'_, '_> {
                 }
                 #remains |= #this.#optionized.is_some();
             },
-            FieldStrategy::Optionize {
-                wrap: false,
-                nest: None,
-            } => q! {
+            (false, None) => q! {
                 #remains |= #baseline.#local.is_none_or(|baseline| {
                     !#krate::__private::Equal::<#index>::equal(&#this.#optionized, baseline)
                 });
             },
-            FieldStrategy::Optionize {
-                wrap: true,
-                nest: Some(nest),
-            } => q! {
-                let changed = match (#this.#optionized.as_mut(), #baseline.#local) {
-                    (::core::option::Option::None, _) => false,
-                    (::core::option::Option::Some(_), ::core::option::Option::None) => true,
-                    (::core::option::Option::Some(value), ::core::option::Option::Some(baseline)) => {
-                        <#nest as #krate::Retain<#ty>>::retain_view(value, baseline)
+            (true, Some(nest)) => q! {
+                #remains |= {
+                    let changed = match (#this.#optionized.as_mut(), #baseline.#local) {
+                        (::core::option::Option::None, _) => false,
+                        (::core::option::Option::Some(_), ::core::option::Option::None) => true,
+                        (::core::option::Option::Some(value), ::core::option::Option::Some(baseline)) => {
+                            <#nest as #krate::Retain<#ty>>::retain_view(value, baseline)
+                        }
+                    };
+                    if !changed {
+                        #this.#optionized = ::core::option::Option::None;
                     }
+                    changed
                 };
-                if !changed {
-                    #this.#optionized = ::core::option::Option::None;
-                }
-                #remains |= changed;
             },
-            FieldStrategy::Optionize {
-                wrap: false,
-                nest: Some(nest),
-            } => q! {
+            (false, Some(nest)) => q! {
                 #remains |= match #baseline.#local {
                     ::core::option::Option::None => true,
                     ::core::option::Option::Some(baseline) => {
@@ -138,20 +131,20 @@ impl ToTokens for Optionize<'_, '_> {
             }
         }
 
-        let subject = self.subject;
-
         let FieldStrategy::Optionize { wrap, nest } = strategy else {
             return;
         };
 
-        let mut optionize = if let Some(nest) = nest {
+        let subject = self.subject;
+        let optionize = if let Some(nest) = nest {
             q! { <#nest as #krate::PartialOptionized<#ty>>::optionize(#subject.#original) }
         } else {
             q! { #subject.#original }
         };
-
-        if *wrap {
-            optionize = q! { ::core::option::Option::Some(#optionize) }
+        let optionize = if *wrap {
+            q! { ::core::option::Option::Some(#optionize) }
+        } else {
+            optionize
         };
 
         tokens.extend(q! { #optionized: #optionize, });
@@ -174,30 +167,30 @@ impl ToTokens for Patch<'_, '_> {
                 strategy,
             }
         }
-        let this = format_ident!("self", span = Span::mixed_site());
-
-        let subject = self.subject;
-
         let FieldStrategy::Optionize { wrap, nest } = strategy else {
             return;
         };
 
+        let this = format_ident!("self", span = Span::mixed_site());
+        let subject = self.subject;
         let patch = if *wrap {
             q! { v }
         } else {
             q! { #this.#optionized }
         };
-        let mut patch = if let Some(nest) = nest {
+        let patch = if let Some(nest) = nest {
             q! { <#nest as #krate::PartialOptionized<#ty>>::patch(#patch, &mut #subject.#original); }
         } else {
             q! { #subject.#original = #patch; }
         };
-        if *wrap {
-            patch = q! {
+        let patch = if *wrap {
+            q! {
                 if let ::core::option::Option::Some(v) = #this.#optionized {
                     #patch
                 }
             }
+        } else {
+            patch
         };
 
         tokens.extend(patch);
@@ -219,14 +212,12 @@ impl ToTokens for Merge<'_, '_> {
                 strategy,
             }
         }
-        let this = format_ident!("self", span = Span::mixed_site());
-
-        let other = self.other;
-
         let FieldStrategy::Optionize { wrap, nest } = strategy else {
             return;
         };
 
+        let this = format_ident!("self", span = Span::mixed_site());
+        let other = self.other;
         let merge = match (wrap, nest) {
             (true, Some(nest)) => q! {
                 match (&mut #this.#optionized, #other.#optionized) {
@@ -272,18 +263,11 @@ impl ToTokens for Validate<'_, '_, '_> {
                 local,
             }
         }
-        let this = format_ident!("self", span = Span::mixed_site());
-
         let FieldStrategy::Optionize { wrap, nest } = strategy else {
             return;
         };
 
-        let original = member_to_string(original);
-        let optionize = member_to_string(optionized);
-
-        let renamed = original == optionize;
-
-        let (missing_err, nest_map_err) = {
+        let (missing, nested) = {
             let ty = {
                 let subject = self.subject.to_string();
                 let object = self.object.to_string();
@@ -296,10 +280,15 @@ impl ToTokens for Validate<'_, '_, '_> {
                 }
             };
 
-            let field = if renamed {
-                q! { #krate::FieldInfo::Identical ( #original ) }
-            } else {
-                q! { #krate::FieldInfo::Renamed { original: #original, optionized: #optionize } }
+            let field = {
+                let original = member_to_string(original);
+                let optionized = member_to_string(optionized);
+
+                if original == optionized {
+                    q! { #krate::FieldInfo::Identical(#original) }
+                } else {
+                    q! { #krate::FieldInfo::Renamed { original: #original, optionized: #optionized } }
+                }
             };
 
             (
@@ -319,27 +308,30 @@ impl ToTokens for Validate<'_, '_, '_> {
             )
         };
 
+        let this = format_ident!("self", span = Span::mixed_site());
         let failed = self.failed;
         let errors = self.errors;
-
-        tokens.extend(q! { let #local = &#this.#optionized; });
-
         let validate = nest.as_ref().map(|nest| {
+            let value = if *wrap {
+                q! { #local }
+            } else {
+                q! { &#this.#optionized }
+            };
             q! {
-                if let ::core::result::Result::Err(e) = <#nest as #krate::Optionized<#ty>>::validate(#local) {
+                if let ::core::result::Result::Err(e) = <#nest as #krate::Optionized<#ty>>::validate(#value) {
                     #failed = true;
-                    #errors.extend(::core::iter::IntoIterator::into_iter(e).map(#nest_map_err));
+                    #errors.extend(::core::iter::IntoIterator::into_iter(e).map(#nested));
                 }
             }
         });
 
         let validate = if *wrap {
             q! {
-                if let ::core::option::Option::Some(#local) = #local {
+                if let ::core::option::Option::Some(#local) = &#this.#optionized {
                     #validate
                 } else {
                     #failed = true;
-                    #errors.push(#missing_err);
+                    #errors.push(#missing);
                 }
             }
         } else {
@@ -363,12 +355,11 @@ impl ToTokens for Upgrade<'_> {
                 local,
             }
         }
-        let this = format_ident!("self", span = Span::mixed_site());
-
         let FieldStrategy::Optionize { wrap, nest } = strategy else {
             return;
         };
 
+        let this = format_ident!("self", span = Span::mixed_site());
         tokens.extend(q! { let #local = #this.#optionized; });
         if *wrap {
             tokens.extend(
