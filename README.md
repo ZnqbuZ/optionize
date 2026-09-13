@@ -8,7 +8,7 @@ A Rust library providing macros and traits to easily generate and manage "option
 - **Patching / Loading**: Apply an optionized struct onto a complete struct, updating only the `Some` fields.
 - **Merging**: Merge two optionized structs together.
 - **Retaining changes**: Remove updates that already match a complete or partial baseline.
-- **Upgrading**: Convert an optionized struct back into a complete struct. If any required fields are missing, it returns beautifully structured errors detailing exactly what is missing.
+- **Upgrading**: Convert an optionized struct back into a complete struct. If any required fields are missing, it returns structured errors identifying missing fields and nested failures.
 
 ## Installation
 
@@ -57,6 +57,10 @@ fn main() {
 
 ## Advanced Features & Customization
 
+The [crate documentation](optionize/src/lib.rs) contains runnable examples for every
+attribute, generic and external mappings, three-state updates, comparison bounds,
+and validation errors. `cargo test --doc -p optionize` checks those examples.
+
 You can customize the generated struct and its fields using the `#[optionize(...)]` helper attribute.
 
 ### Struct Attributes
@@ -81,12 +85,17 @@ struct Config {
 }
 ```
 
+The macro also accepts `#[optionized(crate = path)]` for a custom re-export path.
+Renamed Cargo dependencies are detected automatically. Put inherited derives after
+`#[optionized]`; attributes that ran before the macro are not inherited. Repeated
+`attrs(...)` lists are combined, while `attrs()` clears inherited attributes.
+
 ### Field Attributes
 
 - `#[optionize(name = "prefix_{}_suffix")]`: Rename a field in the optionized struct. `{}` will be replaced with the original field name. With `subject = ...`, this instead names the corresponding subject field.
 - `#[optionize(flatten)]`: Do not wrap the field in `Option<Value>`. Patching always assigns the field, including `None`; nested fields delegate to their patch implementation.
 - `#[optionize(nest = NestedTypeOptional)]` or `#[optionize(nest = "NestedTypeOptional")]`: Recursively apply optionize logic to a nested optionized struct. With `subject = ...`, name the nested subject type instead. Allows deep patching, retaining changes, and upgrading.
-- `#[optionize(skip)]` / `#[optionize(skip(upgrade = "expr"))]`: Completely omit the field from the generated optionized struct. Only allowed when `partial` is specified on the struct. When upgrading, it uses `Default::default()` or the provided `upgrade` expression. With `subject = ...`, declare the unmanaged subject field with its subject type; the macro removes that field from the local object.
+- `#[optionize(skip)]` / `#[optionize(skip(upgrade = expression))]`: Completely omit the field from the generated optionized struct. Only allowed when `partial` is specified on the struct. When upgrading, it uses `Default::default()` or the provided `upgrade` expression. With `subject = ...`, declare the unmanaged subject field with its subject type; the macro removes that field from the local object.
 
 #### Nested Structs Example
 
@@ -296,7 +305,7 @@ These rules apply to both local and external subjects.
 ## Crates in this workspace
 
 - [`optionize`](optionize): Core traits (`PartialOptionized`, `Optionizable`, `Optionized`, `Retain`), error types, and re-exports.
-- [`optionize-macros`](optionize-macros): Procedural macros (`#[optionized]` and `#[derive(Optionize)]`).
+- [`optionize-macros`](optionize-macros): The `#[optionized]` procedural macro and its internal derive helper.
 
 ## License
 
