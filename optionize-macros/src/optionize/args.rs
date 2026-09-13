@@ -5,38 +5,14 @@ use derive_more::Deref;
 use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::{ToTokens, format_ident};
-use std::mem::take;
 use syn::spanned::Spanned;
 use syn::token::{Bracket, Pound};
 use syn::{AttrStyle, Attribute, Expr, Lit, LitStr, Meta, Path, TypePath, parse_quote};
 
 use super::utils::{format, is_optionize};
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct MetaList(Vec<Meta>);
-
-impl MetaList {
-    fn merge(lists: &mut Vec<Self>) -> Option<SpannedValue<Vec<Attribute>>> {
-        (!lists.is_empty()).then(|| {
-            let mut span = Span::call_site();
-            let attributes = take(lists)
-                .into_iter()
-                .flat_map(|ml| ml.0)
-                .map(|meta| {
-                    span = span.join(meta.span()).unwrap_or(meta.span());
-                    let span = meta.span();
-                    Attribute {
-                        pound_token: Pound(span),
-                        style: AttrStyle::Outer,
-                        bracket_token: Bracket(span),
-                        meta,
-                    }
-                })
-                .collect();
-            SpannedValue::new(attributes, span)
-        })
-    }
-}
 
 impl FromMeta for MetaList {
     fn from_list(items: &[NestedMeta]) -> Result<Self> {
@@ -84,26 +60,31 @@ impl ToTokens for Crate {
 }
 
 #[derive(Debug, Default, FromMeta)]
-#[darling(default, and_then = "Self::finalize")]
+#[darling(default)]
 pub(super) struct Attributes {
-    #[doc(hidden)]
     #[darling(rename = "attrs", multiple)]
-    _attributes: Vec<MetaList>,
-    #[darling(skip)]
-    attributes: Option<SpannedValue<Vec<Attribute>>>,
+    attributes: Vec<MetaList>,
 }
 
 impl Attributes {
-    fn finalize(mut self) -> Result<Self> {
-        self.attributes = MetaList::merge(&mut self._attributes);
-        Ok(self)
-    }
-
     pub(super) fn patch(self, attrs: &mut Vec<Attribute>) {
-        if let Some(attributes) = self.attributes {
-            *attrs = attributes.into_inner();
-        } else {
+        if self.attributes.is_empty() {
             attrs.retain(|attr| !is_optionize(attr));
+        } else {
+            *attrs = self
+                .attributes
+                .into_iter()
+                .flat_map(|attributes| attributes.0)
+                .map(|meta| {
+                    let span = meta.span();
+                    Attribute {
+                        pound_token: Pound(span),
+                        style: AttrStyle::Outer,
+                        bracket_token: Bracket(span),
+                        meta,
+                    }
+                })
+                .collect();
         }
     }
 }
@@ -125,7 +106,7 @@ pub(super) struct GeneralArgs {
 
 impl GeneralArgs {
     fn is_some(&self) -> bool {
-        self.name.is_some() || self.attrs.attributes.is_some()
+        self.name.is_some() || !self.attrs.attributes.is_empty()
     }
 }
 
@@ -203,10 +184,18 @@ impl StructArgs {
                 );
             }
 
-            if let Some(attrs) = &self.attrs.attributes {
+            if !self.attrs.attributes.is_empty() {
+                let span = self
+                    .attrs
+                    .attributes
+                    .iter()
+                    .flat_map(|attributes| &attributes.0)
+                    .fold(Span::call_site(), |span, meta| {
+                        span.join(meta.span()).unwrap_or(meta.span())
+                    });
                 errors.push(
                     Error::custom("`attrs` cannot be used when `object` or `subject` is specified")
-                        .with_span(&attrs.span()),
+                        .with_span(&span),
                 );
             }
         }
