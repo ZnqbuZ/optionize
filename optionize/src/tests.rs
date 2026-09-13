@@ -253,7 +253,7 @@ fn marked_avoids_existing_field_names() {
     #[optionize(partial(marked, upgradable))]
     #[derive(Debug, PartialEq)]
     struct Config {
-        _marker: u32,
+        r#_marker: u32,
         __marker: u32,
     }
 

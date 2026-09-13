@@ -10,6 +10,7 @@ use proc_macro2::{Ident, Span, TokenStream};
 use quote::{format_ident, quote, quote_spanned as qs};
 use std::collections::HashSet;
 use std::mem::take;
+use syn::ext::IdentExt;
 use syn::spanned::Spanned;
 use syn::token::{Brace, Paren};
 use syn::{
@@ -166,7 +167,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                 let names = fields
                     .iter()
                     .filter_map(|f| f.ident.as_ref())
-                    .map(|i| i.to_string())
+                    .map(|i| i.unraw().to_string())
                     .collect::<HashSet<_>>();
                 let mut ident = "_marker".to_owned();
                 while names.contains(&ident) {
