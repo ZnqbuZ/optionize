@@ -3,7 +3,7 @@
 use core::marker::PhantomData;
 
 use optionize::{Optionizable, Optionized, PartialOptionized, Retain, Schema, optionized};
-use optionize_test_models as proto;
+use optionize_test_models as models;
 
 #[optionized]
 #[derive(Debug)]
@@ -20,12 +20,6 @@ struct NoClone(u32);
 
 #[derive(Debug)]
 struct NoEq(u32);
-
-#[optionized]
-#[derive(Debug)]
-struct Owned {
-    value: NoClone,
-}
 
 #[optionized]
 #[derive(Debug)]
@@ -84,14 +78,7 @@ struct Tuple(#[optionize(skip)] NoEq, u32, Option<u32>);
 struct Unit;
 
 #[optionized]
-#[optionize(object = proto::Shared)]
-#[derive(Debug)]
-struct ForeignObjectSubject {
-    value: u32,
-}
-
-#[optionized]
-#[optionize(subject = proto::Subject)]
+#[optionize(subject = models::Subject)]
 #[derive(Debug)]
 struct ForeignSubjectPatch {
     #[optionize(name = "enabled")]
@@ -102,19 +89,19 @@ struct ForeignSubjectPatch {
 }
 
 #[optionized]
-#[optionize(subject = proto::NestedSubject)]
+#[optionize(subject = models::NestedSubject)]
 #[derive(Debug)]
 struct ForeignNestedPatch {
     value: Option<u32>,
 }
 
 #[optionized]
-#[optionize(subject = proto::ContainerSubject)]
+#[optionize(subject = models::ContainerSubject)]
 #[derive(Debug)]
 struct ForeignContainerPatch {
-    #[optionize(nest = proto::NestedSubject)]
+    #[optionize(nest = models::NestedSubject)]
     nested: Option<ForeignNestedPatch>,
-    #[optionize(flatten, nest = proto::NestedSubject)]
+    #[optionize(flatten, nest = models::NestedSubject)]
     flattened: ForeignNestedPatch,
 }
 
@@ -182,7 +169,7 @@ fn empty_inner() -> InnerOptional {
 }
 
 #[test]
-fn equal_false_zero_empty_and_clear_values_are_removed() {
+fn retain_removes_equal_false_zero_empty_and_clear_values() {
     let baseline = Values {
         enabled: false,
         count: 0,
@@ -207,7 +194,7 @@ fn equal_false_zero_empty_and_clear_values_are_removed() {
 }
 
 #[test]
-fn changed_false_zero_empty_and_clear_values_are_preserved() {
+fn retain_preserves_changed_false_zero_empty_and_clear_values() {
     let baseline = Values {
         enabled: true,
         count: 1,
@@ -232,7 +219,7 @@ fn changed_false_zero_empty_and_clear_values_are_preserved() {
 }
 
 #[test]
-fn partial_baseline_preserves_unknown_fields_and_explicit_clears() {
+fn retain_preserves_unknown_fields_and_explicit_clears() {
     let baseline = ValuesOptional {
         enabled: Some(false),
         count: None,
@@ -268,25 +255,7 @@ fn partial_baseline_preserves_unknown_fields_and_explicit_clears() {
 }
 
 #[test]
-fn retaining_only_borrows_non_clone_values() {
-    let baseline = Owned { value: NoClone(2) };
-    let mut equal = OwnedOptional {
-        value: Some(NoClone(2)),
-    };
-    assert!(!equal.retain(&baseline));
-    assert_eq!(equal.value, None);
-    assert_eq!(baseline.value, NoClone(2));
-
-    let mut changed = OwnedOptional {
-        value: Some(NoClone(3)),
-    };
-    assert!(changed.retain(&baseline));
-    assert_eq!(changed.value, Some(NoClone(3)));
-    assert_eq!(baseline.value, NoClone(2));
-}
-
-#[test]
-fn concrete_and_generic_non_equality_types_keep_normal_operations() {
+fn partial_operations_accept_concrete_and_generic_non_equality_types() {
     let patch = Uncomparable { value: NoEq(1) }.downgrade();
     patch.validate().unwrap();
     let mut subject = patch.upgrade().unwrap();
@@ -305,12 +274,14 @@ fn concrete_and_generic_non_equality_types_keep_normal_operations() {
 }
 
 #[test]
-fn generic_retain_supports_full_and_partial_baselines() {
+fn retain_accepts_full_and_partial_baselines_without_clone() {
     let baseline = Generic { value: NoClone(5) };
     let mut patch = GenericOptional {
         value: Some(NoClone(5)),
     };
     assert!(!retain_generic(&mut patch, &baseline));
+    assert_eq!(patch.value, None);
+    assert_eq!(baseline.value, NoClone(5));
 
     let baseline = GenericOptional { value: None };
     let mut patch = GenericOptional {
@@ -321,7 +292,7 @@ fn generic_retain_supports_full_and_partial_baselines() {
 }
 
 #[test]
-fn nested_views_include_optional_and_flattened_descendants() {
+fn schema_includes_optional_and_flattened_descendants() {
     #[optionized]
     struct Root {
         #[optionize(nest = OuterOptional)]
@@ -373,7 +344,7 @@ fn nested_views_include_optional_and_flattened_descendants() {
 }
 
 #[test]
-fn nested_full_baselines_recurse_without_whole_subject_equality() {
+fn retain_recurses_without_whole_subject_equality() {
     let baseline = Outer {
         nested: Inner {
             value: 1,
@@ -402,7 +373,7 @@ fn nested_full_baselines_recurse_without_whole_subject_equality() {
 }
 
 #[test]
-fn nested_unknown_baseline_preserves_even_an_explicit_empty_patch() {
+fn retain_preserves_empty_nested_patches_against_unknown_baselines() {
     let baseline = OuterOptional {
         nested: None,
         flattened: empty_inner(),
@@ -426,7 +397,7 @@ fn nested_unknown_baseline_preserves_even_an_explicit_empty_patch() {
 }
 
 #[test]
-fn nested_partial_baselines_only_remove_known_equal_fields() {
+fn retain_removes_only_known_equal_fields_in_nested_patches() {
     let baseline = OuterOptional {
         nested: Some(InnerOptional {
             value: Some(1),
@@ -457,7 +428,7 @@ fn nested_partial_baselines_only_remove_known_equal_fields() {
 }
 
 #[test]
-fn flattened_values_stay_present_but_report_whether_they_change() {
+fn retain_preserves_flattened_values_and_reports_changes() {
     let baseline = Flattened {
         value: 0,
         optional: None,
@@ -479,7 +450,92 @@ fn flattened_values_stay_present_but_report_whether_they_change() {
 }
 
 #[test]
-fn skipped_fields_markers_tuples_and_units_do_not_create_changes() {
+fn retain_preserves_flattened_fields_missing_from_independent_baselines() {
+    #[optionized]
+    struct Config {
+        #[optionize(flatten)]
+        count: u32,
+        #[optionize(flatten, nest = InnerOptional)]
+        nested: Inner,
+    }
+
+    struct Baseline {
+        count: Option<u32>,
+        nested: Option<Inner>,
+    }
+
+    impl Schema<Config, ConfigOptional> for Baseline {
+        type View<'v> = <ConfigOptional as Schema<Config>>::View<'v>;
+
+        #[allow(clippy::field_reassign_with_default)]
+        fn view<'s>(&'s self) -> Self::View<'s>
+        where
+            Config: 's,
+        {
+            let mut view: Self::View<'s> = Default::default();
+            view.v_count = self.count.as_ref();
+            view.v_nested = self.nested.as_ref().map(Schema::view);
+            view
+        }
+    }
+
+    // Unknown flattened values must count as changes even when they look empty.
+    let mut patch = ConfigOptional {
+        count: 0,
+        nested: empty_inner(),
+    };
+    assert!(patch.retain(&Baseline {
+        count: Some(0),
+        nested: None,
+    }));
+    assert_eq!(patch.count, 0);
+    assert_eq!(patch.nested.value, None);
+    assert_eq!(patch.nested.label, None);
+
+    patch.nested.value = Some(0);
+    patch.nested.label = Some(String::new());
+    assert!(patch.retain(&Baseline {
+        count: None,
+        nested: Some(Inner {
+            value: 0,
+            label: String::new(),
+        }),
+    }));
+    assert_eq!(patch.count, 0);
+    assert_eq!(patch.nested.value, None);
+    assert_eq!(patch.nested.label, None);
+}
+
+#[test]
+fn retain_uses_partial_equality_for_non_reflexive_values() {
+    #[optionized]
+    struct Measurement {
+        value: f64,
+        #[optionize(flatten)]
+        flattened: f64,
+    }
+
+    let baseline = Measurement {
+        value: f64::NAN,
+        flattened: 0.0,
+    };
+    let mut patch = MeasurementOptional {
+        value: Some(f64::NAN),
+        flattened: -0.0,
+    };
+    assert!(patch.retain(&baseline));
+    assert!(patch.value.unwrap().is_nan());
+    assert!(patch.flattened.is_sign_negative());
+
+    patch.value = None;
+    assert!(!patch.retain(&baseline));
+    patch.flattened = f64::NAN;
+    assert!(patch.retain(&baseline));
+    assert!(patch.flattened.is_nan());
+}
+
+#[test]
+fn retain_ignores_skipped_fields_markers_and_empty_shapes() {
     let baseline = Marked {
         value: 1,
         ignored: NoEq(2),
@@ -505,21 +561,8 @@ fn skipped_fields_markers_tuples_and_units_do_not_create_changes() {
 }
 
 #[test]
-fn external_objects_support_full_and_partial_baselines() {
-    let baseline = ForeignObjectSubject { value: 0 };
-    let mut patch = proto::Shared { value: Some(0) };
-    assert!(!patch.retain(&baseline));
-    assert_eq!(patch.value, None);
-
-    let baseline = proto::Shared { value: None };
-    let mut patch = proto::Shared { value: Some(0) };
-    assert!(patch.retain(&baseline));
-    assert_eq!(patch.value, Some(0));
-}
-
-#[test]
-fn external_subjects_supply_full_baselines_without_local_wrappers() {
-    let baseline = proto::Subject {
+fn retain_accepts_external_subjects_without_wrappers() {
+    let baseline = models::Subject {
         enabled: false,
         count: 0,
         label: String::new(),
@@ -550,10 +593,10 @@ fn external_subjects_supply_full_baselines_without_local_wrappers() {
 }
 
 #[test]
-fn reverse_nested_mappings_infer_local_descriptors() {
-    let baseline = proto::ContainerSubject {
-        nested: proto::NestedSubject { value: 1 },
-        flattened: proto::NestedSubject { value: 2 },
+fn retain_infers_local_descriptors_for_external_nested_subjects() {
+    let baseline = models::ContainerSubject {
+        nested: models::NestedSubject { value: 1 },
+        flattened: models::NestedSubject { value: 2 },
     };
     let mut patch = ForeignContainerPatch {
         nested: Some(ForeignNestedPatch { value: Some(1) }),
@@ -566,18 +609,7 @@ fn reverse_nested_mappings_infer_local_descriptors() {
 }
 
 #[test]
-fn borrowed_fields_do_not_require_static_lifetimes() {
-    let text = String::from("borrowed locally");
-    let baseline = Borrowed { value: &text };
-    let mut patch = BorrowedOptional { value: Some(&text) };
-
-    assert!(!patch.retain(&baseline));
-    assert_eq!(patch.value, None);
-    assert_eq!(baseline.value, "borrowed locally");
-}
-
-#[test]
-fn subject_views_use_the_same_type_as_object_schemas() {
+fn schema_shares_borrowed_views_between_subject_and_object() {
     use optionize::Schema;
 
     let text = String::from("borrowed through the object schema");
@@ -591,7 +623,7 @@ fn subject_views_use_the_same_type_as_object_schemas() {
 }
 
 #[test]
-fn nested_objects_do_not_require_subject_schema_implementations() {
+fn partial_operations_accept_nested_objects_without_subject_schemas() {
     struct Child {
         value: u32,
     }
@@ -679,7 +711,7 @@ fn nested_objects_do_not_require_subject_schema_implementations() {
 }
 
 #[test]
-fn independent_baseline_types_can_rename_and_omit_fields() {
+fn retain_accepts_independent_baselines_with_renamed_and_omitted_fields() {
     let baseline = RenamedBaseline {
         active: Some(false),
         title: Some(String::from("same")),
@@ -761,7 +793,93 @@ fn retain_is_idempotent_and_preserves_sequential_application() {
 }
 
 #[test]
-fn nested_borrowed_fields_retain_without_static_lifetimes() {
+fn retain_preserves_nested_application_when_redundant_patches_are_omitted() {
+    #[optionized]
+    #[derive(Debug, PartialEq)]
+    struct Leaf {
+        value: u32,
+        #[optionize(flatten)]
+        enabled: bool,
+    }
+
+    #[optionized]
+    #[derive(Debug, PartialEq)]
+    struct Branch {
+        #[optionize(nest = LeafOptional)]
+        nested: Leaf,
+        #[optionize(flatten, nest = LeafOptional)]
+        flattened: Leaf,
+    }
+
+    fn subject(value: u32, enabled: bool) -> Branch {
+        Branch {
+            nested: Leaf { value, enabled },
+            flattened: Leaf { value, enabled },
+        }
+    }
+
+    fn patch(
+        nested: Option<(Option<u32>, bool)>,
+        flattened: (Option<u32>, bool),
+    ) -> BranchOptional {
+        BranchOptional {
+            nested: nested.map(|(value, enabled)| LeafOptional { value, enabled }),
+            flattened: LeafOptional {
+                value: flattened.0,
+                enabled: flattened.1,
+            },
+        }
+    }
+
+    let fields = [
+        (None, false),
+        (None, true),
+        (Some(0), false),
+        (Some(0), true),
+        (Some(1), false),
+        (Some(1), true),
+    ];
+    let nested = || core::iter::once(None).chain(fields.into_iter().map(Some));
+
+    for initial_value in [0, 1] {
+        for initial_enabled in [false, true] {
+            for baseline_nested in nested() {
+                for baseline_flattened in fields {
+                    for next_nested in nested() {
+                        for next_flattened in fields {
+                            let baseline = patch(baseline_nested, baseline_flattened);
+                            let mut retained = patch(next_nested, next_flattened);
+                            let remains = retained.retain(&baseline);
+                            let fields = (
+                                retained
+                                    .nested
+                                    .as_ref()
+                                    .map(|leaf| (leaf.value, leaf.enabled)),
+                                (retained.flattened.value, retained.flattened.enabled),
+                            );
+                            assert_eq!(retained.retain(&baseline), remains);
+                            assert_eq!(retained, patch(fields.0, fields.1));
+
+                            let mut expected = subject(initial_value, initial_enabled);
+                            patch(baseline_nested, baseline_flattened).patch(&mut expected);
+                            patch(next_nested, next_flattened).patch(&mut expected);
+
+                            let mut actual = subject(initial_value, initial_enabled);
+                            baseline.patch(&mut actual);
+                            if remains {
+                                retained.patch(&mut actual);
+                            }
+                            assert_eq!(actual, expected);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn retain_accepts_nested_borrowed_fields_without_static_lifetimes() {
     let text = String::from("nested local borrow");
     let baseline = BorrowedContainer {
         nested: Borrowed { value: &text },
@@ -784,7 +902,7 @@ fn nested_borrowed_fields_retain_without_static_lifetimes() {
 }
 
 #[test]
-fn nested_non_equality_fields_keep_loading_and_upgrading() {
+fn partial_operations_accept_nested_non_equality_types() {
     let subject = UncomparableContainer {
         nested: Uncomparable { value: NoEq(1) },
         flattened: Uncomparable { value: NoEq(2) },
@@ -812,7 +930,7 @@ macro_rules! many_fields {
         }
 
         #[test]
-        fn sixty_four_fields_work_with_the_default_recursion_limit() {
+        fn retain_accepts_sixty_four_fields_with_the_default_recursion_limit() {
             let baseline = ManyFields { $($field: 0,)+ };
             let mut equal = ManyFieldsOptional { $($field: Some(0),)+ };
             assert!(!equal.retain(&baseline));

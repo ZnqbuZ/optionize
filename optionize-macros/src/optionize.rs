@@ -577,34 +577,4 @@ pub fn proc(args: TokenStream, input: &TokenStream) -> Result<TokenStream> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn invalid_attributes_do_not_hide_later_field_errors() {
-        let messages = parse(
-            Crate::default(),
-            quote! {
-                struct Config {
-                    #[optionize(skip, flatten)]
-                    first: u32,
-                    #[optionize(name = "{}")]
-                    r#type: u32,
-                }
-            },
-        )
-        .expect_err("both field errors must be reported")
-        .flatten()
-        .into_iter()
-        .map(|error| error.to_string())
-        .collect::<Vec<_>>();
-
-        assert_eq!(messages.len(), 2, "{messages:?}");
-        assert!(messages.iter().any(|message| {
-            message.contains("`skip` attribute cannot be combined with other attributes")
-        }));
-        assert!(messages.iter().any(|message| {
-            message.contains("expected identifier") && message.contains("`type`")
-        }));
-    }
-}
+mod tests;

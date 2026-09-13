@@ -1,12 +1,12 @@
 use core::marker::PhantomData;
 
-use optionize::{Optionizable, Optionized, Retain, Schema, optionized};
+use optionize::{Optionizable, Optionized, PartialOptionized, Retain, Schema, optionized};
 use optionize_test_models as models;
 
 #[optionized]
 #[optionize(object = models::Single)]
 #[derive(Debug, PartialEq)]
-struct SingleTarget {
+struct SingleSubject {
     enabled: bool,
     label: String,
 }
@@ -14,14 +14,14 @@ struct SingleTarget {
 #[optionized]
 #[optionize(object = models::Shared)]
 #[derive(Debug, PartialEq)]
-struct RequiredTarget {
+struct RequiredSubject {
     value: u32,
 }
 
 #[optionized]
 #[optionize(object = "models::Shared")]
 #[derive(Debug, PartialEq)]
-struct NullableTarget {
+struct NullableSubject {
     #[optionize(flatten)]
     value: Option<u32>,
 }
@@ -30,20 +30,20 @@ struct NullableTarget {
 #[derive(Debug, PartialEq)]
 struct RequiredContainer {
     #[optionize(nest = "models::Shared")]
-    nested: RequiredTarget,
+    nested: RequiredSubject,
 }
 
 #[optionized]
 #[derive(Debug, PartialEq)]
 struct NullableContainer {
     #[optionize(nest = "models::Shared")]
-    nested: NullableTarget,
+    nested: NullableSubject,
 }
 
 #[optionized]
 #[optionize(object = models::Generic::<Value>)]
 #[derive(Debug, PartialEq)]
-struct GenericTarget<Value> {
+struct GenericSubject<Value> {
     value: Value,
 }
 
@@ -60,7 +60,7 @@ struct GenericNested<Subject, Patch> {
 #[optionized]
 #[optionize(object = "models::ErasedGeneric", partial(upgradable))]
 #[derive(Debug, PartialEq)]
-struct TargetOnlyGeneric<Value> {
+struct SubjectOnlyGeneric<Value> {
     value: u32,
     #[optionize(skip)]
     marker: PhantomData<Value>,
@@ -74,12 +74,14 @@ where
 }
 
 #[test]
-fn single_concrete_target_infers_validation_and_upgrade() {
-    let patch = models::Single {
+fn external_objects_infer_the_only_subject() {
+    let mut patch = models::Single {
         enabled: Some(false),
         label: Some(String::new()),
     };
 
+    // An unknown baseline also infers the mapping from the external Object alone.
+    assert!(patch.retain(&models::Single::default()));
     patch.validate().unwrap();
     let full = patch.upgrade().unwrap();
     assert!(!full.enabled);
@@ -91,8 +93,8 @@ fn single_concrete_target_infers_validation_and_upgrade() {
 }
 
 #[test]
-fn external_object_still_supports_downgrade_and_load() {
-    let mut full = SingleTarget {
+fn partial_operations_support_external_objects() {
+    let mut full = SingleSubject {
         enabled: true,
         label: "old".into(),
     };
@@ -107,28 +109,28 @@ fn external_object_still_supports_downgrade_and_load() {
 }
 
 #[test]
-fn shared_object_validation_selects_the_target() {
+fn optionized_selects_the_explicit_subject_for_shared_objects() {
     let patch = models::Shared::default();
 
-    assert!(Optionized::<RequiredTarget>::validate(&patch).is_err());
-    Optionized::<NullableTarget>::validate(&patch).unwrap();
+    assert!(Optionized::<RequiredSubject>::validate(&patch).is_err());
+    Optionized::<NullableSubject>::validate(&patch).unwrap();
 
-    let nullable = Optionized::<NullableTarget>::upgrade(patch).unwrap();
+    let nullable = Optionized::<NullableSubject>::upgrade(patch).unwrap();
     assert_eq!(nullable.value, None);
-    assert!(Optionized::<RequiredTarget>::upgrade(models::Shared::default()).is_err());
+    assert!(Optionized::<RequiredSubject>::upgrade(models::Shared::default()).is_err());
 }
 
 #[test]
-fn shared_object_upgrade_infers_from_the_return_type() {
-    let required: RequiredTarget = models::Shared { value: Some(7) }.upgrade().unwrap();
-    let nullable: NullableTarget = models::Shared::default().upgrade().unwrap();
+fn upgrade_infers_shared_object_mappings_from_the_return_type() {
+    let required: RequiredSubject = models::Shared { value: Some(7) }.upgrade().unwrap();
+    let nullable: NullableSubject = models::Shared::default().upgrade().unwrap();
 
     assert_eq!(required.value, 7);
     assert_eq!(nullable.value, None);
 }
 
 #[test]
-fn shared_object_retain_infers_the_mapping_from_the_baseline() {
+fn retain_infers_shared_object_mappings_from_the_baseline() {
     fn trim<Subject, Descriptor, Patch, Baseline>(patch: &mut Patch, baseline: &Baseline) -> bool
     where
         Descriptor: Schema<Subject>,
@@ -139,31 +141,31 @@ fn shared_object_retain_infers_the_mapping_from_the_baseline() {
     }
 
     let mut patch = models::Shared { value: Some(7) };
-    assert!(!patch.retain(&RequiredTarget { value: 7 }));
+    assert!(!patch.retain(&RequiredSubject { value: 7 }));
     assert_eq!(patch.value, None);
 
     patch.value = Some(7);
-    assert!(!trim(&mut patch, &NullableTarget { value: Some(7) }));
+    assert!(!trim(&mut patch, &NullableSubject { value: Some(7) }));
     // This mapping flattens the field, so retaining keeps its stored value.
     assert_eq!(patch.value, Some(7));
 
     let baseline = models::Shared { value: Some(7) };
-    assert!(!Retain::<RequiredTarget>::retain(&mut patch, &baseline));
+    assert!(!Retain::<RequiredSubject>::retain(&mut patch, &baseline));
     assert_eq!(patch.value, None);
 }
 
 #[test]
-fn generic_helpers_can_name_associated_errors() {
-    let required: RequiredTarget = convert(models::Shared { value: Some(9) }).unwrap();
-    let nullable: NullableTarget = convert(models::Shared::default()).unwrap();
+fn upgrade_exposes_associated_errors_to_generic_helpers() {
+    let required: RequiredSubject = convert(models::Shared { value: Some(9) }).unwrap();
+    let nullable: NullableSubject = convert(models::Shared::default()).unwrap();
 
     assert_eq!(required.value, 9);
     assert_eq!(nullable.value, None);
-    assert!(convert::<_, RequiredTarget>(models::Shared::default()).is_err());
+    assert!(convert::<_, RequiredSubject>(models::Shared::default()).is_err());
 }
 
 #[test]
-fn nested_validation_and_upgrade_use_the_declared_target() {
+fn optionized_uses_the_declared_nested_subject_for_shared_objects() {
     let missing_required = RequiredContainerOptional {
         nested: Some(models::Shared::default()),
     };
@@ -184,7 +186,7 @@ fn nested_validation_and_upgrade_use_the_declared_target() {
 }
 
 #[test]
-fn generic_target_infers_type_parameters_from_the_object() {
+fn optionized_infers_subject_parameters_from_external_objects() {
     let patch = models::Generic {
         value: Some(String::from("owned")),
     };
@@ -195,23 +197,36 @@ fn generic_target_infers_type_parameters_from_the_object() {
 }
 
 #[test]
-fn generic_nested_bounds_are_added_to_each_generated_impl() {
-    let full = GenericNested::<RequiredTarget, models::Shared> {
-        nested: RequiredTarget { value: 12 },
+fn nested_operations_propagate_generic_trait_bounds() {
+    let full = GenericNested::<RequiredSubject, models::Shared> {
+        nested: RequiredSubject { value: 12 },
         marker: PhantomData,
     };
 
-    let patch = full.downgrade();
+    let mut patch = full.downgrade();
+    patch.merge(GenericNestedOptional {
+        nested: Some(models::Shared { value: Some(13) }),
+        _marker: PhantomData,
+    });
+
+    let mut baseline = GenericNested::<RequiredSubject, models::Shared> {
+        nested: RequiredSubject { value: 12 },
+        marker: PhantomData,
+    };
+    assert!(patch.retain(&baseline));
+    baseline.load(patch);
+    assert_eq!(baseline.nested.value, 13);
+
+    let patch = baseline.downgrade();
     patch.validate().unwrap();
-    let full = patch.upgrade().unwrap();
-    assert_eq!(full.nested.value, 12);
+    assert_eq!(patch.upgrade().unwrap().nested.value, 13);
 }
 
 #[test]
-fn target_only_type_parameters_can_be_specified_explicitly() {
+fn optionized_accepts_explicit_subject_only_parameters() {
     let patch = models::ErasedGeneric { value: Some(13) };
 
-    Optionized::<TargetOnlyGeneric<u8>>::validate(&patch).unwrap();
-    let full: TargetOnlyGeneric<u8> = patch.upgrade().unwrap();
+    Optionized::<SubjectOnlyGeneric<u8>>::validate(&patch).unwrap();
+    let full: SubjectOnlyGeneric<u8> = patch.upgrade().unwrap();
     assert_eq!(full.value, 13);
 }

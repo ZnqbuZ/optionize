@@ -1,4 +1,4 @@
-use optionize::{Optionizable, Optionized, PartialOptionized, optionized};
+use optionize::{Error, FieldInfo, Optionizable, Optionized, Retain, optionized};
 
 mod wire {
     #[derive(Debug, PartialEq)]
@@ -105,41 +105,38 @@ forwarded_objects! {
 }
 
 #[test]
-fn named_generic_path_supports_all_operations() {
-    let mut value = Named {
-        value: String::from("old"),
-    };
-    let mut patch = wire::Named { value: None };
-    patch.merge(wire::Named {
-        value: Some(String::from("new")),
-    });
-    value.load(patch);
-    assert_eq!(value.value, "new");
-    let patch: wire::Named<String> = value.downgrade();
-    assert!(patch.validate().is_ok());
-    assert_eq!(patch.upgrade().unwrap().value, "new");
+fn object_paths_accept_quoted_and_bare_generic_arguments() {
+    let quoted = Named {
+        value: String::from("quoted"),
+    }
+    .downgrade();
+    assert_eq!(quoted.upgrade().unwrap().value, "quoted");
 
-    let errors = wire::Named::<u32> { value: None }.validate().unwrap_err();
-    let error = errors.into_iter().next().unwrap().to_string();
-    assert!(error.contains("wire"), "{error}");
-    assert!(error.contains("value"), "{error}");
+    let bare = Bare {
+        value: String::from("bare"),
+    }
+    .downgrade();
+    assert_eq!(bare.upgrade().unwrap().value, "bare");
 }
 
 #[test]
-fn tuple_and_unit_paths_upgrade() {
+fn object_paths_support_tuple_and_unit_structs() {
     assert_eq!(wire::Tuple(Some(3)).upgrade().unwrap(), Tuple(3));
     assert_eq!(wire::Empty.upgrade().unwrap(), Empty);
 }
 
 #[test]
-fn lifetime_and_const_arguments_are_preserved() {
-    let values = [1, 2, 3];
-    let patch = Borrowed { values: &values }.downgrade();
-    assert_eq!(patch.upgrade().unwrap().values, &values);
+fn object_paths_preserve_lifetime_and_const_arguments() {
+    let values = [String::from("locally"), String::from("borrowed")];
+    let quoted = Borrowed { values: &values }.downgrade();
+    assert_eq!(quoted.upgrade().unwrap().values, &values);
+
+    let bare = BareBorrowed { values: &values }.downgrade();
+    assert_eq!(bare.upgrade().unwrap().values, &values);
 }
 
 #[test]
-fn object_path_retains_name_placeholder() {
+fn object_templates_expand_type_names_and_preserve_generic_arguments() {
     assert_eq!(
         wire::FormattedOptional { value: Some(7) }
             .upgrade()
@@ -147,58 +144,91 @@ fn object_path_retains_name_placeholder() {
             .value,
         7
     );
-}
 
-#[test]
-fn bare_generic_path_supports_all_operations() {
-    let mut full = Bare {
-        value: String::from("old"),
-    };
-    let mut patch = wire::Bare { value: None };
-    patch.merge(wire::Bare {
-        value: Some(String::from("new")),
-    });
-    full.load(patch);
-    assert_eq!(full.value, "new");
-
-    let patch: wire::Bare<String> = full.downgrade();
-    patch.validate().unwrap();
-    assert_eq!(patch.upgrade().unwrap().value, "new");
-}
-
-#[test]
-fn bare_paths_preserve_lifetime_and_const_arguments() {
-    let values = [5, 6, 7];
-    let patch = BareBorrowed { values: &values }.downgrade();
-
-    patch.validate().unwrap();
-    assert_eq!(patch.upgrade().unwrap().values, &values);
-}
-
-#[test]
-fn string_templates_preserve_generic_arguments() {
     let patch = GenericFormatted {
         value: String::from("generic template"),
     }
     .downgrade();
-
-    patch.validate().unwrap();
     assert_eq!(patch.upgrade().unwrap().value, "generic template");
 }
 
 #[test]
-fn macro_expression_forwarding_accepts_templates_and_bare_paths() {
+fn object_arguments_survive_expression_macro_forwarding() {
     let template = ForwardedTemplate {
         value: String::from("forwarded template"),
     }
     .downgrade();
-    template.validate().unwrap();
     assert_eq!(template.upgrade().unwrap().value, "forwarded template");
 
     let path = ForwardedBare {
         value: String::from("forwarded path"),
     }
     .downgrade();
-    path.validate().unwrap();
     assert_eq!(path.upgrade().unwrap().value, "forwarded path");
+}
+
+#[test]
+fn validate_reports_qualified_object_paths() {
+    for (errors, object) in [
+        (
+            wire::Named::<u32> { value: None }.validate().unwrap_err(),
+            "crate::wire::Named<Value>",
+        ),
+        (
+            wire::Bare::<u32> { value: None }.validate().unwrap_err(),
+            "crate::wire::Bare::<Value>",
+        ),
+    ] {
+        let [
+            Error::Missing {
+                ty,
+                field: FieldInfo::Identical("value"),
+            },
+        ] = errors.errors.as_slice()
+        else {
+            panic!("unexpected errors: {errors:?}");
+        };
+        assert_eq!(ty.object.replace(' ', ""), object);
+    }
+}
+
+#[test]
+fn object_paths_accept_quoted_and_bare_associated_type_projections() {
+    trait Model {
+        type Object;
+    }
+
+    struct Family;
+
+    struct Patch {
+        value: Option<u32>,
+    }
+
+    impl Model for Family {
+        type Object = Patch;
+    }
+
+    #[optionized]
+    #[optionize(object = "<Family as Model>::Object")]
+    struct Quoted {
+        value: u32,
+    }
+
+    #[optionized]
+    #[optionize(object = <Family as Model>::Object)]
+    struct Bare {
+        value: u32,
+    }
+
+    let baseline: Quoted = Patch { value: Some(7) }.upgrade().unwrap();
+    assert_eq!(baseline.value, 7);
+    let mut patch = Quoted { value: 7 }.downgrade();
+    assert!(!patch.retain(&baseline));
+    assert_eq!(patch.value, None);
+
+    let baseline: Bare = Patch { value: Some(9) }.upgrade().unwrap();
+    assert_eq!(baseline.value, 9);
+    let mut patch = Bare { value: 9 }.downgrade();
+    assert!(!patch.retain(&baseline));
+    assert_eq!(patch.value, None);
 }

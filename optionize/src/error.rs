@@ -143,3 +143,130 @@ impl Extend<Error> for ErrorCollection {
         self.errors.extend(iter);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::ToString;
+    use alloc::vec;
+
+    fn missing(field: &'static str) -> Error {
+        Error::Missing {
+            ty: TypeInfo {
+                subject: "Config",
+                object: "ConfigOptional",
+            },
+            field: FieldInfo::Identical(field),
+        }
+    }
+
+    #[test]
+    fn error_display_includes_mapping_and_field_names() {
+        let ty = TypeInfo {
+            subject: "Config",
+            object: "ConfigOptional",
+        };
+        let field = FieldInfo::Renamed {
+            original: "enabled",
+            optionized: "active",
+        };
+        assert_eq!(ty.to_string(), "`ConfigOptional` -> `Config`");
+        assert_eq!(
+            field.to_string(),
+            "optionized `active` -> original `enabled`"
+        );
+        assert_eq!(
+            missing("enabled").to_string(),
+            "Missing required field when upgrading `ConfigOptional` -> `Config`: `enabled`"
+        );
+        assert_eq!(
+            Error::Nested {
+                ty,
+                field,
+                source: Box::new(missing("child")),
+            }
+            .to_string(),
+            "Failed to upgrade nested field when upgrading `ConfigOptional` -> `Config`: optionized `active` -> original `enabled`"
+        );
+    }
+
+    #[test]
+    fn error_collection_groups_display_without_reordering_stored_errors() {
+        let alpha = TypeInfo {
+            subject: "Alpha",
+            object: "AlphaOptional",
+        };
+        let errors: ErrorCollection = vec![
+            missing("last"),
+            Error::Nested {
+                ty: alpha,
+                field: FieldInfo::Renamed {
+                    original: "nested",
+                    optionized: "child",
+                },
+                source: Box::new(missing("value")),
+            },
+            Error::Missing {
+                ty: alpha,
+                field: FieldInfo::Identical("name"),
+            },
+        ]
+        .into();
+        assert_eq!(
+            errors.to_string(),
+            concat!(
+                "Upgrade failed with 3 error(s):\n",
+                "  `AlphaOptional` -> `Alpha`\n",
+                "    - Failed to upgrade nested field: optionized `child` -> original `nested`\n",
+                "      - Missing required field when upgrading `ConfigOptional` -> `Config`: `value`\n",
+                "    - Missing required field: `name`\n",
+                "  `ConfigOptional` -> `Config`\n",
+                "    - Missing required field: `last`",
+            )
+        );
+        assert!(matches!(
+            errors.first(),
+            Some(Error::Missing {
+                field: FieldInfo::Identical("last"),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn error_collection_collects_extends_and_iterates_in_insertion_order() {
+        let mut errors: ErrorCollection =
+            [missing("first"), missing("second")].into_iter().collect();
+        errors.extend([missing("third")]);
+        let fields = (&errors)
+            .into_iter()
+            .map(|error| match error {
+                Error::Missing { field, .. } => field.to_string(),
+                Error::Nested { .. } => unreachable!(),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(fields, ["`first`", "`second`", "`third`"]);
+
+        for error in &mut errors {
+            match error {
+                Error::Missing { ty, .. } => ty.object = "RenamedOptional",
+                Error::Nested { .. } => unreachable!(),
+            }
+        }
+        let mut errors = errors.into_iter();
+        for name in ["first", "second", "third"] {
+            assert!(matches!(errors.next(), Some(Error::Missing {
+                ty: TypeInfo { subject: "Config", object: "RenamedOptional" },
+                field: FieldInfo::Identical(field),
+            }) if field == name));
+        }
+        assert!(errors.next().is_none());
+    }
+
+    #[test]
+    fn error_collection_display_describes_an_empty_collection() {
+        let errors = ErrorCollection::default();
+        assert!(errors.is_empty());
+        assert_eq!(errors.to_string(), "No upgrade errors");
+    }
+}

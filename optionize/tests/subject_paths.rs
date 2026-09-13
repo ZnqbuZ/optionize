@@ -1,8 +1,10 @@
-use optionize::{Optionizable, Optionized, PartialOptionized, optionized};
-use optionize_test_models as proto;
+use core::marker::PhantomData;
+
+use optionize::{Optionizable, Optionized, PartialOptionized, Retain, optionized};
+use optionize_test_models as models;
 
 #[optionized]
-#[optionize(subject = proto::Subject, partial(upgradable))]
+#[optionize(subject = models::Subject, partial(upgradable))]
 struct PartialSubjectPatch {
     enabled: Option<bool>,
     count: Option<u32>,
@@ -13,7 +15,7 @@ struct PartialSubjectPatch {
 }
 
 #[test]
-fn reverse_skips_declare_unmanaged_subject_fields_and_upgrade_defaults() {
+fn subject_skips_restore_defaults_when_upgrading() {
     let patch = PartialSubjectPatch {
         enabled: Some(true),
         count: Some(7),
@@ -28,7 +30,7 @@ fn reverse_skips_declare_unmanaged_subject_fields_and_upgrade_defaults() {
 }
 
 #[optionized]
-#[optionize(subject = proto::Subject)]
+#[optionize(subject = models::Subject)]
 #[derive(Debug)]
 struct SubjectPatch {
     enabled: Option<bool>,
@@ -38,7 +40,7 @@ struct SubjectPatch {
 }
 
 #[optionized]
-#[optionize(subject = "proto::Subject")]
+#[optionize(subject = "models::Subject")]
 #[derive(Debug)]
 struct RenamedSubjectPatch {
     #[optionize(name = "enabled")]
@@ -50,7 +52,7 @@ struct RenamedSubjectPatch {
 }
 
 #[optionized]
-#[optionize(subject = proto::GenericSubject::<Value>)]
+#[optionize(subject = models::GenericSubject::<Value>)]
 #[derive(Debug)]
 struct GenericPatch<Value> {
     value: Option<Value>,
@@ -59,48 +61,48 @@ struct GenericPatch<Value> {
 type Maybe<Value> = Option<Value>;
 
 #[optionized]
-#[optionize(subject = "proto::GenericSubject<Value>")]
+#[optionize(subject = "models::GenericSubject<Value>")]
 #[derive(Debug)]
 struct AliasedPatch<Value> {
     value: Maybe<Value>,
 }
 
 #[optionized]
-#[optionize(subject = proto::BorrowedSubject::<'v, Value, N>)]
+#[optionize(subject = models::BorrowedSubject::<'v, Value, N>)]
 struct BorrowedPatch<'v, Value, const N: usize> {
     values: Option<&'v [Value; N]>,
 }
 
 #[optionized]
-#[optionize(subject = proto::TupleSubject)]
+#[optionize(subject = models::TupleSubject)]
 #[derive(Debug)]
 struct TuplePatch(Option<u32>, Option<String>);
 
 #[optionized]
-#[optionize(subject = proto::UnitSubject)]
+#[optionize(subject = models::UnitSubject)]
 #[derive(Debug)]
 struct UnitPatch;
 
 #[optionized]
-#[optionize(subject = proto::NestedSubject)]
+#[optionize(subject = models::NestedSubject)]
 #[derive(Debug)]
 struct NestedPatch {
     value: Option<u32>,
 }
 
 #[optionized]
-#[optionize(subject = proto::ContainerSubject)]
+#[optionize(subject = models::ContainerSubject)]
 #[derive(Debug)]
 struct ContainerPatch {
-    #[optionize(nest = proto::NestedSubject)]
+    #[optionize(nest = models::NestedSubject)]
     nested: Option<NestedPatch>,
-    #[optionize(flatten, nest = proto::NestedSubject)]
+    #[optionize(flatten, nest = models::NestedSubject)]
     flattened: NestedPatch,
 }
 
 #[test]
-fn foreign_subject_supports_patch_merge_downgrade_and_upgrade() {
-    let mut subject = proto::Subject {
+fn subject_mapping_supports_partial_operations_and_upgrading() {
+    let mut subject = models::Subject {
         enabled: true,
         count: 5,
         label: String::from("old"),
@@ -134,8 +136,8 @@ fn foreign_subject_supports_patch_merge_downgrade_and_upgrade() {
 }
 
 #[test]
-fn reverse_field_names_and_flattening_map_to_subject_fields() {
-    let mut subject = proto::Subject {
+fn subject_mapping_renames_and_flattens_fields() {
+    let mut subject = models::Subject {
         enabled: true,
         count: 5,
         label: String::from("old"),
@@ -160,7 +162,7 @@ fn reverse_field_names_and_flattening_map_to_subject_fields() {
 }
 
 #[test]
-fn reverse_validation_keeps_required_and_nullable_fields_distinct() {
+fn validate_requires_explicit_nullable_subject_fields() {
     let patch = SubjectPatch {
         enabled: Some(false),
         count: Some(0),
@@ -181,7 +183,7 @@ fn reverse_validation_keeps_required_and_nullable_fields_distinct() {
 }
 
 #[test]
-fn generic_subject_paths_infer_parameters_and_preserve_owned_values() {
+fn subject_paths_infer_generic_parameters_from_owned_fields() {
     let patch = GenericPatch {
         value: Some(String::from("owned")),
     };
@@ -194,8 +196,8 @@ fn generic_subject_paths_infer_parameters_and_preserve_owned_values() {
 }
 
 #[test]
-fn option_aliases_work_in_reverse_declarations() {
-    let mut subject = proto::GenericSubject { value: 1_u32 };
+fn subject_mapping_accepts_option_aliases() {
+    let mut subject = models::GenericSubject { value: 1_u32 };
     subject.load(AliasedPatch { value: Some(0) });
     assert_eq!(subject.value, 0);
 
@@ -205,7 +207,7 @@ fn option_aliases_work_in_reverse_declarations() {
 }
 
 #[test]
-fn reverse_paths_preserve_lifetime_and_const_arguments() {
+fn subject_paths_preserve_lifetime_and_const_arguments() {
     let values = [String::from("borrowed"), String::from("locally")];
     let patch = BorrowedPatch {
         values: Some(&values),
@@ -219,28 +221,28 @@ fn reverse_paths_preserve_lifetime_and_const_arguments() {
 }
 
 #[test]
-fn reverse_tuple_and_unit_paths_support_upgrading() {
+fn subject_paths_support_tuple_and_unit_structs() {
     let patch = TuplePatch(Some(0), Some(String::new()));
     patch.validate().unwrap();
     assert_eq!(
         patch.upgrade().unwrap(),
-        proto::TupleSubject(0, String::new())
+        models::TupleSubject(0, String::new())
     );
 
-    let patch: UnitPatch = proto::UnitSubject.downgrade();
+    let patch: UnitPatch = models::UnitSubject.downgrade();
     patch.validate().unwrap();
-    assert_eq!(patch.upgrade().unwrap(), proto::UnitSubject);
+    assert_eq!(patch.upgrade().unwrap(), models::UnitSubject);
 }
 
 #[test]
-fn reverse_tuple_skips_preserve_subject_indices_and_compact_object_fields() {
+fn subject_skips_preserve_tuple_indices_and_compact_object_fields() {
     use optionize::{Retain, Schema};
 
     #[optionized]
-    #[optionize(subject = proto::TupleSubject, partial(upgradable))]
+    #[optionize(subject = models::TupleSubject, partial(upgradable))]
     struct PartialTuplePatch(#[optionize(skip(upgrade = 7))] u32, Option<String>);
 
-    let mut subject = proto::TupleSubject(9, String::from("old"));
+    let mut subject = models::TupleSubject(9, String::from("old"));
     let mut patch = PartialTuplePatch(Some(String::from("new")));
     let view = patch.view();
     assert!(view.v_0.is_none());
@@ -258,10 +260,10 @@ fn reverse_tuple_skips_preserve_subject_indices_and_compact_object_fields() {
 }
 
 #[test]
-fn reverse_nested_subject_types_preserve_nested_patch_types() {
-    let mut subject = proto::ContainerSubject {
-        nested: proto::NestedSubject { value: 1 },
-        flattened: proto::NestedSubject { value: 2 },
+fn subject_mapping_preserves_nested_patch_types() {
+    let mut subject = models::ContainerSubject {
+        nested: models::NestedSubject { value: 1 },
+        flattened: models::NestedSubject { value: 2 },
     };
     subject.load(ContainerPatch {
         nested: Some(NestedPatch { value: Some(0) }),
@@ -277,4 +279,91 @@ fn reverse_nested_subject_types_preserve_nested_patch_types() {
     let subject = patch.upgrade().unwrap();
     assert_eq!(subject.nested.value, 0);
     assert_eq!(subject.flattened.value, 2);
+}
+
+#[test]
+fn subject_markers_preserve_generic_parameters_when_fields_are_skipped() {
+    #[optionized]
+    #[optionize(subject = models::GenericSubject::<Value>, partial(marked, upgradable))]
+    struct MarkedPatch<Value> {
+        value: Option<Value>,
+    }
+
+    #[optionized]
+    #[optionize(subject = models::GenericSubject::<Value>, partial(marked, upgradable))]
+    struct SkippedPatch<Value: Default> {
+        #[optionize(skip)]
+        value: Value,
+    }
+
+    let baseline = models::GenericSubject { value: 8_u32 };
+    let mut patch = MarkedPatch {
+        value: Some(8),
+        _marker: PhantomData,
+    };
+    assert!(!patch.retain(&baseline));
+
+    let patch: MarkedPatch<u32> = baseline.downgrade();
+    assert_eq!(patch.upgrade().unwrap().value, 8);
+
+    let baseline = models::GenericSubject { value: 9_u32 };
+    let mut patch: SkippedPatch<u32> = models::GenericSubject { value: 1_u32 }.downgrade();
+    assert!(!patch.retain(&baseline));
+    assert_eq!(patch.upgrade().unwrap().value, 0);
+}
+
+#[test]
+fn subject_markers_support_tuple_and_unit_objects() {
+    #[optionized]
+    #[optionize(subject = models::TupleSubject, partial(marked, upgradable))]
+    struct MarkedTuplePatch(#[optionize(skip(upgrade = 7))] u32, Option<String>);
+
+    #[optionized]
+    #[optionize(subject = models::UnitSubject, partial(marked, upgradable))]
+    struct MarkedUnitPatch;
+
+    let baseline = models::TupleSubject(9, String::from("same"));
+    let mut patch = MarkedTuplePatch(Some(String::from("same")), PhantomData);
+    assert!(!patch.retain(&baseline));
+    assert!(patch.0.is_none());
+
+    let patch: MarkedTuplePatch = baseline.downgrade();
+    assert_eq!(
+        patch.upgrade().unwrap(),
+        models::TupleSubject(7, String::from("same"))
+    );
+
+    let mut patch: MarkedUnitPatch = models::UnitSubject.downgrade();
+    assert!(!patch.retain(&models::UnitSubject));
+    assert_eq!(patch.upgrade().unwrap(), models::UnitSubject);
+}
+
+#[test]
+fn subject_arguments_survive_expression_macro_forwarding() {
+    macro_rules! patches {
+        ($($name:ident => $subject:expr),+ $(,)?) => {
+            $(
+                #[optionized]
+                #[optionize(subject = $subject)]
+                struct $name<Value> {
+                    value: Option<Value>,
+                }
+            )+
+        };
+    }
+
+    patches! {
+        GenericSubject => "models::{}<Value>",
+        BarePatch => models::GenericSubject::<Value>,
+    }
+
+    let template = GenericSubject {
+        value: Some(String::from("forwarded template")),
+    };
+    assert_eq!(template.upgrade().unwrap().value, "forwarded template");
+
+    let bare = BarePatch {
+        value: Some(String::from("forwarded path")),
+    };
+    assert_eq!(bare.upgrade().unwrap().value, "forwarded path");
 }

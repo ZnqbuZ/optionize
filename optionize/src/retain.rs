@@ -179,17 +179,25 @@ mod tests {
     }
 
     #[test]
-    fn generic_retain_accepts_borrowed_values_without_lifetime_bounds() {
+    fn retain_accepts_borrowed_non_clone_values_through_generic_bounds() {
+        #[derive(Debug, PartialEq)]
+        struct Value<'s>(&'s str);
+
         let owned = String::from("borrowed");
         let baseline = Config {
-            value: owned.as_str(),
+            value: Value(&owned),
         };
         let mut patch = ConfigPatch {
-            value: Some(owned.as_str()),
+            value: Some(Value(&owned)),
         };
         assert!(!trim(&mut patch, &baseline));
         assert_eq!(patch.value, None);
-        assert_eq!(baseline.value, owned.as_str());
+        assert_eq!(baseline.value, Value(&owned));
+
+        let baseline = ConfigPatch { value: None };
+        patch.value = Some(Value(&owned));
+        assert!(trim(&mut patch, &baseline));
+        assert_eq!(patch.value, Some(Value(&owned)));
     }
 
     #[test]
@@ -221,54 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn nested_views_compare_full_and_partial_baselines_without_clone() {
-        #[derive(PartialEq)]
-        struct NoClone(String);
-
-        let baseline = Config {
-            value: NoClone(String::from("same")),
-        };
-        let mut patch = ConfigPatch {
-            value: Some(NoClone(String::from("same"))),
-        };
-        assert!(!Retain::<Config<NoClone>>::retain_view(
-            &mut patch,
-            baseline.view(),
-        ));
-        assert!(patch.value.is_none());
-
-        let baseline = ConfigPatch::<NoClone> { value: None };
-        patch.value = Some(NoClone(String::from("changed")));
-        assert!(Retain::<Config<NoClone>>::retain_view(
-            &mut patch,
-            baseline.view(),
-        ));
-        assert!(patch.value.is_some());
-    }
-
-    #[test]
-    fn clear_values_are_distinct_from_unknown_baseline_fields() {
-        let mut patch = ConfigPatch { value: Some(None) };
-        let unknown = ConfigPatch::<Option<u32>> { value: None };
-        assert!(trim(&mut patch, &unknown));
-        assert_eq!(patch.value, Some(None));
-
-        let known_clear = ConfigPatch::<Option<u32>> { value: Some(None) };
-        assert!(!trim(&mut patch, &known_clear));
-        assert_eq!(patch.value, None);
-    }
-
-    #[test]
-    fn equality_is_not_required_for_other_partial_operations() {
-        struct NoEq;
-        let mut subject = Config { value: NoEq };
-        let mut patch = ConfigPatch { value: None };
-        patch.merge(ConfigPatch { value: Some(NoEq) });
-        patch.patch(&mut subject);
-    }
-
-    #[test]
-    fn indexed_equality_distinguishes_fields_with_different_lifetimes() {
+    fn equal_distinguishes_fields_with_different_lifetimes() {
         fn both_equal<'s, 's_>(left: &(&'s str, &'s_ str), right: &(&'s str, &'s_ str)) -> bool
         where
             for<'s__> &'s__ &'s str: Equal<0>,
@@ -284,7 +245,7 @@ mod tests {
     }
 
     #[test]
-    fn nested_bounds_handle_normalized_field_aliases() {
+    fn retain_accepts_nested_bounds_with_normalized_field_aliases() {
         // Exercise the same higher-ranked bounds as the generated impl.
         #[allow(unused_lifetimes)]
         fn trim_two<Value>(
