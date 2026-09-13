@@ -5,7 +5,7 @@ use std::mem::take;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::token::Comma;
-use syn::{Expr, Field, Index, Member, Type, Visibility, parse_quote};
+use syn::{Expr, Field, Index, Member, Type, Visibility};
 
 use super::args::{Crate, FieldArgs, TypeArg};
 use super::utils::{format, is_optionize, member_to_string, span};
@@ -14,15 +14,6 @@ use super::utils::{format, is_optionize, member_to_string, span};
 pub(super) enum FieldStrategy {
     Skip { upgrade: Expr },
     Optionize { wrap: bool, nest: Option<Type> },
-}
-
-impl Default for FieldStrategy {
-    fn default() -> Self {
-        Self::Optionize {
-            wrap: true,
-            nest: None,
-        }
-    }
 }
 
 pub(super) struct FieldIr {
@@ -35,22 +26,6 @@ pub(super) struct FieldIr {
     pub(super) optionized: Member,
     pub(super) strategy: FieldStrategy,
     pub(super) local: Ident,
-}
-
-impl Default for FieldIr {
-    fn default() -> Self {
-        Self {
-            krate: Default::default(),
-            ty: parse_quote!(()),
-            visibility: Visibility::Inherited,
-            index: 0,
-            span: Span::call_site(),
-            original: format_ident!("_").into(),
-            optionized: format_ident!("_").into(),
-            strategy: Default::default(),
-            local: format_ident!("_"),
-        }
-    }
 }
 
 impl FieldIr {
@@ -114,9 +89,56 @@ impl FieldIr {
                 }
                 (original, optionized)
             };
-            let mut ir = Self {
+            let ty = field.ty.clone();
+            let (ty, strategy) = if let Some(skip) = args.skip {
+                if !partial {
+                    errors.push(
+                        Error::custom(
+                            "`skip` attribute is only allowed when `partial` is specified",
+                        )
+                        .with_span(&skip.span()),
+                    );
+                    continue;
+                }
+                let upgrade = skip
+                    .into_inner()
+                    .explicit()
+                    .and_then(|skip| skip.upgrade)
+                    .unwrap_or_else(|| pq! { <#ty as ::core::default::Default>::default() });
+                (ty, FieldStrategy::Skip { upgrade })
+            } else {
+                let wrap = !args.flatten.is_present();
+                let Some(nest) = errors.handle(args.nest.map(TypeArg::parse).transpose()) else {
+                    continue;
+                };
+                let nest = nest.map(Type::Path);
+                let (ty, nest) = if reverse {
+                    let ty = if wrap {
+                        pq! { <#ty as #krate::__private::OptionField>::Value }
+                    } else {
+                        ty
+                    };
+                    match nest {
+                        Some(nest) => (nest, Some(ty)),
+                        None => (ty, None),
+                    }
+                } else {
+                    field.ty = {
+                        let ty = nest.as_ref().unwrap_or(&ty);
+                        if wrap {
+                            pq! { ::core::option::Option<#ty> }
+                        } else {
+                            ty.clone()
+                        }
+                    };
+                    (ty, nest)
+                };
+                args.general.attrs.patch(&mut field.attrs);
+                (ty, FieldStrategy::Optionize { wrap, nest })
+            };
+            let ir = Self {
                 krate: krate.clone(),
-                ty: field.ty.clone(),
+                ty,
                 visibility: field.vis.clone(),
                 index,
                 span,
@@ -127,62 +149,12 @@ impl FieldIr {
                 ),
                 original,
                 optionized,
-                ..Default::default()
+                strategy,
             };
-
-            if let Some(skip) = args.skip {
-                if !partial {
-                    errors.push(
-                        Error::custom(
-                            "`skip` attribute is only allowed when `partial` is specified",
-                        )
-                        .with_span(&skip.span()),
-                    );
-                    continue;
-                }
-                let ty = &ir.ty;
-                let upgrade = skip
-                    .into_inner()
-                    .explicit()
-                    .and_then(|skip| skip.upgrade)
-                    .unwrap_or_else(|| pq! { <#ty as ::core::default::Default>::default() });
-                ir.strategy = FieldStrategy::Skip { upgrade };
-                result.push(ir);
-                continue;
+            if matches!(ir.strategy, FieldStrategy::Optionize { .. }) {
+                fields.push(field);
             }
-
-            let wrap = !args.flatten.is_present();
-            let Some(nest) = errors.handle(args.nest.map(TypeArg::parse).transpose()) else {
-                continue;
-            };
-            let nest = nest.map(Type::Path);
-            let nest = if reverse {
-                let ty = &field.ty;
-                let ty: Type = if wrap {
-                    pq! { <#ty as #krate::__private::OptionField>::Value }
-                } else {
-                    ty.clone()
-                };
-                if let Some(nest) = nest {
-                    ir.ty = nest;
-                    Some(ty)
-                } else {
-                    ir.ty = ty;
-                    None
-                }
-            } else {
-                let ty = nest.as_ref().unwrap_or(&field.ty);
-                field.ty = if wrap {
-                    pq! { ::core::option::Option<#ty> }
-                } else {
-                    ty.clone()
-                };
-                nest
-            };
-            ir.strategy = FieldStrategy::Optionize { wrap, nest };
-            args.general.attrs.patch(&mut field.attrs);
             result.push(ir);
-            fields.push(field);
         }
 
         errors.finish_with(result)

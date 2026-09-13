@@ -209,17 +209,17 @@ impl StructArgs {
                         .with_span(&attrs.span()),
                 );
             }
+        }
 
-            if self.object.is_some()
-                && let Some(partial) = &self.partial
-                && let Override::Explicit(partial) = &**partial
-                && let Some(marked) = &partial.marked
-            {
-                errors.push(
-                    Error::custom("`marked` cannot be used when `object` is specified")
-                        .with_span(&marked.span()),
-                );
-            }
+        if self.object.is_some()
+            && let Some(partial) = &self.partial
+            && let Override::Explicit(partial) = &**partial
+            && let Some(marked) = &partial.marked
+        {
+            errors.push(
+                Error::custom("`marked` cannot be used when `object` is specified")
+                    .with_span(&marked.span()),
+            );
         }
 
         errors.finish_with(self)
