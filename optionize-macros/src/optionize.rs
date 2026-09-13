@@ -548,6 +548,17 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
 pub fn proc(args: TokenStream, input: &TokenStream) -> Result<TokenStream> {
     let args = OptionizedArgs::from_list(&NestedMeta::parse_meta_list(args)?)?;
     let krate = args.krate.unwrap_or_else(Crate::infer);
+    Ok(quote! {
+        #[derive(#krate::__private::Prepare)]
+        #[#krate::__private::discard]
+        #[#krate::__private::expand(crate = #krate)]
+        #input
+    })
+}
+
+pub fn expand(args: TokenStream, input: &TokenStream) -> Result<TokenStream> {
+    let args = OptionizedArgs::from_list(&NestedMeta::parse_meta_list(args)?)?;
+    let krate = args.krate.unwrap_or_else(Crate::infer);
     Ok(parse(krate.clone(), input.clone()).unwrap_or_else(|error| {
         let error = error.write_errors();
         quote! {

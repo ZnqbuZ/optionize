@@ -310,3 +310,15 @@ These rules apply to both local and external subjects.
 ## License
 
 MIT License
+
+## Conditional compilation and diagnostic checks
+
+`cfg` and `cfg_attr` on input fields are evaluated before generating the mapping.
+Removed fields do not require their types or trait bounds to exist, and tuple
+indices follow the remaining fields. Attributes activated by `cfg_attr`, such as
+`optionize(name = "active")`, are processed normally.
+
+Run `cargo test --workspace` for behavior and documentation examples. Run
+`python3 scripts/check-diagnostics.py` with Rust 1.95 installed to also verify
+native compiler error messages and highlighted source ranges. The script respects
+`CARGO_TARGET_DIR` and requires no Python packages.

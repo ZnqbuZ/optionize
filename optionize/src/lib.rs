@@ -195,6 +195,24 @@
 //!
 //! ## Generics, markers, tuples, and units
 //!
+//! Field `cfg` and `cfg_attr` conditions are evaluated before mapping fields,
+//! including attributes enabled by `cfg_attr`. Removed fields need no available
+//! type and do not contribute validation or equality bounds. Tuple indices are
+//! determined after conditional fields are removed.
+//!
+//! ```rust
+//! use optionize::{optionized, Optionized};
+//! #[optionized]
+//! struct Config {
+//!     #[cfg(any())]
+//!     platform: UnavailableType,
+//!     #[cfg_attr(all(), optionize(name = "active"))]
+//!     enabled: bool,
+//! }
+//! let config = ConfigOptional { active: Some(true) }.upgrade().unwrap();
+//! assert!(config.enabled);
+//! ```
+//!
 //! Generated objects preserve the subject's generic parameters and bounds,
 //! including lifetimes and const parameters. Borrows may refer to local values:
 //!
@@ -719,7 +737,7 @@ pub mod __private {
     pub extern crate alloc;
 
     pub use crate::retain::*;
-    pub use optionize_macros::Optionize;
+    pub use optionize_macros::{Optionize, Prepare, discard, expand};
 }
 
 /// Relates a partial object to its complete subject.
