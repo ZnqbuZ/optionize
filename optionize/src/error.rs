@@ -93,37 +93,27 @@ impl Display for ErrorCollection {
             return write!(f, "No upgrade errors");
         }
 
-        writeln!(f, "Upgrade failed with {} error(s):", self.errors.len())?;
+        write!(f, "Upgrade failed with {} error(s):", self.errors.len())?;
 
         let mut groups = BTreeMap::<_, Vec<_>>::new();
         for error in &self.errors {
             let ty = match error {
-                Error::Missing { ty, .. } => *ty,
-                Error::Nested { ty, .. } => *ty,
+                Error::Missing { ty, .. } | Error::Nested { ty, .. } => ty,
             };
             groups.entry(ty).or_default().push(error);
         }
 
-        let mut groups = groups.into_iter().peekable();
-        while let Some((ty, errors)) = groups.next() {
-            writeln!(f, "  {}", ty)?;
-
-            let mut errors = errors.into_iter().peekable();
-            while let Some(error) = errors.next() {
-                let last = groups.peek().is_none() && errors.peek().is_none();
-
+        for (ty, errors) in groups {
+            write!(f, "\n  {}", ty)?;
+            for error in errors {
                 match error {
                     Error::Missing { field, .. } => {
-                        write!(f, "    - Missing required field: {}", field)?;
+                        write!(f, "\n    - Missing required field: {}", field)?;
                     }
                     Error::Nested { field, source, .. } => {
-                        writeln!(f, "    - Failed to upgrade nested field: {}", field)?;
+                        writeln!(f, "\n    - Failed to upgrade nested field: {}", field)?;
                         write!(f, "      - {}", source)?;
                     }
-                };
-
-                if !last {
-                    writeln!(f)?;
                 }
             }
         }
