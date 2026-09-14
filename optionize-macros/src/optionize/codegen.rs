@@ -330,15 +330,20 @@ impl ToTokens for Upgrade<'_> {
             return;
         };
         let this = format_ident!("self", span = Span::mixed_site());
+        let value = if *wrap {
+            q! { value }
+        } else {
+            q! { #this.#optionized }
+        };
         let value = if let Some(nest) = nest {
             // A default callback can change a sibling's shared interior state.
             // Check each child when consuming it, after all parent defaults ran.
             q! {
-                <#nest as #krate::Optionized<#ty>>::upgrade(value)
+                <#nest as #krate::Optionized<#ty>>::upgrade(#value)
                     .unwrap_or_else(|_| panic!("nested object became invalid during upgrading"))
             }
         } else {
-            q! { value }
+            value
         };
         let value = if *wrap {
             let missing = if default.is_some() {
@@ -354,7 +359,7 @@ impl ToTokens for Upgrade<'_> {
                 }
             }
         } else {
-            q! { { let value = #this.#optionized; #value } }
+            value
         };
         tokens.extend(q! { let #local = #value; });
     }
@@ -385,14 +390,5 @@ impl ToTokens for UpgradeDefault<'_> {
             q! { #this.#optionized.is_none().then(|| #value) }
         };
         tokens.extend(q! { let #local = #value; });
-    }
-}
-
-pub(super) struct UpgradeFieldValue<'f>(pub(super) &'f FieldIr);
-
-impl ToTokens for UpgradeFieldValue<'_> {
-    fn to_tokens(&self, tokens: &mut TokenStream) {
-        expand! { self.0 => { original, local } }
-        tokens.extend(q! { #original: #local, });
     }
 }

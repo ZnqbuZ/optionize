@@ -19,9 +19,7 @@ use syn::{
 };
 
 use args::{Crate, OptionizedArgs, StructArgs};
-use codegen::{
-    Merge, Optionize, Patch, Retain, Upgrade, UpgradeDefault, UpgradeFieldValue, Validate, View,
-};
+use codegen::{Merge, Optionize, Patch, Retain, Upgrade, UpgradeDefault, Validate, View};
 use field::{FieldIr, FieldStrategy};
 use utils::{collect_idents, extend_where_clause, format, new_ident, span};
 
@@ -533,7 +531,15 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         let upgrade = {
             let defaults = originals.iter().map(UpgradeDefault);
             let upgrades = originals.iter().map(Upgrade);
-            let fields = originals.iter().map(UpgradeFieldValue);
+            let fields = originals.iter().map(|field| {
+                let FieldIr {
+                    original,
+                    local,
+                    span,
+                    ..
+                } = field;
+                qs! { *span => #original: #local, }
+            });
             qs! { span =>
                 #[inline]
                 unsafe fn upgrade_unchecked(#this) -> #Subject {

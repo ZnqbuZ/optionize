@@ -54,7 +54,7 @@ pub(super) struct GeneralArgs {
 
 impl GeneralArgs {
     fn is_some(&self) -> bool {
-        self.name.is_some() || self.attrs.is_present()
+        self.name.is_some() || self.attrs.span().is_some()
     }
 }
 
@@ -132,10 +132,10 @@ impl StructArgs {
                 );
             }
 
-            if self.attrs.is_present() {
+            if let Some(span) = self.attrs.span() {
                 errors.push(
                     Error::custom("`attrs` cannot be used when `object` or `subject` is specified")
-                        .with_span(&self.attrs.span()),
+                        .with_span(&span),
                 );
             }
         }

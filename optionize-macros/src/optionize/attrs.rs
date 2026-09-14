@@ -90,20 +90,15 @@ pub(super) struct Attributes {
 }
 
 impl Attributes {
-    pub(super) fn is_present(&self) -> bool {
-        !self.attributes.is_empty()
-    }
-
-    pub(super) fn span(&self) -> Span {
+    pub(super) fn span(&self) -> Option<Span> {
         self.attributes
             .iter()
             .map(|attributes| attributes.span)
             .reduce(|span, other| span.join(other).unwrap_or(other))
-            .unwrap_or_else(Span::call_site)
     }
 
     pub(super) fn patch(self, attrs: &mut Vec<Attribute>) {
-        let mut all = !self.is_present();
+        let mut all = self.attributes.is_empty();
         let mut include = Vec::new();
         let mut exclude = Vec::new();
         let mut added = Vec::new();
