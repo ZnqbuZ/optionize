@@ -217,6 +217,10 @@
 //! their written order across all lists and are not merged or deduplicated.
 //! Paths match exactly, without name resolution; a selector that matches nothing
 //! has no effect. `-path` alone does not imply inheriting everything else.
+//! Generated implementations allow access to deprecated fields and types, while
+//! direct accesses in user code still follow the user's lint settings. Deprecation
+//! attributes are inherited normally. An enclosing `forbid(deprecated)` cannot be
+//! overridden by the generated `allow(deprecated)`.
 //!
 //! This example retains the type's documentation while replacing its entire
 //! derive list, and retains the field's documentation while appending another line:

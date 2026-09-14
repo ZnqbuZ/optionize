@@ -12,6 +12,8 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 CASES = {
+    "deprecated_subject": ("use of deprecated field `Config::old`", "config.old"),
+    "deprecated_object": ("use of deprecated field `ConfigOptional::old`", "config.old"),
     "attrs_selector": ("attribute selectors accept only a path", "("),
     "attrs_missing_path": ("expected identifier", ","),
     "attrs_separator": ("expected `,`", "derive"),

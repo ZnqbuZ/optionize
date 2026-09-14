@@ -562,7 +562,11 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         });
     }
 
-    Ok(q! { #declarations const _: () = { #output }; })
+    Ok(q! {
+        #declarations
+        #[allow(deprecated)]
+        const _: () = { #output };
+    })
 }
 
 pub fn proc(args: TokenStream, input: &TokenStream) -> Result<TokenStream> {
