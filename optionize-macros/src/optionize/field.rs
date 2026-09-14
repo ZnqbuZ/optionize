@@ -1,3 +1,4 @@
+use darling::util::Override;
 use darling::{Error, FromAttributes, Result};
 use proc_macro2::{Ident, Span};
 use quote::format_ident;
@@ -12,8 +13,8 @@ use super::utils::{format, is_optionize, member_to_string, span};
 
 #[derive(Debug)]
 pub(super) enum FieldStrategy {
-    Skip { upgrade: Expr },
-    Optionize { wrap: bool, nest: Option<Type> },
+    Skip,
+    Optionize { wrap: bool, nest: Option<Box<Type>> },
 }
 
 pub(super) struct FieldIr {
@@ -25,6 +26,7 @@ pub(super) struct FieldIr {
     pub(super) original: Member,
     pub(super) optionized: Member,
     pub(super) strategy: FieldStrategy,
+    pub(super) default: Option<Override<Expr>>,
     pub(super) local: Ident,
 }
 
@@ -90,22 +92,17 @@ impl FieldIr {
                 (original, optionized)
             };
             let ty = field.ty.clone();
-            let (ty, strategy) = if let Some(skip) = args.skip {
+            let (ty, strategy) = if args.skip.is_present() {
                 if !partial {
                     errors.push(
                         Error::custom(
                             "`skip` attribute is only allowed when `partial` is specified",
                         )
-                        .with_span(&skip.span()),
+                        .with_span(&args.skip.span()),
                     );
                     continue;
                 }
-                let upgrade = skip
-                    .into_inner()
-                    .explicit()
-                    .and_then(|skip| skip.upgrade)
-                    .unwrap_or_else(|| pq! { <#ty as ::core::default::Default>::default() });
-                (ty, FieldStrategy::Skip { upgrade })
+                (ty, FieldStrategy::Skip)
             } else {
                 let wrap = !args.flatten.is_present();
                 let Some(nest) = errors.handle(args.nest.map(TypeArg::parse).transpose()) else {
@@ -134,8 +131,18 @@ impl FieldIr {
                     (ty, nest)
                 };
                 args.general.attrs.patch(&mut field.attrs);
-                (ty, FieldStrategy::Optionize { wrap, nest })
+                (
+                    ty,
+                    FieldStrategy::Optionize {
+                        wrap,
+                        nest: nest.map(Box::new),
+                    },
+                )
             };
+            let default = args
+                .default
+                .map(|default| default.into_inner())
+                .or_else(|| matches!(strategy, FieldStrategy::Skip).then_some(Default::default()));
             let ir = Self {
                 krate: krate.clone(),
                 ty,
@@ -150,6 +157,7 @@ impl FieldIr {
                 original,
                 optionized,
                 strategy,
+                default,
             };
             if matches!(ir.strategy, FieldStrategy::Optionize { .. }) {
                 fields.push(field);

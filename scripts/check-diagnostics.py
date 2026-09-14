@@ -12,8 +12,10 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 CASES = {
-    "cfg_field": ("`skip` attribute cannot be combined with other attributes", "skip"),
-    "cfg_attribute": ("`skip` attribute cannot be combined with other attributes", "skip"),
+    "cfg_field": ("`skip` can only be combined with `default`", "skip"),
+    "cfg_attribute": ("`skip` can only be combined with `default`", "skip"),
+    "default_flatten": ("`default` cannot be used with `flatten`", "default"),
+    "default_mutable": ("mismatched types", "mutable_default"),
 }
 
 

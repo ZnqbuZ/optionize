@@ -215,12 +215,6 @@ impl StructArgs {
     }
 }
 
-#[derive(Debug, Default, FromMeta)]
-#[darling(default)]
-pub(super) struct SkipArgs {
-    pub(super) upgrade: Option<Expr>,
-}
-
 #[derive(Debug, Default, Deref, FromAttributes)]
 #[darling(default, attributes(optionize), and_then = "Self::finalize")]
 pub(super) struct FieldArgs {
@@ -229,20 +223,26 @@ pub(super) struct FieldArgs {
     pub(super) general: GeneralArgs,
     pub(super) flatten: Flag,
     pub(super) nest: Option<TypeArg>,
-    pub(super) skip: Option<SpannedValue<Override<SkipArgs>>>,
+    pub(super) skip: Flag,
+    pub(super) default: Option<SpannedValue<Override<Expr>>>,
 }
 
 impl FieldArgs {
     fn finalize(self) -> Result<Self> {
-        if let Some(skip) = &self.skip
+        if self.skip.is_present()
             && (self.general.is_some() || self.flatten.is_present() || self.nest.is_some())
         {
-            return Err(
-                Error::custom("`skip` attribute cannot be combined with other attributes")
-                    .with_span(&skip.span()),
-            );
+            return Err(Error::custom("`skip` can only be combined with `default`")
+                .with_span(&self.skip.span()));
         }
 
+        if self.flatten.is_present()
+            && let Some(default) = &self.default
+        {
+            return Err(
+                Error::custom("`default` cannot be used with `flatten`").with_span(&default.span())
+            );
+        }
         Ok(self)
     }
 }

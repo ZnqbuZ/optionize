@@ -95,7 +95,39 @@ Renamed Cargo dependencies are detected automatically. Put inherited derives aft
 - `#[optionize(name = "prefix_{}_suffix")]`: Rename a field in the optionized struct. `{}` will be replaced with the original field name. With `subject = ...`, this instead names the corresponding subject field.
 - `#[optionize(flatten)]`: Do not wrap the field in `Option<Value>`. Patching always assigns the field, including `None`; nested fields delegate to their patch implementation.
 - `#[optionize(nest = NestedTypeOptional)]` or `#[optionize(nest = "NestedTypeOptional")]`: Recursively apply optionize logic to a nested optionized struct. With `subject = ...`, name the nested subject type instead. Allows deep patching, retaining changes, and upgrading.
-- `#[optionize(skip)]` / `#[optionize(skip(upgrade = expression))]`: Completely omit the field from the generated optionized struct. Only allowed when `partial` is specified on the struct. When upgrading, it uses `Default::default()` or the provided `upgrade` expression. With `subject = ...`, declare the unmanaged subject field with its subject type; the macro removes that field from the local object.
+- `#[optionize(skip)]`: Omit the field from the object. Requires `partial` or `partial(upgradable)`. When upgrading, it uses the same `default` initializer as ordinary fields, implicitly calling `Default::default()`. With `subject = ...`, declare the unmanaged subject field with its subject type; the macro removes it from the local object.
+- `#[optionize(default)]` / `#[optionize(default = callback)]`: Initialize an omitted field during upgrading. The callback is a function or non-capturing closure of type `fn(&Object) -> FieldType`; otherwise the field type's `Default` is used. Combine with `skip` to supply its initializer. Cannot be combined with `flatten`.
+
+Defaults run after successful initial validation, in declaration order, before
+moving any fields. They inspect the original object, including omitted fields;
+earlier computed defaults are not written back. They do not change patch/load,
+merge, retain, or Serde behavior. Explicit false, zero, empty strings, and clears
+are supplied values. Nested defaults return complete child subjects, while
+supplied nested patches still undergo validation. Callbacks should not invalidate
+nested objects through interior mutability; such invalidation during construction
+causes a panic.
+
+```rust
+use optionize::{optionized, Optionized};
+
+#[optionized]
+#[optionize(partial(upgradable))]
+struct Config {
+    name: String,
+    #[optionize(default = |_| true)]
+    reusable: bool,
+    #[optionize(skip, default = |object| object.name.as_ref().unwrap().len())]
+    name_length: usize,
+}
+
+let config = ConfigOptional { name: Some("node".into()), reusable: None }
+    .upgrade().unwrap();
+assert!(config.reusable);
+assert_eq!(config.name_length, 4);
+```
+
+Migration: replace `skip(upgrade = expression)` with
+`skip, default = |_| expression`. The old `upgrade` field option has been removed.
 
 #### Nested Structs Example
 

@@ -1,3 +1,4 @@
+use darling::util::Override;
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::{ToTokens, format_ident};
 
@@ -251,12 +252,13 @@ impl ToTokens for Validate<'_, '_, '_> {
                 optionized,
                 strategy,
                 local,
+                default,
             }
         }
         let FieldStrategy::Optionize { wrap, nest } = strategy else {
             return;
         };
-        if !*wrap && nest.is_none() {
+        if (!*wrap || default.is_some()) && nest.is_none() {
             return;
         }
 
@@ -294,16 +296,22 @@ impl ToTokens for Validate<'_, '_, '_> {
         });
 
         let validate = if *wrap {
+            let missing = default.is_none().then(|| {
+                q! {
+                    else {
+                        #failed = true;
+                        #errors.push(#krate::Error::Missing {
+                            ty: #info,
+                            field: #field,
+                        });
+                    }
+                }
+            });
             q! {
                 if let ::core::option::Option::Some(#local) = &#this.#optionized {
                     #validate
-                } else {
-                    #failed = true;
-                    #errors.push(#krate::Error::Missing {
-                        ty: #info,
-                        field: #field,
-                    });
                 }
+                #missing
             }
         } else {
             q! { #validate }
@@ -317,49 +325,66 @@ pub(super) struct Upgrade<'f>(pub(super) &'f FieldIr);
 
 impl ToTokens for Upgrade<'_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        expand! {
-            self.0 => {
-                krate,
-                ty,
-                optionized,
-                strategy,
-                local,
-            }
-        }
+        expand! { self.0 => { krate, ty, optionized, strategy, local, default } }
         let FieldStrategy::Optionize { wrap, nest } = strategy else {
             return;
         };
-
         let this = format_ident!("self", span = Span::mixed_site());
-        tokens.extend(q! { let #local = #this.#optionized; });
-        if *wrap {
-            tokens.extend(
-                q! { let #local = unsafe { ::core::option::Option::unwrap_unchecked(#local) }; },
-            );
-        }
-        if let Some(nest) = nest {
-            tokens.extend(q! {
-                let #local = unsafe { <#nest as #krate::Optionized<#ty>>::upgrade_unchecked(#local) };
-            })
-        }
+        let value = if let Some(nest) = nest {
+            // A default callback can change a sibling's shared interior state.
+            // Check each child when consuming it, after all parent defaults ran.
+            q! {
+                <#nest as #krate::Optionized<#ty>>::upgrade(value)
+                    .unwrap_or_else(|_| panic!("nested object became invalid during upgrading"))
+            }
+        } else {
+            q! { value }
+        };
+        let value = if *wrap {
+            let missing = if default.is_some() {
+                // Defaults were prepared before moving any field from self.
+                q! { #local.expect("missing field default was prepared") }
+            } else {
+                q! { unreachable!("validated field is missing") }
+            };
+            q! {
+                match #this.#optionized {
+                    ::core::option::Option::Some(value) => #value,
+                    ::core::option::Option::None => #missing,
+                }
+            }
+        } else {
+            q! { { let value = #this.#optionized; #value } }
+        };
+        tokens.extend(q! { let #local = #value; });
     }
 }
 
-pub(super) struct UpgradeSkip<'f>(pub(super) &'f FieldIr);
+pub(super) struct UpgradeDefault<'f>(pub(super) &'f FieldIr);
 
-impl ToTokens for UpgradeSkip<'_> {
+impl ToTokens for UpgradeDefault<'_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        expand! {
-            self.0 => {
-                ty,
-                strategy,
-                local,
+        expand! { self.0 => { ty, optionized, strategy, local, default } }
+        let Some(default) = default else {
+            return;
+        };
+        let default = match default {
+            Override::Explicit(default) => q! { #default },
+            Override::Inherit => q! { |_| <#ty as ::core::default::Default>::default() },
+        };
+        let this = format_ident!("self", span = Span::mixed_site());
+        let value = q! {
+            {
+                let default: fn(&Self) -> #ty = #default;
+                default(&#this)
             }
-        }
-
-        if let FieldStrategy::Skip { upgrade } = strategy {
-            tokens.extend(q! { let #local: #ty = { #upgrade }; });
-        }
+        };
+        let value = if matches!(strategy, FieldStrategy::Skip) {
+            value
+        } else {
+            q! { #this.#optionized.is_none().then(|| #value) }
+        };
+        tokens.extend(q! { let #local = #value; });
     }
 }
 

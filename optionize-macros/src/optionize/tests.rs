@@ -20,7 +20,7 @@ fn attributes_report_errors_on_fields_after_an_invalid_attribute() {
         }
     });
     assert_eq!(messages.len(), 2, "{messages:?}");
-    assert!(messages[0].contains("`skip` attribute cannot be combined with other attributes"));
+    assert!(messages[0].contains("`skip` can only be combined with `default`"));
     assert!(messages[1].contains("expected identifier") && messages[1].contains("`type`"));
 }
 
@@ -99,10 +99,30 @@ fn skip_rejects_combinations_with_other_field_options() {
         });
         assert_eq!(messages.len(), 1, "{option}: {messages:?}");
         assert!(
-            messages[0].contains("`skip` attribute cannot be combined with other attributes"),
+            messages[0].contains("`skip` can only be combined with `default`"),
             "{option}: {messages:?}"
         );
     }
+}
+
+#[test]
+fn defaults_reject_flattened_fields_and_the_legacy_skip_initializer() {
+    let messages = errors(quote! {
+        struct Config {
+            #[optionize(flatten, default)]
+            value: u32,
+        }
+    });
+    assert_eq!(messages, ["`default` cannot be used with `flatten`"]);
+
+    let messages = errors(quote! {
+        #[optionize(partial(upgradable))]
+        struct Config {
+            #[optionize(skip(upgrade = 7))]
+            value: u32,
+        }
+    });
+    assert_eq!(messages, ["Unknown field: `upgrade` at skip"]);
 }
 
 #[test]

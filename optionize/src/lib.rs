@@ -6,6 +6,7 @@
 //!
 //! - [Applying, merging, and converting patches](#applying-merging-and-converting-patches)
 //! - [Missing, clearing, and setting values](#missing-clearing-and-setting-values)
+//! - [Upgrade defaults](#upgrade-defaults)
 //! - [Names and inherited attributes](#names-and-inherited-attributes)
 //! - [Partial structs and skipped fields](#partial-structs-and-skipped-fields)
 //! - [Generics, markers, tuples, and units](#generics-markers-tuples-and-units)
@@ -89,9 +90,87 @@
 //! ```
 //!
 //! Ordinary fields have no implicit defaults during upgrading: `None` is missing
-//! even when the field's type implements `Default`. Deriving `Default` for an
+//! even when the field's type implements `Default`, unless explicitly configured
+//! with `#[optionize(default)]` or `default = callback`. Deriving `Default` for an
 //! object makes wrapped fields `None`; flattened fields retain their type's default
 //! values and still participate in updates. It does not fill the subject's defaults.
+//!
+//! ## Upgrade defaults
+//!
+//! `default` uses the subject field's `Default::default()` when its update is
+//! absent. `default = callback` instead accepts a function or non-capturing closure
+//! with signature `fn(&Object) -> FieldType`. The parameter is the actual object,
+//! including when `object = ...` or `subject = ...` selects an existing type.
+//! Callbacks receive an immutable reference and never require the object to be cloned.
+//!
+//! ```rust
+//! use optionize::{optionized, Optionized};
+//!
+//! #[optionized]
+//! struct Config {
+//!     name: String,
+//!     #[optionize(default = |object| object.name.as_ref().unwrap().len())]
+//!     name_length: usize,
+//!     #[optionize(default = reusable)]
+//!     reusable: bool,
+//!     #[optionize(default)]
+//!     retries: u32,
+//! }
+//! fn reusable(_: &ConfigOptional) -> bool { true }
+//!
+//! let patch = ConfigOptional {
+//!     name: Some("node".into()), name_length: None, reusable: Some(false), retries: None,
+//! };
+//! patch.validate().unwrap(); // Does not execute the callbacks.
+//! let config = patch.upgrade().unwrap();
+//! assert_eq!(config.name_length, 4);
+//! assert!(!config.reusable); // A supplied false is preserved.
+//! assert_eq!(config.retries, 0);
+//! ```
+//!
+//! Upgrading first validates the supplied fields. If validation fails, no default
+//! callbacks run. Otherwise, required defaults are evaluated once in declaration
+//! order, before any fields are moved out of the object. Every callback sees the
+//! original patch: defaults computed for earlier fields are not written back into
+//! it. Callbacks must handle other omitted defaulted fields themselves.
+//!
+//! Defaults only apply during upgrading. They do not change `patch`, `load`,
+//! `merge`, `retain`, Serde behavior, or the object's `Default` implementation.
+//! A supplied `Some(None)` is an explicit clear and does not trigger a default:
+//!
+//! ```rust
+//! use optionize::{optionized, Optionized};
+//! #[optionized]
+//! struct Config {
+//!     #[optionize(default = |_| Some("fallback".into()))]
+//!     note: Option<String>,
+//! }
+//! assert_eq!(ConfigOptional { note: None }.upgrade().unwrap().note.as_deref(), Some("fallback"));
+//! assert_eq!(ConfigOptional { note: Some(None) }.upgrade().unwrap().note, None);
+//! ```
+//!
+//! A nested default returns the **complete child subject**, not its patch. It runs
+//! only when the whole child is absent; a supplied child still validates normally:
+//!
+//! ```rust
+//! use optionize::{optionized, Optionized};
+//! #[optionized]
+//! struct Endpoint { port: u16 }
+//! #[optionized]
+//! struct Config {
+//!     #[optionize(nest = EndpointOptional, default = |_| Endpoint { port: 8080 })]
+//!     endpoint: Endpoint,
+//! }
+//! assert_eq!(ConfigOptional { endpoint: None }.upgrade().unwrap().endpoint.port, 8080);
+//! assert!(ConfigOptional { endpoint: Some(EndpointOptional { port: None }) }.upgrade().is_err());
+//! ```
+//!
+//! `default` cannot be combined with `flatten`, because flattened fields are
+//! always supplied. Standard defaults add `FieldType: Default` only to the upgrade
+//! implementation; other operations remain available without that bound.
+//! Callbacks are infallible functions, but may panic. They should not invalidate
+//! nested objects through shared interior state: nested values are checked again
+//! when consumed, and invalidation during construction causes a panic.
 //!
 //! ## Names and inherited attributes
 //!
@@ -169,9 +248,10 @@
 //! ```
 //!
 //! Use `partial(upgradable)` to retain upgrading while allowing skipped fields.
-//! During upgrading, a skipped field uses `Default::default()` or its
-//! `skip(upgrade = expression)` value. The expression runs when upgrading, not
-//! when validating. `skip` cannot be combined with other field options.
+//! During upgrading, a skipped field uses `Default::default()` or the callback
+//! supplied by `#[optionize(skip, default = callback)]`. It follows the same
+//! initialization rules as ordinary upgrade defaults and can inspect the original
+//! object. `skip` can be combined with `default`, but not other field options.
 //!
 //! ```rust
 //! use optionize::{optionized, Optionized};
@@ -182,7 +262,7 @@
 //!     port: u16,
 //!     #[optionize(skip)]
 //!     connections: Vec<u32>,
-//!     #[optionize(skip(upgrade = 3))]
+//!     #[optionize(skip, default = |_| 3)]
 //!     retries: u8,
 //! }
 //!
@@ -701,7 +781,7 @@ extern crate self as optionize;
 ///
 /// ## Field-level attributes
 ///
-/// `#[optionize(name = "...", attrs(...), flatten, skip(...), nest = "...")]`
+/// `#[optionize(name = "...", attrs(...), flatten, skip, default = callback, nest = "...")]`
 ///
 /// - `name`: Renames a named field in the generated struct. Use `{}` as a placeholder for its original name.
 ///   Tuple fields cannot be renamed.
@@ -713,7 +793,12 @@ extern crate self as optionize;
 ///   - With `subject = ...`, declare the unmanaged subject field with its subject type;
 ///     the macro removes it from the local object.
 ///   - If skipping fields leaves a generic parameter unused in a generated object, use `marked` to consume it.
-///   - `upgrade = expr`: Provides the expression used to instantiate this field when upgrading. If not provided, it defaults to `<FieldType as core::default::Default>::default()`.
+///   - Uses the same `default` initializer as ordinary fields, implicitly defaulting to `Default::default()`.
+/// - `default`: Fills a missing field during upgrading with its subject type's `Default::default()`.
+///   `default = callback` accepts `fn(&Object) -> FieldType`, including non-capturing closures.
+///   Skipped fields always use the initializer. Callbacks run after initial validation, before any
+///   fields are moved, and see the original object. Explicit clears never trigger defaults.
+///   Defaults do not affect patching, merging, or retaining, and cannot be combined with `flatten`.
 /// - `nest = Type` or `nest = "Type"`: Delegates this field to a nested object that implements
 ///   `PartialOptionized` (and `Optionized` when upgrading is enabled). With `subject = ...`,
 ///   name the nested subject instead; the declared field already supplies its object type.
@@ -920,11 +1005,14 @@ pub trait Optionized<Subject>: PartialOptionized<Subject> {
     /// Returns a collection of errors if any fields are missing or if nested validations fail.
     fn validate(&self) -> Result<(), Self::Errors>;
 
-    /// Upgrades the optionized struct into the full subject struct without validating.
+    /// Constructs the full subject from an object that has already been validated.
+    /// Generated implementations prepare field defaults before moving fields and
+    /// still check nested objects when consuming them, since callbacks can affect
+    /// shared interior state.
     ///
     /// # Safety
-    /// Calling this method when `Optionized::<Subject>::validate()` would return an error results in undefined behavior
-    /// because missing `Option::None` fields will be unwrapped without checks.
+    /// The object must pass `Optionized::<Subject>::validate()` before this call.
+    /// Implementations may rely on that guarantee for unchecked field extraction.
     unsafe fn upgrade_unchecked(self) -> Subject;
 
     /// Validates and upgrades the optionized struct into the full subject struct.

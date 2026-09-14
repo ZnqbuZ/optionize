@@ -127,7 +127,7 @@ fn attributes_accumulate_derives_and_expand_name_templates() {
 #[optionize(partial(upgradable))]
 #[derive(Debug, PartialEq)]
 struct Skipped {
-    #[optionize(skip(upgrade = 42))]
+    #[optionize(skip, default = |_| 42)]
     cached: u32,
     #[optionize(skip)]
     label: String,
@@ -157,7 +157,7 @@ fn skip_preserves_subject_fields_and_supplies_upgrade_defaults() {
 }
 
 #[test]
-fn skip_evaluates_upgrade_expressions_only_when_upgrade_succeeds() {
+fn skip_evaluates_defaults_only_when_upgrade_succeeds() {
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     static CONSTRUCTIONS: AtomicUsize = AtomicUsize::new(0);
@@ -167,7 +167,7 @@ fn skip_evaluates_upgrade_expressions_only_when_upgrade_succeeds() {
     #[optionized]
     #[optionize(partial(upgradable))]
     struct Config {
-        #[optionize(skip(upgrade = Connection(CONSTRUCTIONS.fetch_add(1, Ordering::SeqCst))))]
+        #[optionize(skip, default = |_| Connection(CONSTRUCTIONS.fetch_add(1, Ordering::SeqCst)))]
         connection: Connection,
         enabled: bool,
     }

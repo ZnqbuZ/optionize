@@ -8,7 +8,7 @@ use optionize_test_models as models;
 struct PartialSubjectPatch {
     enabled: Option<bool>,
     count: Option<u32>,
-    #[optionize(skip(upgrade = "String::from(\"default\")"))]
+    #[optionize(skip, default = "|_| String::from(\"default\")")]
     label: String,
     #[optionize(skip)]
     optional: Option<u32>,
@@ -240,7 +240,7 @@ fn subject_skips_preserve_tuple_indices_and_compact_object_fields() {
 
     #[optionized]
     #[optionize(subject = models::TupleSubject, partial(upgradable))]
-    struct PartialTuplePatch(#[optionize(skip(upgrade = 7))] u32, Option<String>);
+    struct PartialTuplePatch(#[optionize(skip, default = |_| 7)] u32, Option<String>);
 
     let mut subject = models::TupleSubject(9, String::from("old"));
     let mut patch = PartialTuplePatch(Some(String::from("new")));
@@ -316,7 +316,7 @@ fn subject_markers_preserve_generic_parameters_when_fields_are_skipped() {
 fn subject_markers_support_tuple_and_unit_objects() {
     #[optionized]
     #[optionize(subject = models::TupleSubject, partial(marked, upgradable))]
-    struct MarkedTuplePatch(#[optionize(skip(upgrade = 7))] u32, Option<String>);
+    struct MarkedTuplePatch(#[optionize(skip, default = |_| 7)] u32, Option<String>);
 
     #[optionized]
     #[optionize(subject = models::UnitSubject, partial(marked, upgradable))]

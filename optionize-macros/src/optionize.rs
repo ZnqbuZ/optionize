@@ -4,6 +4,7 @@ mod field;
 mod utils;
 
 use darling::ast::NestedMeta;
+use darling::util::Override;
 use darling::{Error, FromAttributes, FromMeta, Result};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::{format_ident, quote, quote_spanned as qs};
@@ -18,7 +19,7 @@ use syn::{
 
 use args::{Crate, OptionizedArgs, StructArgs};
 use codegen::{
-    Merge, Optionize, Patch, Retain, Upgrade, UpgradeFieldValue, UpgradeSkip, Validate, View,
+    Merge, Optionize, Patch, Retain, Upgrade, UpgradeDefault, UpgradeFieldValue, Validate, View,
 };
 use field::{FieldIr, FieldStrategy};
 use utils::{collect_idents, extend_where_clause, format, new_ident, span};
@@ -225,7 +226,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                 let ty = &field.ty;
                 let nest = match &field.strategy {
                     FieldStrategy::Optionize { nest, .. } => nest.as_ref(),
-                    FieldStrategy::Skip { .. } => None,
+                    FieldStrategy::Skip => None,
                 };
                 q! { #ty #nest }
             });
@@ -334,7 +335,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                         .filter_map(|field| {
                             let FieldIr { ty, strategy, index, span, .. } = field;
                             match strategy {
-                                FieldStrategy::Skip { .. } => None,
+                                FieldStrategy::Skip => None,
                                 FieldStrategy::Optionize { nest: None, .. } => {
                                     Some(pqs! { *span => for<#view_lifetime> &#view_lifetime #ty: #krate::__private::Equal<#index> })
                                 }
@@ -487,6 +488,17 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                     })
                     .flatten(),
             );
+            extend_where_clause(
+                &mut where_clause,
+                originals.iter().filter_map(|field| {
+                    let FieldIr {
+                        ty, default, span, ..
+                    } = field;
+                    matches!(default, Some(Override::Inherit)).then(|| {
+                        pqs! { *span => #ty: ::core::default::Default }
+                    })
+                }),
+            );
             where_clause
         };
         let validate = {
@@ -518,13 +530,13 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
             }
         };
         let upgrade = {
-            let skips = originals.iter().map(UpgradeSkip);
+            let defaults = originals.iter().map(UpgradeDefault);
             let upgrades = originals.iter().map(Upgrade);
             let fields = originals.iter().map(UpgradeFieldValue);
             qs! { span =>
                 #[inline]
                 unsafe fn upgrade_unchecked(#this) -> #Subject {
-                    #(#skips)*
+                    #(#defaults)*
                     #(#upgrades)*
                     #[allow(clippy::init_numbered_fields)]
                     #subject_constructor { #(#fields)* }
