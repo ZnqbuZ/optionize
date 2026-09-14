@@ -1060,6 +1060,8 @@ pub trait Optionizable<Object: PartialOptionized<Self>>: Sized {
 )]
 pub trait Optionized<Subject>: PartialOptionized<Subject> {
     /// Validation failures; generated implementations use [`ErrorCollection`].
+    /// Custom collections may carry non-static borrows. Their yielded errors must
+    /// be `Send + Sync + 'static` so nested validation can store them as sources.
     type Errors: IntoIterator<Item: core::error::Error + Send + Sync + 'static>;
 
     /// Validates that all fields inside the optionized struct that are required for upgrading

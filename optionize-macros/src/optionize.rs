@@ -482,7 +482,8 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                         };
                         Some([
                             pqs! { *span => #nest: #krate::Optionized<#ty> },
-                            pqs! { *span => <#nest as #krate::Optionized<#ty>>::Errors: 'static },
+                            // Only the yielded errors are boxed; their collection may borrow.
+                            pqs! { *span => <<#nest as #krate::Optionized<#ty>>::Errors as ::core::iter::IntoIterator>::Item: 'static },
                         ])
                     })
                     .flatten(),
