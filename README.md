@@ -68,7 +68,7 @@ You can customize the generated struct and its fields using the `#[optionize(...
 - `#[optionize(name = "CustomPrefix{}CustomSuffix")]`: Set the name of the generated optionized struct. `{}` will be replaced with the original struct name.
 - `#[optionize(object = pb::Config::<Value>)]` or `#[optionize(object = "pb::{}Optional<Value>")]`: Use an existing struct through an unquoted type path or a string template. In strings, `{}` is replaced with the subject's name. Write generic arguments explicitly; unquoted generic paths use `::<Value>`. The subject must be local when the object is from another crate.
 - `#[optionize(subject = model::Config)]` or `#[optionize(subject = "model::Config")]`: Treat the annotated struct as the optionized object of an existing subject. Write its fields as `Option<Value>` yourself; aliases for `Option<Value>` also work. The subject may come from another crate; see the example below.
-- `#[optionize(attrs(derive(Debug, Default)))]`: Replace the attributes inherited by the generated struct.
+- `#[optionize(attrs(derive(Debug, Default)))]`: Replace the attributes inherited by the generated struct. Select original attributes with `+path` or `..`, and exclude them with `-path`.
 - `#[optionize(partial(upgradable))]`: By default, the generated struct implements both `PartialOptionized` and `Optionized`. If you only want partial updates and don't need upgrading, use `#[optionize(partial)]`. If you want both while using `partial` specific features (like `skip`), use `#[optionize(partial(upgradable))]`.
 - `#[optionize(partial(marked))]`: Adds a `PhantomData` marker to the generated struct, typing it strictly to the original struct.
 
@@ -87,8 +87,44 @@ struct Config {
 
 The macro also accepts `#[optionized(crate = path)]` for a custom re-export path.
 Renamed Cargo dependencies are detected automatically. Put inherited derives after
-`#[optionized]`; attributes that ran before the macro are not inherited. Repeated
-`attrs(...)` lists are combined, while `attrs()` clears inherited attributes.
+`#[optionized]`; attributes that ran before the macro are not inherited.
+
+Inside `attrs(...)`, ordinary attributes are added explicitly. `+path` inherits
+original attributes with that exact path, `..` inherits all original attributes,
+and `-path` excludes matching attributes from the inherited selection:
+
+```rust
+use optionize::optionized;
+
+#[optionized]
+/// Connection settings.
+#[derive(Clone)]
+#[optionize(attrs(.., -derive, derive(Debug, Default)))]
+struct Config {
+    /// The listening port.
+    #[optionize(attrs(+doc, doc = "Omit to keep the current port."))]
+    port: u16,
+}
+```
+
+This preserves the type's documentation, replaces its entire derive list, and
+appends documentation to the field. `-derive` only removes inherited attributes;
+it does not remove the explicit `derive(Debug, Default)`. For generated protobuf
+fields, `attrs(.., -prost)` keeps the other original attributes while removing
+`#[prost(...)]`.
+
+Selectors match complete paths without name resolution and select all matching
+original attributes, including multiple `doc` attributes. Inherited attributes
+retain their original order and are copied only once even if selected repeatedly;
+explicit attributes follow in their written order and are not merged or
+deduplicated. Selectors that match nothing have no effect. `-path` alone does not
+imply inheriting everything else. Use `+derive` or `-derive` for whole attributes;
+selectors such as `-derive(Clone)` are not supported.
+
+Repeated `attrs(...)` lists are combined. `attrs()` alone clears inherited
+attributes, but an empty list does not reset other lists. Marker attributes in
+`marked(attrs(...))` use the same rules with `#[doc(hidden)]` as the original
+attribute.
 
 ### Field Attributes
 

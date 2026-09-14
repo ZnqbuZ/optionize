@@ -178,15 +178,16 @@
 //! name. On a named field, `{}` expands to that field's name. Tuple fields cannot
 //! be renamed. Attributes after `#[optionized]` are inherited by default.
 //!
-//! `attrs(...)` replaces inherited attributes on the generated type or field.
-//! Repeated `attrs(...)` lists are combined; `attrs()` removes all inherited
-//! attributes at that location. The original subject's attributes remain in place.
+//! `attrs(...)` specifies attributes on the generated type or field. With ordinary
+//! attributes only, it replaces the inherited attributes; `attrs()` clears them.
+//! Repeated lists are combined, so an empty list does not reset other lists.
+//! The original subject's attributes remain in place.
 //!
 //! ```rust
 //! use optionize::{optionized, Optionized};
 //!
 //! #[optionized]
-//! #[optionize(name = "{}Patch", attrs(derive(Debug, Default)), attrs(derive(Clone)))]
+//! #[optionize(name = "{}Patch", attrs(derive(Debug, Default)), attrs(), attrs(derive(Clone)))]
 //! #[derive(PartialEq)]
 //! struct Config {
 //!     /// The listening port on the complete configuration.
@@ -198,6 +199,57 @@
 //! assert_eq!(patch.set_port, None);
 //! patch.set_port = Some(8080);
 //! assert_eq!(patch.clone().upgrade().unwrap().port, 8080);
+//! ```
+//!
+//! To reuse original attributes, include selectors alongside ordinary attributes:
+//!
+//! | Item | Meaning |
+//! | --- | --- |
+//! | `+path` | Inherit original attributes with this exact path. |
+//! | `..` | Inherit all original attributes. |
+//! | `-path` | Exclude matching attributes from the inherited selection. |
+//! | Ordinary attribute | Append this attribute after the inherited selection. |
+//!
+//! Selectors operate only on the original attributes: `-derive` does not remove
+//! an explicitly added `derive(...)`. Inherited attributes keep their original
+//! order; repeated selectors do not copy the same attribute twice, while multiple
+//! original `doc` attributes are all preserved. Explicit attributes follow in
+//! their written order across all lists and are not merged or deduplicated.
+//! Paths match exactly, without name resolution; a selector that matches nothing
+//! has no effect. `-path` alone does not imply inheriting everything else.
+//!
+//! This example retains the type's documentation while replacing its entire
+//! derive list, and retains the field's documentation while appending another line:
+//!
+//! ```rust
+//! use optionize::optionized;
+//!
+//! #[optionized]
+//! /// Connection settings.
+//! #[derive(Clone)]
+//! #[optionize(attrs(.., -derive, derive(Debug, Default)))]
+//! struct Config {
+//!     /// The listening port.
+//!     #[optionize(attrs(+doc, doc = "Omit to keep the current port."))]
+//!     port: u16,
+//! }
+//!
+//! let patch = ConfigOptional::default();
+//! assert_eq!(format!("{patch:?}"), "ConfigOptional { port: None }");
+//! let config = Config { port: 8080 };
+//! assert_eq!(config.clone().port, 8080);
+//! ```
+//!
+//! Each selector accepts an attribute path only. `+derive` or `-derive` selects
+//! or excludes whole `derive(...)` attributes; selecting individual derived
+//! traits is not supported. Replace the whole list as above instead:
+//!
+//! ```compile_fail
+//! use optionize::optionized;
+//! #[optionized]
+//! #[derive(Debug, Clone)]
+//! #[optionize(attrs(.., -derive(Clone)))]
+//! struct Config { port: u16 }
 //! ```
 //!
 //! Place derives **after** `#[optionized]` if the object should inherit them.
@@ -311,7 +363,9 @@
 //! If skipping fields leaves a type or lifetime parameter unused, add
 //! `partial(marked)` to inject a `PhantomData` field. Named structs use an available
 //! `_marker` name by default; `marked(name = ...)` chooses one explicitly.
-//! `marked(attrs(...))` replaces the marker's default `#[doc(hidden)]` attribute.
+//! `marked(attrs(...))` uses the same attribute-selection rules, starting from
+//! the marker's default `#[doc(hidden)]` attribute. For example,
+//! `marked(attrs(.., allow(dead_code)))` keeps it and adds another attribute.
 //!
 //! ```rust
 //! use core::marker::PhantomData;
@@ -768,16 +822,23 @@ extern crate self as optionize;
 ///   baseline bounds use `Schema<Subject, Object>`; ordinary calls infer the mapping.
 ///   This cannot be combined with `object`, struct-level `name`, or struct-level `attrs`.
 /// - `attrs`: By default, the generated struct inherits all attributes from the original struct (except `#[optionize(...)]`).
-///   If you provide `attrs(...)`, it **completely overrides** this behavior. You must list all attributes the generated struct should have.
-///   For example, `#[optionize(attrs(derive(Debug)))]` makes the generated struct *only* derive `Debug`.
-///   Repeated lists are combined; `attrs()` clears inherited attributes.
+///   With ordinary attributes only, `attrs(...)` replaces those attributes;
+///   for example, `attrs(derive(Debug))` makes the generated struct only derive `Debug`.
+///   Use `+path` to select original attributes by exact path, `..` to select all,
+///   and `-path` to exclude attributes from that selection. Ordinary attributes are
+///   appended afterward. Thus `attrs(.., -derive, derive(Debug))` replaces only the
+///   original derive lists, preserving other original attributes.
+///   Selectors accept whole attribute paths, not individual entries inside `derive(...)`.
+///   Repeated lists are combined; `attrs()` alone clears inherited attributes but
+///   does not reset other lists. Inherited attributes keep their order and are
+///   copied at most once per original attribute; explicit attributes are not deduplicated.
 /// - `partial`: Disables the validation and upgrading generated by default, while allowing skipped fields.
 ///   - `upgradable`: Implements the `Optionized` trait, allowing the partial struct to be validated and "upgraded" to the full struct.
 ///   - `marked`: If the original struct has type parameters or lifetimes that are not used by the generated struct (e.g., due to skipped fields),
 ///     the generated struct will fail to compile. `marked` injects a `PhantomData` field to consume those generic parameters.
 ///     - For unit structs, this changes the generated struct to a tuple struct (or a named struct if `name` is specified).
 ///     - Use `marked(name = my_marker)` to explicitly name the injected `PhantomData` field.
-///     - `marked(attrs(...))` replaces the marker's default `#[doc(hidden)]` attribute.
+///     - `marked(attrs(...))` applies the same selection rules to the marker's default `#[doc(hidden)]` attribute.
 ///
 /// ## Field-level attributes
 ///
@@ -786,7 +847,8 @@ extern crate self as optionize;
 /// - `name`: Renames a named field in the generated struct. Use `{}` as a placeholder for its original name.
 ///   Tuple fields cannot be renamed.
 ///   With `subject = ...`, names the corresponding subject field instead.
-/// - `attrs`: Similarly to the struct-level `attrs`, this overrides the attributes applied to the generated field.
+/// - `attrs`: Applies the same attribute-selection rules as struct-level `attrs`
+///   to the generated field. For example, `attrs(+doc)` inherits only its documentation.
 /// - `flatten`: Instructs the macro **not** to wrap the field's type in `Option<Value>`. The field will have the exact same type in the generated struct.
 /// - `skip`: Removes the field entirely from the generated struct.
 ///   - Requires `partial` or `partial(upgradable)` on the struct.

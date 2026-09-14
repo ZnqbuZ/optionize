@@ -1,35 +1,13 @@
-use darling::ast::NestedMeta;
 use darling::util::{Flag, Override, SpannedValue};
 use darling::{Error, FromAttributes, FromMeta, Result};
 use derive_more::Deref;
 use proc_macro_crate::{FoundCrate, crate_name};
-use proc_macro2::{Ident, Span, TokenStream};
+use proc_macro2::{Ident, TokenStream};
 use quote::{ToTokens, format_ident};
-use syn::spanned::Spanned;
-use syn::token::{Bracket, Pound};
-use syn::{AttrStyle, Attribute, Expr, Lit, LitStr, Meta, Path, TypePath, parse_quote};
+use syn::{Expr, Lit, LitStr, Path, TypePath, parse_quote};
 
-use super::utils::{format, is_optionize};
-
-#[derive(Debug)]
-struct MetaList(Vec<Meta>);
-
-impl FromMeta for MetaList {
-    fn from_list(items: &[NestedMeta]) -> Result<Self> {
-        let mut errors = Error::accumulator();
-        let metas = items
-            .iter()
-            .filter_map(|item| match item {
-                NestedMeta::Meta(m) => Some(m.clone()),
-                NestedMeta::Lit(l) => {
-                    errors.push(Error::unsupported_format("literal").with_span(l));
-                    None
-                }
-            })
-            .collect();
-        errors.finish_with(Self(metas))
-    }
-}
+use super::attrs::Attributes;
+use super::utils::format;
 
 #[derive(Debug, Clone, FromMeta)]
 #[darling(default)]
@@ -61,36 +39,6 @@ impl ToTokens for Crate {
 
 #[derive(Debug, Default, FromMeta)]
 #[darling(default)]
-pub(super) struct Attributes {
-    #[darling(rename = "attrs", multiple)]
-    attributes: Vec<MetaList>,
-}
-
-impl Attributes {
-    pub(super) fn patch(self, attrs: &mut Vec<Attribute>) {
-        if self.attributes.is_empty() {
-            attrs.retain(|attr| !is_optionize(attr));
-        } else {
-            *attrs = self
-                .attributes
-                .into_iter()
-                .flat_map(|attributes| attributes.0)
-                .map(|meta| {
-                    let span = meta.span();
-                    Attribute {
-                        pound_token: Pound(span),
-                        style: AttrStyle::Outer,
-                        bracket_token: Bracket(span),
-                        meta,
-                    }
-                })
-                .collect();
-        }
-    }
-}
-
-#[derive(Debug, Default, FromMeta)]
-#[darling(default)]
 pub(super) struct OptionizedArgs {
     #[darling(rename = "crate")]
     pub(super) krate: Option<Crate>,
@@ -106,7 +54,7 @@ pub(super) struct GeneralArgs {
 
 impl GeneralArgs {
     fn is_some(&self) -> bool {
-        self.name.is_some() || !self.attrs.attributes.is_empty()
+        self.name.is_some() || self.attrs.is_present()
     }
 }
 
@@ -184,18 +132,10 @@ impl StructArgs {
                 );
             }
 
-            if !self.attrs.attributes.is_empty() {
-                let span = self
-                    .attrs
-                    .attributes
-                    .iter()
-                    .flat_map(|attributes| &attributes.0)
-                    .fold(Span::call_site(), |span, meta| {
-                        span.join(meta.span()).unwrap_or(meta.span())
-                    });
+            if self.attrs.is_present() {
                 errors.push(
                     Error::custom("`attrs` cannot be used when `object` or `subject` is specified")
-                        .with_span(&span),
+                        .with_span(&self.attrs.span()),
                 );
             }
         }

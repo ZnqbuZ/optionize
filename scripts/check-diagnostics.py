@@ -12,6 +12,12 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 CASES = {
+    "attrs_selector": ("attribute selectors accept only a path", "("),
+    "attrs_missing_path": ("expected identifier", ","),
+    "attrs_separator": ("expected `,`", "derive"),
+    "attrs_literal": ("Unexpected meta-item format `literal`", '"invalid"'),
+    "attrs_mapping": ("`attrs` cannot be used when `object` or `subject` is specified", "attrs"),
+    "attrs_generated": ("cannot find derive macro `Missing`", "Missing"),
     "cfg_field": ("`skip` can only be combined with `default`", "skip"),
     "cfg_attribute": ("`skip` can only be combined with `default`", "skip"),
     "default_flatten": ("`default` cannot be used with `flatten`", "default"),

@@ -1,4 +1,5 @@
 mod args;
+mod attrs;
 mod codegen;
 mod field;
 mod utils;
