@@ -34,15 +34,15 @@ impl ToTokens for View<'_> {
                 nest: Some(nest), ..
             } = strategy
             {
-                q! { ::core::option::Option::Some(<#ty as #krate::Schema<#ty, #nest>>::view(&#this.#original)) }
+                q! { Option::Some(<#ty as #krate::Schema<#ty, #nest>>::view(&#this.#original)) }
             } else {
-                q! { ::core::option::Option::Some(&#this.#original) }
+                q! { Option::Some(&#this.#original) }
             }
         } else if let FieldStrategy::Optionize { wrap, nest } = strategy {
             let view = if *wrap {
                 q! { #this.#optionized.as_ref() }
             } else {
-                q! { ::core::option::Option::Some(&#this.#optionized) }
+                q! { Option::Some(&#this.#optionized) }
             };
             if let Some(nest) = nest {
                 q! { #view.map(<#nest as #krate::Schema<#ty>>::view) }
@@ -50,7 +50,7 @@ impl ToTokens for View<'_> {
                 view
             }
         } else {
-            q! { ::core::option::Option::None }
+            q! { Option::None }
         };
         tokens.extend(q! { #local: #view, });
     }
@@ -74,11 +74,11 @@ impl ToTokens for Retain<'_, '_> {
         let remains = self.remains;
         let retain = match (wrap, nest) {
             (true, None) => q! {
-                if let (::core::option::Option::Some(value), ::core::option::Option::Some(baseline)) =
+                if let (Option::Some(value), Option::Some(baseline)) =
                     (#this.#optionized.as_ref(), #baseline.#local)
                     && #krate::__private::Equal::<#index>::equal(value, baseline)
                 {
-                    #this.#optionized = ::core::option::Option::None;
+                    #this.#optionized = Option::None;
                 }
                 #remains |= #this.#optionized.is_some();
             },
@@ -88,11 +88,11 @@ impl ToTokens for Retain<'_, '_> {
                 });
             },
             (true, Some(nest)) => q! {
-                if let (::core::option::Option::Some(value), ::core::option::Option::Some(baseline)) =
+                if let (Option::Some(value), Option::Some(baseline)) =
                     (#this.#optionized.as_mut(), #baseline.#local)
                     && !<#nest as #krate::Retain<#ty>>::retain_view(value, baseline)
                 {
-                    #this.#optionized = ::core::option::Option::None;
+                    #this.#optionized = Option::None;
                 }
                 #remains |= #this.#optionized.is_some();
             },
@@ -134,7 +134,7 @@ impl ToTokens for Optionize<'_, '_> {
             q! { #subject.#original }
         };
         let optionize = if *wrap {
-            q! { ::core::option::Option::Some(#optionize) }
+            q! { Option::Some(#optionize) }
         } else {
             optionize
         };
@@ -177,7 +177,7 @@ impl ToTokens for Patch<'_, '_> {
         };
         let patch = if *wrap {
             q! {
-                if let ::core::option::Option::Some(v) = #this.#optionized {
+                if let Option::Some(v) = #this.#optionized {
                     #patch
                 }
             }
@@ -213,13 +213,13 @@ impl ToTokens for Merge<'_, '_> {
         let merge = match (wrap, nest) {
             (true, Some(nest)) => q! {
                 match (&mut #this.#optionized, #other.#optionized) {
-                    (::core::option::Option::Some(this), ::core::option::Option::Some(other)) => <#nest as #krate::PartialOptionized<#ty>>::merge(this, other),
-                    (::core::option::Option::None, ::core::option::Option::Some(other)) => #this.#optionized = ::core::option::Option::Some(other),
+                    (Option::Some(this), Option::Some(other)) => <#nest as #krate::PartialOptionized<#ty>>::merge(this, other),
+                    (Option::None, Option::Some(other)) => #this.#optionized = Option::Some(other),
                     _ => {}
                 }
             },
             (true, None) => q! {
-                if ::core::option::Option::is_some(&#other.#optionized) {
+                if Option::is_some(&#other.#optionized) {
                     #this.#optionized = #other.#optionized;
                 }
             },
@@ -308,7 +308,7 @@ impl ToTokens for Validate<'_, '_, '_> {
                 }
             });
             q! {
-                if let ::core::option::Option::Some(#local) = &#this.#optionized {
+                if let Option::Some(#local) = &#this.#optionized {
                     #validate
                 }
                 #missing
@@ -354,8 +354,8 @@ impl ToTokens for Upgrade<'_> {
             };
             q! {
                 match #this.#optionized {
-                    ::core::option::Option::Some(value) => #value,
-                    ::core::option::Option::None => #missing,
+                    Option::Some(value) => #value,
+                    Option::None => #missing,
                 }
             }
         } else {

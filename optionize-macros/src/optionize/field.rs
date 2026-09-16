@@ -123,7 +123,7 @@ impl FieldIr {
                     field.ty = {
                         let ty = nest.as_ref().unwrap_or(&ty);
                         if wrap {
-                            pq! { ::core::option::Option<#ty> }
+                            pq! { Option<#ty> }
                         } else {
                             ty.clone()
                         }

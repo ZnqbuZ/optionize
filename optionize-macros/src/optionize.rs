@@ -278,7 +278,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                 } else {
                     qs! { *span => &#view_lifetime #ty }
                 };
-                qs! { *span => #visibility #local: ::core::option::Option<#ty>, }
+                qs! { *span => #visibility #local: Option<#ty>, }
             });
             output.extend(q! {
                 // A nominal view keeps private field types out of public associated types.
@@ -294,7 +294,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
 
             let fields = originals.iter().map(|field| {
                 let local = &field.local;
-                q! { #local: ::core::option::Option::None, }
+                q! { #local: Option::None, }
             });
             output.extend(q! {
                 impl #impl_generics ::core::default::Default for #view #type_generics #where_clause {
