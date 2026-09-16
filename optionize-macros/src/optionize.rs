@@ -200,12 +200,18 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                     let FieldIr {
                         ty, strategy, span, ..
                     } = field;
-                    let FieldStrategy::Optionize {
-                        nest: Some(nest), ..
-                    } = strategy
-                    else {
+                    let FieldStrategy::Optionize { nest, convert, .. } = strategy else {
                         return None;
                     };
+                    if let Some(convert) = convert {
+                        // Both directions are required: `optionize` converts the field
+                        // into its object type, while `patch` and `upgrade` convert back.
+                        return Some([
+                            pqs! { *span => #convert: ::core::convert::From<#ty> },
+                            pqs! { *span => #ty: ::core::convert::From<#convert> },
+                        ]);
+                    }
+                    let nest = nest.as_ref()?;
                     Some([
                         pqs! { *span => #nest: #krate::Schema<#ty> },
                         pqs! { *span => #nest: #krate::PartialOptionized<#ty> },
@@ -223,11 +229,13 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
             let mut idents = HashSet::new();
             let fields = originals.iter().map(|field| {
                 let ty = &field.ty;
-                let nest = match &field.strategy {
-                    FieldStrategy::Optionize { nest, .. } => nest.as_ref(),
-                    FieldStrategy::Skip => None,
+                let (nest, convert) = match &field.strategy {
+                    FieldStrategy::Optionize { nest, convert, .. } => {
+                        (nest.as_ref(), convert.as_ref())
+                    }
+                    FieldStrategy::Skip => (None, None),
                 };
-                q! { #ty #nest }
+                q! { #ty #nest #convert }
             });
             collect_idents(
                 q! { #Subject #Object #impl_generics #where_clause #(#fields)* },
@@ -335,6 +343,8 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                             let FieldIr { ty, strategy, index, span, .. } = field;
                             match strategy {
                                 FieldStrategy::Skip => None,
+                                // Converted fields have no comparable view entry.
+                                FieldStrategy::Optionize { convert: Some(_), .. } => None,
                                 FieldStrategy::Optionize { nest: None, .. } => {
                                     Some(pqs! { *span => for<#view_lifetime> &#view_lifetime #ty: #krate::__private::Equal<#index> })
                                 }

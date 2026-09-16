@@ -487,6 +487,67 @@
 //! an absent child is unknown, so even an explicitly supplied empty child patch is
 //! retained when compared with it.
 //!
+//! ## Converted fields
+//!
+//! `as = Type` maps a field to a different type in the generated object, such as a
+//! plain representation of a subject-only type. The two types must convert into each
+//! other with `From`, so no conversion can fail: downgrading converts the subject's
+//! value into the object's type, while patching and upgrading convert it back.
+//! Because [`PartialOptionized`] performs both directions, mapping a foreign type to
+//! another foreign type needs an existing implementation or a local wrapper.
+//!
+//! A converted field combines with `flatten` and with `default`, but not with
+//! `nest`, which already determines the object's field type. Under `subject = ...`,
+//! `as` names the subject's field type, following `nest`.
+//!
+//! ```rust
+//! use core::time::Duration;
+//! use optionize::{optionized, Optionizable, Optionized, Retain};
+//!
+//! /// The object representation of a duration.
+//! #[derive(Debug, PartialEq)]
+//! struct Seconds(u64);
+//!
+//! impl From<Duration> for Seconds {
+//!     fn from(value: Duration) -> Self {
+//!         Self(value.as_secs())
+//!     }
+//! }
+//!
+//! impl From<Seconds> for Duration {
+//!     fn from(value: Seconds) -> Self {
+//!         Self::from_secs(value.0)
+//!     }
+//! }
+//!
+//! #[optionized]
+//! struct Config {
+//!     #[optionize(as = Seconds)]
+//!     timeout: Duration,
+//! }
+//!
+//! let patch: ConfigOptional = Config { timeout: Duration::from_secs(30) }.downgrade();
+//! assert_eq!(patch.timeout, Some(Seconds(30)));
+//!
+//! let mut config = Config { timeout: Duration::ZERO };
+//! config.load(ConfigOptional { timeout: Some(Seconds(7)) });
+//! assert_eq!(config.timeout, Duration::from_secs(7));
+//! assert_eq!(
+//!     ConfigOptional { timeout: Some(Seconds(9)) }.upgrade().unwrap().timeout,
+//!     Duration::from_secs(9)
+//! );
+//!
+//! // Converted fields have no comparable view entry: their updates are kept.
+//! let mut patch = ConfigOptional { timeout: Some(Seconds(7)) };
+//! assert!(patch.retain(&config));
+//! assert_eq!(patch.timeout, Some(Seconds(7)));
+//! ```
+//!
+//! The generated object stores the mapped type, so the subject's type needs no
+//! `PartialEq` or `Clone` for comparison. Against any baseline, a converted field
+//! borrows as unknown in the shared [`Schema`] view, which keeps its update rather
+//! than removing it, exactly like a baseline field the compared type cannot know.
+//!
 //! ## Existing objects and external subjects
 //!
 //! At least one side of a mapping must be local to the crate defining it.
@@ -846,7 +907,7 @@ extern crate self as optionize;
 ///
 /// ## Field-level attributes
 ///
-/// `#[optionize(name = "...", attrs(...), flatten, skip, default = callback, nest = "...")]`
+/// `#[optionize(name = "...", attrs(...), flatten, skip, default = callback, nest = "...", as = "...")]`
 ///
 /// - `name`: Renames a named field in the generated struct. Use `{}` as a placeholder for its original name.
 ///   Tuple fields cannot be renamed.
@@ -869,6 +930,11 @@ extern crate self as optionize;
 ///   `PartialOptionized` (and `Optionized` when upgrading is enabled). With `subject = ...`,
 ///   name the nested subject instead; the declared field already supplies its object type.
 ///   Generic arguments must be explicit. String paths for `nest` do not substitute `{}`.
+/// - `as = Type` or `as = "Type"`: Maps this field to a different type in the generated object.
+///   The two types must convert into each other with `From`: downgrading converts the subject's
+///   value into the object's type, while patching and upgrading convert it back. Cannot be
+///   combined with `nest`, which already determines the object type. With `subject = ...`,
+///   name the subject's field type instead. String paths do not substitute `{}`.
 ///
 /// ## Field Visibility
 /// The generated struct and its fields **strictly retain the visibility** of the original struct and its fields.
