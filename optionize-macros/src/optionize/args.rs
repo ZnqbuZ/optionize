@@ -4,6 +4,7 @@ use derive_more::Deref;
 use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Ident, TokenStream};
 use quote::{ToTokens, format_ident};
+use syn::spanned::Spanned;
 use syn::{Expr, Lit, LitStr, Path, TypePath, parse_quote};
 
 use super::attrs::Attributes;
@@ -89,6 +90,15 @@ impl FromMeta for TypeArg {
     }
 }
 
+impl ToTokens for TypeArg {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        match self {
+            Self::Str(value) => value.to_tokens(tokens),
+            Self::Path(path) => path.to_tokens(tokens),
+        }
+    }
+}
+
 impl TypeArg {
     pub(super) fn parse(self) -> Result<TypePath> {
         match self {
@@ -120,8 +130,11 @@ impl StructArgs {
     fn finalize(self) -> Result<Self> {
         let mut errors = Error::accumulator();
 
-        if self.subject.is_some() && self.object.is_some() {
-            errors.push(Error::custom("`subject` and `object` cannot be combined"));
+        if let (Some(subject), Some(object)) = (&self.subject, &self.object) {
+            let span = subject.span();
+            let span = span.join(object.span()).unwrap_or(span);
+            errors
+                .push(Error::custom("`subject` and `object` cannot be combined").with_span(&span));
         }
 
         if self.object.is_some() || self.subject.is_some() {
@@ -163,6 +176,8 @@ pub(super) struct FieldArgs {
     pub(super) general: GeneralArgs,
     pub(super) flatten: Flag,
     pub(super) nest: Option<TypeArg>,
+    #[darling(rename = "as")]
+    pub(super) r#as: Option<TypeArg>,
     pub(super) skip: Flag,
     pub(super) default: Option<SpannedValue<Override<Expr>>>,
 }
@@ -170,7 +185,10 @@ pub(super) struct FieldArgs {
 impl FieldArgs {
     fn finalize(self) -> Result<Self> {
         if self.skip.is_present()
-            && (self.general.is_some() || self.flatten.is_present() || self.nest.is_some())
+            && (self.general.is_some()
+                || self.flatten.is_present()
+                || self.nest.is_some()
+                || self.r#as.is_some())
         {
             return Err(Error::custom("`skip` can only be combined with `default`")
                 .with_span(&self.skip.span()));
@@ -183,6 +201,13 @@ impl FieldArgs {
                 Error::custom("`default` cannot be used with `flatten`").with_span(&default.span())
             );
         }
+
+        if let Some(convert) = &self.r#as
+            && self.nest.is_some()
+        {
+            return Err(Error::custom("`as` cannot be used with `nest`").with_span(&convert.span()));
+        }
+
         Ok(self)
     }
 }

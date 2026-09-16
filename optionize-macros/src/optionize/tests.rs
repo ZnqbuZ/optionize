@@ -87,6 +87,7 @@ fn skip_rejects_combinations_with_other_field_options() {
     for option in [
         quote!(flatten),
         quote!(nest = ChildPatch),
+        quote!(as = Child),
         quote!(name = "renamed"),
         quote!(attrs()),
     ] {
@@ -123,6 +124,17 @@ fn defaults_reject_flattened_fields_and_the_legacy_skip_initializer() {
         }
     });
     assert_eq!(messages, ["Unknown field: `upgrade` at skip"]);
+}
+
+#[test]
+fn converted_fields_reject_nesting() {
+    let messages = errors(quote! {
+        struct Config {
+            #[optionize(nest = ChildOptional, as = Child)]
+            value: Child,
+        }
+    });
+    assert_eq!(messages, ["`as` cannot be used with `nest`"]);
 }
 
 #[test]
@@ -200,6 +212,12 @@ fn type_arguments_reject_non_paths_and_malformed_strings() {
                 struct Config {
                     #[optionize(nest = #value)]
                     value: Child,
+                }
+            ),
+            quote!(
+                struct Config {
+                    #[optionize(as = #value)]
+                    value: u32,
                 }
             ),
         ] {

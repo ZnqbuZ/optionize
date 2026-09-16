@@ -14,7 +14,11 @@ use super::utils::{format, is_optionize, member_to_string, span};
 #[derive(Debug)]
 pub(super) enum FieldStrategy {
     Skip,
-    Optionize { wrap: bool, nest: Option<Box<Type>> },
+    Optionize {
+        wrap: bool,
+        nest: Option<Box<Type>>,
+        convert: Option<Box<Type>>,
+    },
 }
 
 pub(super) struct FieldIr {
@@ -109,26 +113,33 @@ impl FieldIr {
                     continue;
                 };
                 let nest = nest.map(Type::Path);
-                let (ty, nest) = if reverse {
+                let Some(convert) = errors.handle(args.r#as.map(TypeArg::parse).transpose()) else {
+                    continue;
+                };
+                let convert = convert.map(Type::Path);
+                // `ty` is the subject's field type in both directions; `convert`
+                // additionally carries the object's field type when they differ.
+                let (ty, nest, convert) = if reverse {
                     let ty = if wrap {
                         pq! { <#ty as #krate::__private::OptionField>::Value }
                     } else {
                         ty
                     };
-                    match nest {
-                        Some(nest) => (nest, Some(ty)),
-                        None => (ty, None),
+                    match (nest, convert) {
+                        (Some(nest), _) => (nest, Some(ty), None),
+                        (None, Some(convert)) => (convert, None, Some(ty)),
+                        (None, None) => (ty, None, None),
                     }
                 } else {
                     field.ty = {
-                        let ty = nest.as_ref().unwrap_or(&ty);
+                        let ty = convert.as_ref().or(nest.as_ref()).unwrap_or(&ty);
                         if wrap {
                             pq! { Option<#ty> }
                         } else {
                             ty.clone()
                         }
                     };
-                    (ty, nest)
+                    (ty, nest, convert)
                 };
                 args.general.attrs.patch(&mut field.attrs);
                 (
@@ -136,6 +147,7 @@ impl FieldIr {
                     FieldStrategy::Optionize {
                         wrap,
                         nest: nest.map(Box::new),
+                        convert: convert.map(Box::new),
                     },
                 )
             };

@@ -1,5 +1,7 @@
 //! External data types for testing trait implementations across crate boundaries.
 
+use core::time::Duration;
+
 #[derive(Debug, Default, PartialEq)]
 pub struct Single {
     pub enabled: Option<bool>,
@@ -37,6 +39,11 @@ pub struct GenericSubject<Value> {
 #[derive(Debug, PartialEq)]
 pub struct BorrowedSubject<'v, Value, const N: usize> {
     pub values: &'v [Value; N],
+}
+
+#[derive(Debug, PartialEq)]
+pub struct DurationSubject {
+    pub timeout: Duration,
 }
 
 #[derive(Debug, PartialEq)]

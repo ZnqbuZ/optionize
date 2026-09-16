@@ -12,7 +12,9 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 CASES = {
+    "as_nest": ("`as` cannot be used with `nest`", "Child"),
     "deprecated_subject": ("use of deprecated field `Config::old`", "config.old"),
+    "mapping_conflict": ("`subject` and `object` cannot be combined", "Config"),
     "deprecated_object": ("use of deprecated field `ConfigOptional::old`", "config.old"),
     "attrs_selector": ("attribute selectors accept only a path", "("),
     "attrs_missing_path": ("expected identifier", ","),
