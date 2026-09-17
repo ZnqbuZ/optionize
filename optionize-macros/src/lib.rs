@@ -29,6 +29,13 @@ pub fn derive(_: TokenStream) -> TokenStream {
 #[proc_macro_derive(Prepare, attributes(optionize))]
 pub fn prepare(input: TokenStream) -> TokenStream {
     let mut input = syn::parse_macro_input!(input as syn::DeriveInput);
+    debug_assert!(
+        input.attrs[0]
+            .path()
+            .segments
+            .last()
+            .is_some_and(|seg| seg.ident == "discard")
+    );
     input.attrs.remove(0); // The discard attribute inserted by optionized.
     quote!(#input).into()
 }
@@ -36,7 +43,7 @@ pub fn prepare(input: TokenStream) -> TokenStream {
 #[doc(hidden)]
 #[proc_macro_attribute]
 pub fn discard(_: TokenStream, _: TokenStream) -> TokenStream {
-    TokenStream::new()
+    Default::default()
 }
 
 #[doc(hidden)]
