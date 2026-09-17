@@ -1,5 +1,5 @@
 use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
+use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use core::fmt;
 use core::fmt::Display;
@@ -53,20 +53,44 @@ pub enum Error {
     },
 }
 
+impl Error {
+    pub const fn ty(&self) -> &TypeInfo {
+        match self {
+            Self::Missing { ty, .. } | Self::Nested { ty, .. } => ty,
+        }
+    }
+
+    pub const fn field(&self) -> &FieldInfo {
+        match self {
+            Self::Missing { field, .. } | Self::Nested { field, .. } => field,
+        }
+    }
+
+    pub const fn description(&self) -> &'static str {
+        match self {
+            Self::Missing { .. } => "Missing required field",
+            Self::Nested { .. } => "Failed to upgrade nested field",
+        }
+    }
+
+    pub(crate) fn format(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "\n    - {}: {}", self.description(), self.field())?;
+        if let Self::Nested { source, .. } = self {
+            write!(f, "\n      - {}", source)?;
+        }
+        Ok(())
+    }
+}
+
 impl Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Missing { ty, field } => {
-                write!(f, "Missing required field when upgrading {}: {}", ty, field)
-            }
-            Self::Nested { ty, field, .. } => {
-                write!(
-                    f,
-                    "Failed to upgrade nested field when upgrading {}: {}",
-                    ty, field
-                )
-            }
-        }
+        write!(
+            f,
+            "{} when upgrading {}: {}",
+            self.description(),
+            self.ty(),
+            self.field()
+        )
     }
 }
 
@@ -95,26 +119,10 @@ impl Display for ErrorCollection {
 
         write!(f, "Upgrade failed with {} error(s):", self.errors.len())?;
 
-        let mut groups = BTreeMap::<_, Vec<_>>::new();
-        for error in &self.errors {
-            let ty = match error {
-                Error::Missing { ty, .. } | Error::Nested { ty, .. } => ty,
-            };
-            groups.entry(ty).or_default().push(error);
-        }
-
-        for (ty, errors) in groups {
+        for ty in self.errors.iter().map(Error::ty).collect::<BTreeSet<_>>() {
             write!(f, "\n  {}", ty)?;
-            for error in errors {
-                match error {
-                    Error::Missing { field, .. } => {
-                        write!(f, "\n    - Missing required field: {}", field)?;
-                    }
-                    Error::Nested { field, source, .. } => {
-                        writeln!(f, "\n    - Failed to upgrade nested field: {}", field)?;
-                        write!(f, "      - {}", source)?;
-                    }
-                }
+            for error in self.errors.iter().filter(|error| error.ty() == ty) {
+                error.format(f)?;
             }
         }
 
@@ -124,7 +132,9 @@ impl Display for ErrorCollection {
 
 impl FromIterator<Error> for ErrorCollection {
     fn from_iter<Iterable: IntoIterator<Item = Error>>(iter: Iterable) -> Self {
-        iter.into_iter().collect::<Vec<_>>().into()
+        Self {
+            errors: iter.into_iter().collect(),
+        }
     }
 }
 
