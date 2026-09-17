@@ -14,7 +14,7 @@ readme = "README.md"
 
 [dependencies]
 optionize-macros = { workspace = true }
-derive_more = { version = "2.1.1", features = ["full"] }
+derive_more = { version = "2.1.1", features = ["as_ref", "deref", "deref_mut", "error", "from", "into", "into_iterator"] }
 
 [dev-dependencies]
 optionize-test-models = { path = "tests/fixtures/models" }
