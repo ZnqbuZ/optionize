@@ -1,0 +1,395 @@
+# optionize guide
+
+[Back to the README](../README.md) · [API documentation](https://docs.rs/optionize)
+
+A Rust library providing macros and traits to easily generate and manage "optionized" versions of structs. An optionized struct has its fields wrapped in `Option<Value>` (by default), which is extremely useful for configurations, builders, and partial updates (patching).
+
+## Core Concepts
+
+- **Downgrading**: Convert a complete struct into its optionized version.
+- **Patching / Loading**: Apply an optionized struct onto a complete struct, updating only the `Some` fields.
+- **Merging**: Merge two optionized structs together.
+- **Retaining changes**: Remove updates that already match a complete or partial baseline.
+- **Upgrading**: Convert an optionized struct back into a complete struct. If any required fields are missing, it returns structured errors identifying missing fields and nested failures.
+
+## Installation
+
+Add `optionize` to your `Cargo.toml`:
+
+```toml
+[dependencies]
+optionize = "0.5"
+```
+
+## Basic Example
+
+```rust
+use optionize::{optionized, Optionizable};
+
+// This generates `ConfigOptional` which implements `PartialOptionized` and `Optionized`.
+#[optionized]
+#[derive(Debug, Clone)]
+struct Config {
+    host: String,
+    port: u16,
+}
+
+fn main() {
+    let mut config = Config {
+        host: "localhost".to_string(),
+        port: 8080,
+    };
+
+    // The optionized struct is named `<OriginalName>Optional` by default.
+    let partial = ConfigOptional {
+        host: None,
+        port: Some(9090),
+    };
+
+    // Patch the original config with the partial update
+    config.load(partial);
+
+    assert_eq!(config.port, 9090);
+    assert_eq!(config.host, "localhost");
+
+    // You can also "downgrade" a full config to a partial one
+    let partial_config = config.downgrade();
+}
+```
+
+## Advanced Features & Customization
+
+The [crate documentation](../optionize/src/lib.rs) contains runnable examples for every
+attribute, generic and external mappings, three-state updates, comparison bounds,
+and validation errors. `cargo test --doc -p optionize` checks those examples.
+
+You can customize the generated struct and its fields using the `#[optionize(...)]` helper attribute.
+
+### Struct Attributes
+
+- `#[optionize(name = "CustomPrefix{}CustomSuffix")]`: Set the name of the generated optionized struct. `{}` will be replaced with the original struct name.
+- `#[optionize(object = pb::Config::<Value>)]` or `#[optionize(object = "pb::{}Optional<Value>")]`: Use an existing struct through an unquoted type path or a string template. In strings, `{}` is replaced with the subject's name. Write generic arguments explicitly; unquoted generic paths use `::<Value>`. The subject must be local when the object is from another crate.
+- `#[optionize(subject = model::Config)]` or `#[optionize(subject = "model::Config")]`: Treat the annotated struct as the optionized object of an existing subject. Write its fields as `Option<Value>` yourself; aliases for `Option<Value>` also work. The subject may come from another crate; see the example below.
+- `#[optionize(attrs(derive(Debug, Default)))]`: Replace the attributes inherited by the generated struct. Select original attributes with `+path` or `..`, and exclude them with `-path`.
+- `#[optionize(partial(upgradable))]`: By default, the generated struct implements both `PartialOptionized` and `Optionized`. If you only want partial updates and don't need upgrading, use `#[optionize(partial)]`. If you want both while using `partial` specific features (like `skip`), use `#[optionize(partial(upgradable))]`.
+- `#[optionize(partial(marked))]`: Adds a `PhantomData` marker to the generated struct, typing it strictly to the original struct.
+
+```rust
+use optionize::optionized;
+
+#[optionized]
+#[optionize(
+    name = "PartialConfig",
+    attrs(derive(Debug, Default))
+)]
+struct Config {
+    host: String,
+}
+```
+
+The macro also accepts `#[optionized(crate = path)]` for a custom re-export path.
+Renamed Cargo dependencies are detected automatically. Put inherited derives after
+`#[optionized]`; attributes that ran before the macro are not inherited.
+
+Inside `attrs(...)`, ordinary attributes are added explicitly. `+path` inherits
+original attributes with that exact path, `..` inherits all original attributes,
+and `-path` excludes matching attributes from the inherited selection:
+
+```rust
+use optionize::optionized;
+
+#[optionized]
+/// Connection settings.
+#[derive(Clone)]
+#[optionize(attrs(.., -derive, derive(Debug, Default)))]
+struct Config {
+    /// The listening port.
+    #[optionize(attrs(+doc, doc = "Omit to keep the current port."))]
+    port: u16,
+}
+```
+
+This preserves the type's documentation, replaces its entire derive list, and
+appends documentation to the field. `-derive` only removes inherited attributes;
+it does not remove the explicit `derive(Debug, Default)`. For generated protobuf
+fields, `attrs(.., -prost)` keeps the other original attributes while removing
+`#[prost(...)]`.
+
+Selectors match complete paths without name resolution and select all matching
+original attributes, including multiple `doc` attributes. Inherited attributes
+retain their original order and are copied only once even if selected repeatedly;
+explicit attributes follow in their written order and are not merged or
+deduplicated. Selectors that match nothing have no effect. `-path` alone does not
+imply inheriting everything else. Use `+derive` or `-derive` for whole attributes;
+selectors such as `-derive(Clone)` are not supported.
+
+Repeated `attrs(...)` lists are combined. `attrs()` alone clears inherited
+attributes, but an empty list does not reset other lists. Marker attributes in
+`marked(attrs(...))` use the same rules with `#[doc(hidden)]` as the original
+attribute.
+
+### Field Attributes
+
+- `#[optionize(name = "prefix_{}_suffix")]`: Rename a field in the optionized struct. `{}` will be replaced with the original field name. With `subject = ...`, this instead names the corresponding subject field.
+- `#[optionize(flatten)]`: Do not wrap the field in `Option<Value>`. Patching always assigns the field, including `None`; nested fields delegate to their patch implementation.
+- `#[optionize(nest = NestedTypeOptional)]` or `#[optionize(nest = "NestedTypeOptional")]`: Recursively apply optionize logic to a nested optionized struct. With `subject = ...`, name the nested subject type instead. Allows deep patching, retaining changes, and upgrading.
+- `#[optionize(as = OtherType)]` or `#[optionize(as = "OtherType")]`: Map the field to a different type in the optionized struct. The two types must convert into each other with `From`: downgrading converts the subject's value into the optionized type, while patching and upgrading convert it back. Cannot be combined with `nest`. With `subject = ...`, name the subject's field type instead. Converted fields are not compared, so `retain` keeps their updates and the subject type needs no `PartialEq`.
+- `#[optionize(skip)]`: Omit the field from the object. Requires `partial` or `partial(upgradable)`. When upgrading, it uses the same `default` initializer as ordinary fields, implicitly calling `Default::default()`. With `subject = ...`, declare the unmanaged subject field with its subject type; the macro removes it from the local object.
+- `#[optionize(default)]` / `#[optionize(default = callback)]`: Initialize an omitted field during upgrading. The callback is a function or non-capturing closure of type `fn(&Object) -> FieldType`; otherwise the field type's `Default` is used. Combine with `skip` to supply its initializer. Cannot be combined with `flatten`.
+
+Defaults run after successful initial validation, in declaration order, before
+moving any fields. They inspect the original object, including omitted fields;
+earlier computed defaults are not written back. They do not change patch/load,
+merge, retain, or Serde behavior. Explicit false, zero, empty strings, and clears
+are supplied values. Nested defaults return complete child subjects, while
+supplied nested patches still undergo validation. Callbacks should not invalidate
+nested objects through interior mutability; such invalidation during construction
+causes a panic.
+
+```rust
+use optionize::{optionized, Optionized};
+
+#[optionized]
+#[optionize(partial(upgradable))]
+struct Config {
+    name: String,
+    #[optionize(default = |_| true)]
+    reusable: bool,
+    #[optionize(skip, default = |object| object.name.as_ref().unwrap().len())]
+    name_length: usize,
+}
+
+let config = ConfigOptional { name: Some("node".into()), reusable: None }
+    .upgrade().unwrap();
+assert!(config.reusable);
+assert_eq!(config.name_length, 4);
+```
+
+Migration: replace `skip(upgrade = expression)` with
+`skip, default = |_| expression`. The old `upgrade` field option has been removed.
+
+#### Nested Structs Example
+
+```rust
+use optionize::{optionized, Optionized};
+
+#[optionized]
+#[derive(Debug)]
+struct Inner {
+    val: i32,
+}
+
+#[optionized]
+#[derive(Debug)]
+struct Outer {
+    // Tell optionize to recurse into this struct when patching/upgrading
+    #[optionize(nest = "InnerOptional")]
+    inner: Inner,
+}
+```
+
+### Upgrading and Error Handling
+
+Optionized structs implement `Optionized<Subject>`, allowing you to `upgrade()` them back into the full struct. If any required fields are missing (`None`), the generated implementation returns an `ErrorCollection`.
+
+```rust
+use optionize::{optionized, Optionized};
+
+#[optionized]
+struct User {
+    name: String,
+    age: u8,
+}
+
+fn main() {
+    let partial = UserOptional {
+        name: Some("Alice".to_string()),
+        age: None, // Missing required field
+    };
+
+    let result = partial.upgrade();
+
+    match result {
+        Ok(user) => println!("Upgraded!"),
+        Err(errors) => {
+            // Call validate() before upgrade() if you need to retain an invalid partial.
+            println!("{}", errors);
+        }
+    }
+}
+```
+
+The error collection formats missing fields and nested errors clearly, grouping them by the struct type:
+```text
+Upgrade failed with 1 error(s):
+  `UserOptional` -> `User`
+    - Missing required field: `age`
+```
+
+### Retaining changes
+
+```rust
+use optionize::{optionized, Retain};
+
+#[optionized]
+struct Config {
+    enabled: bool,
+    socket_mark: Option<u32>,
+}
+
+let current = Config { enabled: true, socket_mark: Some(7) };
+let mut patch = ConfigOptional {
+    enabled: Some(true),
+    socket_mark: Some(None),
+};
+
+assert!(patch.retain(&current));
+assert_eq!(patch.enabled, None);
+assert_eq!(patch.socket_mark, Some(None));
+
+// A partial baseline uses exactly the same call.
+let baseline = ConfigOptional {
+    enabled: None,
+    socket_mark: Some(None),
+};
+assert!(!patch.retain(&baseline));
+assert_eq!(patch.socket_mark, None);
+```
+
+`retain` borrows the baseline and removes redundant updates in place, without
+requiring `Clone`. It returns `true` when changes remain and `false` when the whole
+patch can be omitted relative to that baseline. An unknown baseline field does
+not remove an update. `Some(None)` remains a distinct operation that clears a
+nullable field.
+
+The macro provides `Retain` automatically when the compared fields support
+`PartialEq`; no attribute enables it. The full subject does not need to implement
+`PartialEq`, and these bounds do not restrict patching or upgrading. Nested
+patches compare recursively. `skip` fields are ignored. `flatten` fields stay
+stored because they cannot represent an omitted update, but equal values do not
+count as remaining changes. Consequently, a `false` result does not necessarily
+mean every stored field is `None`.
+
+The baseline can be the complete subject, the same patch type, or another type
+implementing `Schema<Subject, Patch>`. The macro generates the schemas for the
+subject and patch automatically. Existing protobuf objects selected through
+`object = ...` use the same API.
+
+`Schema::view()` borrows the mapped fields so `retain` can compare complete and
+partial baselines without copying values. Views are constructed recursively,
+including flattened nested fields. Ordinary callers only need `retain()`; the
+view protocol is useful when writing a custom baseline or generic comparison
+code. The subject does not implement `PartialOptionized`.
+
+### Using an external subject
+
+When the subject belongs to another crate, put the macro on your local patch
+struct. The external subject needs no annotation or wrapper. For example, given
+`model::Config { enabled: bool, name: String }` with public fields:
+
+```rust,ignore
+use optionize::{optionized, Retain, Schema};
+
+#[optionized]
+#[optionize(subject = model::Config)]
+struct ConfigPatch {
+    enabled: Option<bool>,
+    name: Option<String>,
+}
+
+let current = model::Config {
+    enabled: true,
+    name: "node".into(),
+};
+let mut patch = ConfigPatch {
+    enabled: Some(true),
+    name: Some("node".into()),
+};
+assert!(!patch.retain(&current));
+
+fn trim<Baseline: Schema<model::Config, ConfigPatch>>(
+    patch: &mut ConfigPatch,
+    baseline: &Baseline,
+) -> bool {
+    patch.retain(baseline)
+}
+```
+
+`ConfigPatch` owns the shared view in both mapping directions. It implements
+`Schema<model::Config>`, whose second parameter defaults to `Self`, and the
+subject implements `Schema<model::Config, ConfigPatch>`. Generic baseline bounds
+name the patch explicitly, as in `trim` above; ordinary calls infer it.
+`PartialOptionized<model::Config>` and `Optionized<model::Config>` only need the
+subject parameter, including for external subjects.
+
+Separate mappings use their respective objects as descriptors. To compare with
+a different partial representation, implement `Schema<Subject, Patch>` for that
+baseline and return the patch's shared view; a common subject alone is not enough.
+In this reverse mapping, `nest = NestedSubject` names the nested subject;
+the annotated field already supplies its nested object type.
+
+## Traits Overview
+
+- **`PartialOptionized<Subject>`**: Implemented for objects; provides `optionize()`, `patch()`, and `merge()`.
+- **`Schema<Subject, Descriptor = Self>`**: Defines `View<'v>` and provides `view()`, which returns the descriptor's shared borrowed view. Generated objects own the view through `Schema<Subject>`; subjects expose complete baselines through `Schema<Subject, Object>`.
+- **`Retain<Subject, Descriptor = Self>`**: Provides `retain(&mut self, &baseline) -> bool` when the mapped fields support comparison. The baseline implements `Schema<Subject, Descriptor>`.
+- **`Optionizable<Object>`**: Automatically implemented for the subject. Provides `load()` and `downgrade()`.
+- **`Optionized<Subject>`**: Provides `validate()`, `upgrade()`, and `unsafe upgrade_unchecked()`. `upgrade()` returns `Result<Subject, Self::Errors>` and consumes the partial on both success and failure.
+
+### Migrating to 0.5
+
+Replace `Patch: Optionized<Subject = Subject>` with `Patch: Optionized<Subject>`, and replace
+`<Patch as Optionized>::Errors` with `<Patch as Optionized<Subject>>::Errors`. Manual implementations
+remove `type Subject` and return `Subject` from `upgrade_unchecked`.
+
+The shared traits support either an external protobuf object with a local subject
+or an external subject with a local object. Uniqueness applies to
+`(object, subject)` combinations for `PartialOptionized` and `Optionized`. Calls infer the target when its
+complete type is uniquely determined. For multiple targets, annotate the upgraded
+result or use `Optionized::<Subject>::validate(&partial)`. A generic parameter that only
+appears on the subject still needs type information, even with one implementation.
+
+An existing generic `object = "Patch"` should now spell its arguments explicitly,
+for example `object = "pb::Patch<Value>"`. Generated object names still inherit the
+subject's generic parameters automatically.
+
+`Diff` and `#[optionize(diff)]` have been removed. To compare two full values,
+convert the next value into its patch with `downgrade()`, then call
+`patch.retain(&baseline)`. An existing patch can call `retain` directly. Manual
+implementations expose borrowed fields through `Schema::View<'v>` and
+`Schema::view()`; the macros generate these automatically.
+
+`PartialOptionized`, `Optionized`, and `Optionizable` no longer take a descriptor
+parameter. `PartialOptionized::view()` and the subject's identity implementation
+have been removed. Keep update operations on the object and move borrowed view
+construction into `Schema`.
+
+`Schema<Subject, Descriptor = Self>` replaces its associated `Descriptor` type
+with a trait parameter. The object implements `Schema<Subject>` and owns the
+shared view. Complete subjects and other baselines implement
+`Schema<Subject, Object>`, reuse `<Object as Schema<Subject>>::View<'v>`, and
+construct that view in `view()`. `Schema::full_view()` is no longer needed.
+`Retain` also defaults its descriptor to `Self`, so generic baseline bounds use
+`Baseline: Schema<Subject, Object>` instead of `Baseline: PartialOptionized<Subject, Descriptor>`.
+These rules apply to both local and external subjects.
+
+## Crates in this workspace
+
+- [`optionize`](../optionize): Core traits (`PartialOptionized`, `Optionizable`, `Optionized`, `Retain`), error types, and re-exports.
+- [`optionize-macros`](../optionize-macros): The `#[optionized]` procedural macro and its internal derive helper.
+
+## License
+
+MIT License
+
+## Conditional compilation and diagnostic checks
+
+`cfg` and `cfg_attr` on input fields are evaluated before generating the mapping.
+Removed fields do not require their types or trait bounds to exist, and tuple
+indices follow the remaining fields. Attributes activated by `cfg_attr`, such as
+`optionize(name = "active")`, are processed normally.
+
+Run `cargo test --workspace` for behavior and documentation examples. Run
+`python3 scripts/check-diagnostics.py` with Rust 1.95 installed to also verify
+native compiler error messages and highlighted source ranges. The script respects
+`CARGO_TARGET_DIR` and requires no Python packages.
