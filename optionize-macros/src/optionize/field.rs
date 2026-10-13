@@ -6,7 +6,7 @@ use std::mem::take;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::token::Comma;
-use syn::{Expr, Field, Index, Member, Type, Visibility};
+use syn::{Expr, Field, Index, Member, Type, TypePath, Visibility};
 
 use super::args::{Crate, FieldArgs, TypeArg};
 use super::utils::{format, is_optionize, member_to_string, span};
@@ -23,7 +23,8 @@ pub(super) enum FieldStrategy {
 
 pub(super) struct FieldIr {
     pub(super) krate: Crate,
-    pub(super) ty: Type,
+    pub(super) subject_ty: Type,
+    pub(super) object_ty: Type,
     pub(super) visibility: Visibility,
     pub(super) index: usize,
     pub(super) span: Span,
@@ -40,6 +41,7 @@ impl FieldIr {
         krate: Crate,
         partial: bool,
         reverse: bool,
+        optional: Option<&TypePath>,
     ) -> Result<Vec<Self>> {
         let mut result = Vec::new();
         let mut errors = Error::accumulator();
@@ -62,6 +64,15 @@ impl FieldIr {
                     .unwrap_or(span)
             };
             span!(span);
+
+            // StructArgs checks the struct's `optional`; this checks field overrides.
+            if reverse && let Some(optional) = &args.optional {
+                errors.push(
+                    Error::custom("`optional` cannot be used with `subject`; declare the field wrapper directly")
+                        .with_span(optional),
+                );
+                continue;
+            }
 
             let (original, optionized) = {
                 let member = |index| {
@@ -96,7 +107,7 @@ impl FieldIr {
                 (original, optionized)
             };
             let ty = field.ty.clone();
-            let (ty, strategy) = if args.skip.is_present() {
+            let (subject_ty, strategy) = if args.skip.is_present() {
                 if !partial {
                     errors.push(
                         Error::custom(
@@ -117,11 +128,11 @@ impl FieldIr {
                     continue;
                 };
                 let convert = convert.map(Type::Path);
-                // `ty` is the subject's field type in both directions; `convert`
-                // additionally carries the object's field type when they differ.
-                let (ty, nest, convert) = if reverse {
+                // Resolve the subject's type in both directions. `nest` and `convert`
+                // carry the object's inner type when it differs from the subject's.
+                let (subject_ty, nest, convert) = if reverse {
                     let ty = if wrap {
-                        pq! { <#ty as #krate::__private::OptionField>::Value }
+                        pq! { <#ty as #krate::Optional>::Value }
                     } else {
                         ty
                     };
@@ -134,7 +145,21 @@ impl FieldIr {
                     field.ty = {
                         let ty = convert.as_ref().or(nest.as_ref()).unwrap_or(&ty);
                         if wrap {
-                            pq! { Option<#ty> }
+                            let optional = match args.optional {
+                                Some(optional) => {
+                                    let Some(optional) = errors.handle(optional.parse()) else {
+                                        continue;
+                                    };
+                                    optional
+                                }
+                                None => optional
+                                    .cloned()
+                                    .unwrap_or_else(|| pq! { ::core::option::Option }),
+                            };
+                            let Some(ty) = errors.handle(super::args::wrap(optional, ty)) else {
+                                continue;
+                            };
+                            ty
                         } else {
                             ty.clone()
                         }
@@ -143,7 +168,7 @@ impl FieldIr {
                 };
                 args.general.attrs.patch(&mut field.attrs);
                 (
-                    ty,
+                    subject_ty,
                     FieldStrategy::Optionize {
                         wrap,
                         nest: nest.map(Box::new),
@@ -157,7 +182,8 @@ impl FieldIr {
                 .or_else(|| matches!(strategy, FieldStrategy::Skip).then_some(Default::default()));
             let ir = Self {
                 krate: krate.clone(),
-                ty,
+                subject_ty,
+                object_ty: field.ty.clone(),
                 visibility: field.vis.clone(),
                 index,
                 span,
@@ -178,5 +204,15 @@ impl FieldIr {
         }
 
         errors.finish_with(result)
+    }
+
+    pub(super) fn ty(&self) -> &Type {
+        match &self.strategy {
+            FieldStrategy::Optionize { nest, convert, .. } => convert
+                .as_deref()
+                .or(nest.as_deref())
+                .unwrap_or(&self.subject_ty),
+            FieldStrategy::Skip => &self.subject_ty,
+        }
     }
 }

@@ -70,6 +70,7 @@ You can customize the generated struct and its fields using the `#[optionize(...
 - `#[optionize(name = "CustomPrefix{}CustomSuffix")]`: Set the name of the generated optionized struct. `{}` will be replaced with the original struct name.
 - `#[optionize(object = pb::Config::<Value>)]` or `#[optionize(object = "pb::{}Optional<Value>")]`: Use an existing struct through an unquoted type path or a string template. In strings, `{}` is replaced with the subject's name. Write generic arguments explicitly; unquoted generic paths use `::<Value>`. The subject must be local when the object is from another crate.
 - `#[optionize(subject = model::Config)]` or `#[optionize(subject = "model::Config")]`: Treat the annotated struct as the optionized object of an existing subject. Write its fields as `Option<Value>` yourself; aliases for `Option<Value>` also work. The subject may come from another crate; see the example below.
+- `#[optionize(optional = Wrapper)]`: Use `Wrapper<Value>` for managed fields instead of `Option<Value>`. The wrapper implements `Optional` with its associated `Value` type and the standard conversions described below. With `subject`, declare wrappers directly instead.
 - `#[optionize(attrs(derive(Debug, Default)))]`: Replace the attributes inherited by the generated struct. Select original attributes with `+path` or `..`, and exclude them with `-path`.
 - `#[optionize(partial(upgradable))]`: By default, the generated struct implements both `PartialOptionized` and `Optionized`. If you only want partial updates and don't need upgrading, use `#[optionize(partial)]`. If you want both while using `partial` specific features (like `skip`), use `#[optionize(partial(upgradable))]`.
 - `#[optionize(partial(marked))]`: Adds a `PhantomData` marker to the generated struct, typing it strictly to the original struct.
@@ -128,10 +129,50 @@ attributes, but an empty list does not reset other lists. Marker attributes in
 `marked(attrs(...))` use the same rules with `#[doc(hidden)]` as the original
 attribute.
 
+### Custom field wrappers
+
+`Optional` lets a local wrapper replace the outer `Option<Value>` without
+depending on a serialization library. Set `type Value` to the supplied field type
+and implement `some(value)` and `const NONE`, plus these standard conversions for
+borrowing and consuming it:
+
+- `From<Wrapper<Value>> for Option<Value>`
+- `From<&Wrapper<Value>> for Option<&Value>`
+- `From<&mut Wrapper<Value>> for Option<&mut Value>`
+
+All conversions must agree: `NONE` is omitted, and `some(value)` is supplied even
+when `value` is itself `None`. The [crate documentation](../optionize/src/lib.rs)
+includes a complete wrapper implementation and a runnable example.
+
+Select the wrapper with `#[optionize(optional = Wrapper)]` on a struct or field.
+The default is `Option`; field-level choices override the struct's choice.
+Quoted paths also work. The field's value type is appended as the last generic
+argument, so `optional = Tagged::<Tag>` selects `Tagged<Tag, Value>`.
+Struct-level choices leave `flatten` and `skip` fields alone.
+
+With `object = ...`, configure the wrappers declared by the existing object.
+With `subject = ...`, declare each wrapper directly:
+
+```rust,ignore
+#[optionized]
+#[optionize(subject = model::Config)]
+struct ConfigPatch {
+    name: Update<String>,
+}
+```
+
+The wrapper's associated `Value` identifies its inner type automatically,
+including through custom type aliases and non-generic wrappers. No field-level
+type hints are needed. Existing `Option` fields and aliases use the same mechanism.
+Serialization is configured in the application; field codecs must support the
+selected wrapper. Nested merging delegates to child values and does not define
+how arbitrary wrapper metadata should be combined.
+
 ### Field Attributes
 
 - `#[optionize(name = "prefix_{}_suffix")]`: Rename a field in the optionized struct. `{}` will be replaced with the original field name. With `subject = ...`, this instead names the corresponding subject field.
 - `#[optionize(flatten)]`: Do not wrap the field in `Option<Value>`. Patching always assigns the field, including `None`; nested fields delegate to their patch implementation.
+- `#[optionize(optional = Wrapper)]`: Override the struct's wrapper for this field. Cannot be combined with `flatten` or `skip`.
 - `#[optionize(nest = NestedTypeOptional)]` or `#[optionize(nest = "NestedTypeOptional")]`: Recursively apply optionize logic to a nested optionized struct. With `subject = ...`, name the nested subject type instead. Allows deep patching, retaining changes, and upgrading.
 - `#[optionize(as = OtherType)]` or `#[optionize(as = "OtherType")]`: Map the field to a different type in the optionized struct. The two types must convert into each other with `From`: downgrading converts the subject's value into the optionized type, while patching and upgrading convert it back. Cannot be combined with `nest`. With `subject = ...`, name the subject's field type instead. Converted fields are not compared, so `retain` keeps their updates and the subject type needs no `PartialEq`.
 - `#[optionize(skip)]`: Omit the field from the object. Requires `partial` or `partial(upgradable)`. When upgrading, it uses the same `default` initializer as ordinary fields, implicitly calling `Default::default()`. With `subject = ...`, declare the unmanaged subject field with its subject type; the macro removes it from the local object.

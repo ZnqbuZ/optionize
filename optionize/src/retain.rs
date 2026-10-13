@@ -22,16 +22,6 @@ pub trait Schema<Subject, Descriptor = Self>: Sized {
         Descriptor: Schema<Subject> + 's;
 }
 
-/// Extracts the inner value of an optional field, including through type aliases.
-#[doc(hidden)]
-pub trait OptionField {
-    type Value;
-}
-
-impl<Value> OptionField for Option<Value> {
-    type Value = Value;
-}
-
 /// Compares one borrowed field without overlapping another field's bounds.
 ///
 /// The index keeps higher-ranked bounds distinct when field types normalize to
@@ -250,12 +240,12 @@ mod tests {
         #[allow(unused_lifetimes)]
         fn trim_two<Value>(
             first: &mut ConfigPatch<Value>,
-            second: &mut <Option<ConfigPatch<Value>> as OptionField>::Value,
+            second: &mut <Option<ConfigPatch<Value>> as crate::Optional>::Value,
             baseline: &Config<Value>,
         ) -> bool
         where
             for<'c> ConfigPatch<Value>: Retain<Config<Value>>,
-            for<'c> <Option<ConfigPatch<Value>> as OptionField>::Value: Retain<Config<Value>>,
+            for<'c> <Option<ConfigPatch<Value>> as crate::Optional>::Value: Retain<Config<Value>>,
         {
             let first = Retain::<Config<Value>>::retain_view(first, baseline.view());
             let second = Retain::<Config<Value>>::retain_view(second, baseline.view());

@@ -6,6 +6,7 @@
 //!
 //! - [Applying, merging, and converting patches](#applying-merging-and-converting-patches)
 //! - [Missing, clearing, and setting values](#missing-clearing-and-setting-values)
+//! - [Custom field wrappers](#custom-field-wrappers)
 //! - [Upgrade defaults](#upgrade-defaults)
 //! - [Names and inherited attributes](#names-and-inherited-attributes)
 //! - [Partial structs and skipped fields](#partial-structs-and-skipped-fields)
@@ -94,6 +95,63 @@
 //! with `#[optionize(default)]` or `default = callback`. Deriving `Default` for an
 //! object makes wrapped fields `None`; flattened fields retain their type's default
 //! values and still participate in updates. It does not fill the subject's defaults.
+//!
+//! ## Custom field wrappers
+//!
+//! `#[optionize(optional = Wrapper)]` wraps managed fields in `Wrapper<Value>`
+//! instead of `Option<Value>`. Set it on a struct or override it on individual
+//! fields. The wrapper implements [`Optional`] with `type Value`, plus the standard
+//! owned, shared, and mutable conversions to `Option`. It can implement its own
+//! serialization traits in your crate; `optionize` has no serialization dependency.
+//!
+//! ```rust
+//! use optionize::{Optional, Optionizable, optionized};
+//!
+//! struct Update<T>(Option<T>);
+//! impl<T> From<Update<T>> for Option<T> {
+//!     fn from(value: Update<T>) -> Self { value.0 }
+//! }
+//! impl<'a, T> From<&'a Update<T>> for Option<&'a T> {
+//!     fn from(value: &'a Update<T>) -> Self { value.0.as_ref() }
+//! }
+//! impl<'a, T> From<&'a mut Update<T>> for Option<&'a mut T> {
+//!     fn from(value: &'a mut Update<T>) -> Self { value.0.as_mut() }
+//! }
+//! impl<T> Optional for Update<T> {
+//!     type Value = T;
+//!     const NONE: Self = Self(None);
+//!     fn some(value: T) -> Self { Self(Some(value)) }
+//! }
+//!
+//! #[optionized]
+//! #[optionize(optional = Update)]
+//! struct Config {
+//!     label: Option<String>,
+//!     #[optionize(optional = Option)]
+//!     enabled: bool,
+//! }
+//!
+//! let mut config = Config { label: Some("old".into()), enabled: true };
+//! config.load(ConfigOptional { label: Update::some(None), enabled: None });
+//! assert_eq!(config.label, None);
+//! assert!(config.enabled);
+//! ```
+//!
+//! Wrapper paths accept the same quoted and unquoted syntax as `nest`.
+//! The value type is appended as the last generic argument: `optional =
+//! Tagged::<Tag>` selects `Tagged<Tag, Value>`. `flatten` and `skip` fields do not
+//! use the struct's wrapper. A field-level `optional` cannot accompany either.
+//!
+//! With `object = ...`, select the wrappers used by that existing object. With
+//! `subject = ...`, declare the wrappers directly. Their associated `Value` types
+//! identify the supplied values automatically, including through type aliases.
+//! `nest` and `as` still name the subject type in this direction; the wrapper's
+//! `Value` identifies the supplied object's inner type.
+//!
+//! The wrapper has the same leave/set semantics as the outer `Option` it replaces.
+//! Extra wrapper metadata does not define new merge operations; nested merging
+//! works on the supplied child value. Custom serialization still needs to preserve
+//! field omission, and field codecs must support the selected wrapper type.
 //!
 //! ## Upgrade defaults
 //!
@@ -881,11 +939,16 @@ extern crate self as optionize;
 ///   This cannot be combined with `subject`, `name`, `attrs`, or `partial(marked)`.
 /// - `subject`: Treats the annotated local struct as the object of an existing
 ///   subject, which may come from another crate. Declare ordinary object fields
-///   as `Option<Value>` (aliases also work). Accepts the same string-template and
+///   as `Option<Value>` (aliases also work), or use custom [`Optional`] wrappers.
+///   Their associated `Value` types are inferred. Accepts the same string-template and
 ///   unquoted-path syntax as `object`. Generic update bounds use
 ///   `PartialOptionized<Subject>` and `Optionized<Subject>`. For `retain`, generic
 ///   baseline bounds use `Schema<Subject, Object>`; ordinary calls infer the mapping.
 ///   This cannot be combined with `object`, struct-level `name`, or struct-level `attrs`.
+/// - `optional = Wrapper`: Selects `Wrapper<Value>` for wrapped fields, defaulting
+///   to `Option<Value>`. Field-level `optional` overrides it. Extra generic arguments
+///   precede the appended value type. Applies to generated and existing objects;
+///   with `subject`, declare field wrappers directly instead.
 /// - `attrs`: By default, the generated struct inherits all attributes from the original struct (except `#[optionize(...)]`).
 ///   With ordinary attributes only, `attrs(...)` replaces those attributes;
 ///   for example, `attrs(derive(Debug))` makes the generated struct only derive `Debug`.
@@ -914,6 +977,8 @@ extern crate self as optionize;
 ///   With `subject = ...`, names the corresponding subject field instead.
 /// - `attrs`: Applies the same attribute-selection rules as struct-level `attrs`
 ///   to the generated field. For example, `attrs(+doc)` inherits only its documentation.
+/// - `optional = Wrapper`: Overrides the struct's field wrapper; the wrapper must
+///   implement [`Optional`]. Cannot be combined with `flatten` or `skip`.
 /// - `flatten`: Instructs the macro **not** to wrap the field's type in `Option<Value>`. The field will have the exact same type in the generated struct.
 /// - `skip`: Removes the field entirely from the generated struct.
 ///   - Requires `partial` or `partial(upgradable)` on the struct.
@@ -944,15 +1009,18 @@ pub use optionize_macros::optionized;
 mod tests;
 
 mod error;
+mod optional;
 mod retain;
 
 pub use error::{Error, ErrorCollection, FieldInfo, TypeInfo};
+pub use optional::Optional;
 pub use retain::{Retain, Schema};
 
 #[doc(hidden)]
 pub mod __private {
     pub extern crate alloc;
 
+    pub use crate::optional::OptionalField;
     pub use crate::retain::*;
     pub use optionize_macros::{Optionize, Prepare, discard, expand};
 }

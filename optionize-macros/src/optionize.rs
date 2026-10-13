@@ -18,7 +18,7 @@ use syn::{
     parse_quote, parse_quote_spanned as pqs, parse2,
 };
 
-use args::{Crate, OptionizedArgs, StructArgs};
+use args::{Crate, OptionizedArgs, StructArgs, TypeArg};
 use codegen::{Merge, Optionize, Patch, Retain, Upgrade, UpgradeDefault, Validate, View};
 use field::{FieldIr, FieldStrategy};
 use utils::{collect_idents, extend_where_clause, format, new_ident, span};
@@ -31,6 +31,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
     let args = StructArgs::from_attributes(&object.attrs)?;
     let reverse = args.subject.is_some();
     let generated = !reverse && args.object.is_none();
+    let optional = args.optional.map(TypeArg::parse).transpose()?;
     let mut declarations = if reverse {
         TokenStream::new()
     } else {
@@ -102,7 +103,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                 Fields::Unnamed(fields) => &mut fields.unnamed,
                 Fields::Unit => &mut Default::default(),
             };
-            FieldIr::extract(fields, krate.clone(), partial, reverse)?
+            FieldIr::extract(fields, krate.clone(), partial, reverse, optional.as_ref())?
         };
 
         let marker = if let Some(marked) = marked {
@@ -194,11 +195,27 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         let mut where_clause = where_clause.cloned().unwrap_or_else(|| pq! { where });
         extend_where_clause(
             &mut where_clause,
+            originals.iter().filter_map(|field| {
+                if !matches!(field.strategy, FieldStrategy::Optionize { wrap: true, .. }) {
+                    return None;
+                }
+                let object_ty = &field.object_ty;
+                let ty = field.ty();
+                let span = field.span;
+                let index = field.index;
+                Some(pqs! { span => #object_ty: #krate::__private::OptionalField<#ty, #index> })
+            }),
+        );
+        extend_where_clause(
+            &mut where_clause,
             originals
                 .iter()
                 .filter_map(|field| {
                     let FieldIr {
-                        ty, strategy, span, ..
+                        subject_ty,
+                        strategy,
+                        span,
+                        ..
                     } = field;
                     let FieldStrategy::Optionize { nest, convert, .. } = strategy else {
                         return None;
@@ -207,14 +224,14 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                         // Both directions are required: `optionize` converts the field
                         // into its object type, while `patch` and `upgrade` convert back.
                         return Some([
-                            pqs! { *span => #convert: ::core::convert::From<#ty> },
-                            pqs! { *span => #ty: ::core::convert::From<#convert> },
+                            pqs! { *span => #convert: ::core::convert::From<#subject_ty> },
+                            pqs! { *span => #subject_ty: ::core::convert::From<#convert> },
                         ]);
                     }
                     let nest = nest.as_ref()?;
                     Some([
-                        pqs! { *span => #nest: #krate::Schema<#ty> },
-                        pqs! { *span => #nest: #krate::PartialOptionized<#ty> },
+                        pqs! { *span => #nest: #krate::Schema<#subject_ty> },
+                        pqs! { *span => #nest: #krate::PartialOptionized<#subject_ty> },
                     ])
                 })
                 .flatten(),
@@ -228,14 +245,15 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         let (view, view_lifetime, self_lifetime) = {
             let mut idents = HashSet::new();
             let fields = originals.iter().map(|field| {
-                let ty = &field.ty;
+                let subject_ty = &field.subject_ty;
+                let object_ty = &field.object_ty;
                 let (nest, convert) = match &field.strategy {
                     FieldStrategy::Optionize { nest, convert, .. } => {
                         (nest.as_ref(), convert.as_ref())
                     }
                     FieldStrategy::Skip => (None, None),
                 };
-                q! { #ty #nest #convert }
+                q! { #subject_ty #object_ty #nest #convert }
             });
             collect_idents(
                 q! { #Subject #Object #impl_generics #where_clause #(#fields)* },
@@ -271,22 +289,22 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
             let (impl_generics, _, where_clause) = generics.split_for_impl();
             let fields = originals.iter().map(|field| {
                 let FieldIr {
-                    ty,
+                    subject_ty,
                     visibility,
                     strategy,
                     local,
                     span,
                     ..
                 } = field;
-                let ty = if let FieldStrategy::Optionize {
+                let view_ty = if let FieldStrategy::Optionize {
                     nest: Some(nest), ..
                 } = strategy
                 {
-                    qs! { *span => <#nest as #krate::Schema<#ty>>::View<#view_lifetime> }
+                    qs! { *span => <#nest as #krate::Schema<#subject_ty>>::View<#view_lifetime> }
                 } else {
-                    qs! { *span => &#view_lifetime #ty }
+                    qs! { *span => &#view_lifetime #subject_ty }
                 };
-                qs! { *span => #visibility #local: Option<#ty>, }
+                qs! { *span => #visibility #local: Option<#view_ty>, }
             });
             output.extend(q! {
                 // A nominal view keeps private field types out of public associated types.
@@ -340,18 +358,18 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                     originals
                         .iter()
                         .filter_map(|field| {
-                            let FieldIr { ty, strategy, index, span, .. } = field;
+                            let FieldIr { subject_ty, strategy, index, span, .. } = field;
                             match strategy {
                                 FieldStrategy::Skip => None,
                                 // Converted fields have no comparable view entry.
                                 FieldStrategy::Optionize { convert: Some(_), .. } => None,
                                 FieldStrategy::Optionize { nest: None, .. } => {
-                                    Some(pqs! { *span => for<#view_lifetime> &#view_lifetime #ty: #krate::__private::Equal<#index> })
+                                    Some(pqs! { *span => for<#view_lifetime> &#view_lifetime #subject_ty: #krate::__private::Equal<#index> })
                                 }
                                 FieldStrategy::Optionize { nest: Some(nest), .. } => {
                                     // The unused binder defers concrete comparison bounds until
                                     // Retain is used, keeping other operations available without it.
-                                    Some(pqs! { *span => for<#view_lifetime> #nest: #krate::Retain<#ty> })
+                                    Some(pqs! { *span => for<#view_lifetime> #nest: #krate::Retain<#subject_ty> })
                                 }
                             }
                         }),
@@ -388,7 +406,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                     &mut where_clause,
                     originals.iter().filter_map(|field| {
                         let FieldIr {
-                            ty, strategy, span, ..
+                            subject_ty, strategy, span, ..
                         } = field;
                         let FieldStrategy::Optionize {
                             nest: Some(nest), ..
@@ -396,7 +414,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                         else {
                             return None;
                         };
-                        Some(pqs! { *span => for<#view_lifetime> #ty: #krate::Schema<#ty, #nest> })
+                        Some(pqs! { *span => for<#view_lifetime> #subject_ty: #krate::Schema<#subject_ty, #nest> })
                     }),
                 );
                 where_clause
@@ -482,7 +500,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                     .iter()
                     .filter_map(|field| {
                         let FieldIr {
-                            ty, strategy, span, ..
+                            subject_ty, strategy, span, ..
                         } = field;
                         let FieldStrategy::Optionize {
                             nest: Some(nest), ..
@@ -491,9 +509,9 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                             return None;
                         };
                         Some([
-                            pqs! { *span => #nest: #krate::Optionized<#ty> },
+                            pqs! { *span => #nest: #krate::Optionized<#subject_ty> },
                             // Only the yielded errors are boxed; their collection may borrow.
-                            pqs! { *span => <<#nest as #krate::Optionized<#ty>>::Errors as ::core::iter::IntoIterator>::Item: 'static },
+                            pqs! { *span => <<#nest as #krate::Optionized<#subject_ty>>::Errors as ::core::iter::IntoIterator>::Item: 'static },
                         ])
                     })
                     .flatten(),
@@ -502,10 +520,13 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                 &mut where_clause,
                 originals.iter().filter_map(|field| {
                     let FieldIr {
-                        ty, default, span, ..
+                        subject_ty,
+                        default,
+                        span,
+                        ..
                     } = field;
                     matches!(default, Some(Override::Inherit)).then(|| {
-                        pqs! { *span => #ty: ::core::default::Default }
+                        pqs! { *span => #subject_ty: ::core::default::Default }
                     })
                 }),
             );

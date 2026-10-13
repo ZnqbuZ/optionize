@@ -5,7 +5,7 @@ use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Ident, TokenStream};
 use quote::{ToTokens, format_ident};
 use syn::spanned::Spanned;
-use syn::{Expr, Lit, LitStr, Path, TypePath, parse_quote};
+use syn::{Expr, GenericArgument, Lit, LitStr, Path, PathArguments, Type, TypePath, parse_quote};
 
 use super::attrs::Attributes;
 use super::utils::format;
@@ -115,6 +115,24 @@ impl TypeArg {
     }
 }
 
+pub(super) fn wrap(mut path: TypePath, value: &Type) -> Result<Type> {
+    let segment = path.path.segments.last_mut().unwrap();
+    match &mut segment.arguments {
+        PathArguments::None => {
+            segment.arguments = PathArguments::AngleBracketed(parse_quote!(<#value>))
+        }
+        PathArguments::AngleBracketed(arguments) => {
+            arguments.args.push(GenericArgument::Type(value.clone()));
+        }
+        PathArguments::Parenthesized(arguments) => {
+            return Err(
+                Error::custom("`optional` requires a type constructor").with_span(arguments)
+            );
+        }
+    }
+    Ok(Type::Path(path))
+}
+
 #[derive(Debug, Default, Deref, FromAttributes)]
 #[darling(default, attributes(optionize), and_then = "Self::finalize")]
 pub(super) struct StructArgs {
@@ -124,6 +142,7 @@ pub(super) struct StructArgs {
     pub(super) partial: Option<SpannedValue<Override<PartialArgs>>>,
     pub(super) object: Option<TypeArg>,
     pub(super) subject: Option<TypeArg>,
+    pub(super) optional: Option<TypeArg>,
 }
 
 impl StructArgs {
@@ -153,6 +172,17 @@ impl StructArgs {
             }
         }
 
+        if self.subject.is_some()
+            && let Some(optional) = &self.optional
+        {
+            errors.push(
+                Error::custom(
+                    "`optional` cannot be used with `subject`; declare the field wrappers directly",
+                )
+                .with_span(optional),
+            );
+        }
+
         if self.object.is_some()
             && let Some(partial) = &self.partial
             && let Override::Explicit(partial) = &**partial
@@ -180,6 +210,7 @@ pub(super) struct FieldArgs {
     pub(super) r#as: Option<TypeArg>,
     pub(super) skip: Flag,
     pub(super) default: Option<SpannedValue<Override<Expr>>>,
+    pub(super) optional: Option<TypeArg>,
 }
 
 impl FieldArgs {
@@ -188,7 +219,8 @@ impl FieldArgs {
             && (self.general.is_some()
                 || self.flatten.is_present()
                 || self.nest.is_some()
-                || self.r#as.is_some())
+                || self.r#as.is_some()
+                || self.optional.is_some())
         {
             return Err(Error::custom("`skip` can only be combined with `default`")
                 .with_span(&self.skip.span()));
@@ -200,6 +232,14 @@ impl FieldArgs {
             return Err(
                 Error::custom("`default` cannot be used with `flatten`").with_span(&default.span())
             );
+        }
+
+        if self.flatten.is_present() {
+            if let Some(optional) = &self.optional {
+                return Err(
+                    Error::custom("`optional` cannot be used with `flatten`").with_span(optional)
+                );
+            }
         }
 
         if let Some(convert) = &self.r#as

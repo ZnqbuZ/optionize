@@ -221,6 +221,8 @@ retain its changes against the current one.
   or annotate a local patch with `subject = ...` for a type from another crate.
 - **Names and attributes:** rename generated types and fields; select inherited
   attributes or supply derives just for the patch.
+- **Custom field wrappers:** use a local `Optional` wrapper to control how
+  supplied and omitted updates are represented, keeping serialization in your application.
 - **Field behavior:** skip unmanaged fields, use upgrade defaults, map values
   through `From`, or use `flatten` for fields that are always supplied.
 - **Struct shapes:** named, tuple, and unit structs, including generics and lifetimes.

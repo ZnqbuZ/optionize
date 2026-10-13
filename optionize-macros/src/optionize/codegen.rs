@@ -27,14 +27,15 @@ pub(super) struct View<'f> {
 
 impl ToTokens for View<'_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        expand! { self.field => { krate, ty, original, optionized, strategy, local } }
+        expand! { self.field => { krate, subject_ty, object_ty, original, optionized, strategy, index, local } }
+        let ty = self.field.ty();
         let this = format_ident!("self", span = Span::mixed_site());
         let view = if self.subject {
             if let FieldStrategy::Optionize {
                 nest: Some(nest), ..
             } = strategy
             {
-                q! { Option::Some(<#ty as #krate::Schema<#ty, #nest>>::view(&#this.#original)) }
+                q! { Option::Some(<#subject_ty as #krate::Schema<#subject_ty, #nest>>::view(&#this.#original)) }
             } else {
                 q! { Option::Some(&#this.#original) }
             }
@@ -50,12 +51,12 @@ impl ToTokens for View<'_> {
             q! { Option::None }
         } else if let FieldStrategy::Optionize { wrap, nest, .. } = strategy {
             let view = if *wrap {
-                q! { #this.#optionized.as_ref() }
+                q! { <#object_ty as #krate::__private::OptionalField<#ty, #index>>::as_ref(&#this.#optionized) }
             } else {
                 q! { Option::Some(&#this.#optionized) }
             };
             if let Some(nest) = nest {
-                q! { #view.map(<#nest as #krate::Schema<#ty>>::view) }
+                q! { #view.map(<#nest as #krate::Schema<#subject_ty>>::view) }
             } else {
                 view
             }
@@ -74,7 +75,8 @@ pub(super) struct Retain<'f, 'i> {
 
 impl ToTokens for Retain<'_, '_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        expand! { self.field => { krate, ty, optionized, strategy, index, local } }
+        expand! { self.field => { krate, subject_ty, object_ty, optionized, strategy, index, local } }
+        let ty = self.field.ty();
         let FieldStrategy::Optionize {
             wrap,
             nest,
@@ -90,7 +92,7 @@ impl ToTokens for Retain<'_, '_> {
         // A converted field has no comparable view entry; any stored update is kept.
         let retain = if convert.is_some() {
             if *wrap {
-                q! { #remains |= #this.#optionized.is_some(); }
+                q! { #remains |= <#object_ty as #krate::__private::OptionalField<#ty, #index>>::as_ref(&#this.#optionized).is_some(); }
             } else {
                 q! { #remains = true; }
             }
@@ -98,12 +100,12 @@ impl ToTokens for Retain<'_, '_> {
             match (wrap, nest) {
                 (true, None) => q! {
                     if let (Option::Some(value), Option::Some(baseline)) =
-                        (#this.#optionized.as_ref(), #baseline.#local)
+                        (<#object_ty as #krate::__private::OptionalField<#ty, #index>>::as_ref(&#this.#optionized), #baseline.#local)
                         && #krate::__private::Equal::<#index>::equal(value, baseline)
                     {
-                        #this.#optionized = Option::None;
+                        #this.#optionized = <#object_ty as #krate::__private::OptionalField<#ty, #index>>::NONE;
                     }
-                    #remains |= #this.#optionized.is_some();
+                    #remains |= <#object_ty as #krate::__private::OptionalField<#ty, #index>>::as_ref(&#this.#optionized).is_some();
                 },
                 (false, None) => q! {
                     #remains |= #baseline.#local.is_none_or(|baseline| {
@@ -112,16 +114,16 @@ impl ToTokens for Retain<'_, '_> {
                 },
                 (true, Some(nest)) => q! {
                     if let (Option::Some(value), Option::Some(baseline)) =
-                        (#this.#optionized.as_mut(), #baseline.#local)
-                        && !<#nest as #krate::Retain<#ty>>::retain_view(value, baseline)
+                        (<#object_ty as #krate::__private::OptionalField<#ty, #index>>::as_mut(&mut #this.#optionized), #baseline.#local)
+                        && !<#nest as #krate::Retain<#subject_ty>>::retain_view(value, baseline)
                     {
-                        #this.#optionized = Option::None;
+                        #this.#optionized = <#object_ty as #krate::__private::OptionalField<#ty, #index>>::NONE;
                     }
-                    #remains |= #this.#optionized.is_some();
+                    #remains |= <#object_ty as #krate::__private::OptionalField<#ty, #index>>::as_ref(&#this.#optionized).is_some();
                 },
                 (false, Some(nest)) => q! {
                     #remains |= #baseline.#local.is_none_or(|baseline| {
-                        <#nest as #krate::Retain<#ty>>::retain_view(&mut #this.#optionized, baseline)
+                        <#nest as #krate::Retain<#subject_ty>>::retain_view(&mut #this.#optionized, baseline)
                     });
                 },
             }
@@ -140,12 +142,16 @@ impl ToTokens for Optionize<'_, '_> {
         expand! {
             self.field => {
                 krate,
-                ty,
+                subject_ty,
+                object_ty,
+                index,
                 original,
                 optionized,
                 strategy,
             }
         }
+
+        let ty = self.field.ty();
 
         let FieldStrategy::Optionize {
             wrap,
@@ -158,14 +164,14 @@ impl ToTokens for Optionize<'_, '_> {
 
         let subject = self.subject;
         let optionize = if let Some(nest) = nest {
-            q! { <#nest as #krate::PartialOptionized<#ty>>::optionize(#subject.#original) }
+            q! { <#nest as #krate::PartialOptionized<#subject_ty>>::optionize(#subject.#original) }
         } else if convert.is_some() {
             q! { ::core::convert::Into::into(#subject.#original) }
         } else {
             q! { #subject.#original }
         };
         let optionize = if *wrap {
-            q! { Option::Some(#optionize) }
+            q! { <#object_ty as #krate::__private::OptionalField<#ty, #index>>::some(#optionize) }
         } else {
             optionize
         };
@@ -184,7 +190,9 @@ impl ToTokens for Patch<'_, '_> {
         expand! {
             self.field => {
                 krate,
-                ty,
+                subject_ty,
+                object_ty,
+                index,
                 original,
                 optionized,
                 strategy,
@@ -199,6 +207,8 @@ impl ToTokens for Patch<'_, '_> {
             return;
         };
 
+        let ty = self.field.ty();
+
         let this = format_ident!("self", span = Span::mixed_site());
         let subject = self.subject;
         let patch = if *wrap {
@@ -212,13 +222,13 @@ impl ToTokens for Patch<'_, '_> {
             patch
         };
         let patch = if let Some(nest) = nest {
-            q! { <#nest as #krate::PartialOptionized<#ty>>::patch(#patch, &mut #subject.#original); }
+            q! { <#nest as #krate::PartialOptionized<#subject_ty>>::patch(#patch, &mut #subject.#original); }
         } else {
             q! { #subject.#original = #patch; }
         };
         let patch = if *wrap {
             q! {
-                if let Option::Some(v) = #this.#optionized {
+                if let Option::Some(v) = <#object_ty as #krate::__private::OptionalField<#ty, #index>>::into_option(#this.#optionized) {
                     #patch
                 }
             }
@@ -240,7 +250,9 @@ impl ToTokens for Merge<'_, '_> {
         expand! {
             self.field => {
                 krate,
-                ty,
+                subject_ty,
+                object_ty,
+                index,
                 optionized,
                 strategy,
             }
@@ -249,23 +261,29 @@ impl ToTokens for Merge<'_, '_> {
             return;
         };
 
+        let ty = self.field.ty();
+
         let this = format_ident!("self", span = Span::mixed_site());
         let other = self.other;
         let merge = match (wrap, nest) {
             (true, Some(nest)) => q! {
-                match (&mut #this.#optionized, #other.#optionized) {
-                    (Option::Some(this), Option::Some(other)) => <#nest as #krate::PartialOptionized<#ty>>::merge(this, other),
-                    (Option::None, Option::Some(other)) => #this.#optionized = Option::Some(other),
-                    _ => {}
+                if <#object_ty as #krate::__private::OptionalField<#ty, #index>>::as_ref(&#other.#optionized).is_some() {
+                    if let Option::Some(this) = <#object_ty as #krate::__private::OptionalField<#ty, #index>>::as_mut(&mut #this.#optionized) {
+                        if let Option::Some(other) = <#object_ty as #krate::__private::OptionalField<#ty, #index>>::into_option(#other.#optionized) {
+                            <#nest as #krate::PartialOptionized<#subject_ty>>::merge(this, other);
+                        }
+                    } else {
+                        #this.#optionized = #other.#optionized;
+                    }
                 }
             },
             (true, None) => q! {
-                if Option::is_some(&#other.#optionized) {
+                if <#object_ty as #krate::__private::OptionalField<#ty, #index>>::as_ref(&#other.#optionized).is_some() {
                     #this.#optionized = #other.#optionized;
                 }
             },
             (false, Some(nest)) => q! {
-                <#nest as #krate::PartialOptionized<#ty>>::merge(&mut #this.#optionized, #other.#optionized);
+                <#nest as #krate::PartialOptionized<#subject_ty>>::merge(&mut #this.#optionized, #other.#optionized);
             },
             (false, None) => q! {
                 #this.#optionized = #other.#optionized;
@@ -288,7 +306,9 @@ impl ToTokens for Validate<'_, '_, '_> {
         expand! {
             self.field => {
                 krate,
-                ty,
+                subject_ty,
+                object_ty,
+                index,
                 original,
                 optionized,
                 strategy,
@@ -299,6 +319,7 @@ impl ToTokens for Validate<'_, '_, '_> {
         let FieldStrategy::Optionize { wrap, nest, .. } = strategy else {
             return;
         };
+        let ty = self.field.ty();
         if (!*wrap || default.is_some()) && nest.is_none() {
             return;
         }
@@ -325,7 +346,7 @@ impl ToTokens for Validate<'_, '_, '_> {
                 q! { &#this.#optionized }
             };
             q! {
-                if let ::core::result::Result::Err(e) = <#nest as #krate::Optionized<#ty>>::validate(#value) {
+                if let ::core::result::Result::Err(e) = <#nest as #krate::Optionized<#subject_ty>>::validate(#value) {
                     #failed = true;
                     #errors.extend(::core::iter::IntoIterator::into_iter(e).map(|e| #krate::Error::Nested {
                         ty: #info,
@@ -349,7 +370,7 @@ impl ToTokens for Validate<'_, '_, '_> {
                 }
             });
             q! {
-                if let Option::Some(#local) = &#this.#optionized {
+                if let Option::Some(#local) = <#object_ty as #krate::__private::OptionalField<#ty, #index>>::as_ref(&#this.#optionized) {
                     #validate
                 }
                 #missing
@@ -366,7 +387,8 @@ pub(super) struct Upgrade<'f>(pub(super) &'f FieldIr);
 
 impl ToTokens for Upgrade<'_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        expand! { self.0 => { krate, ty, optionized, strategy, local, default } }
+        expand! { self.0 => { krate, subject_ty, object_ty, optionized, strategy, index, local, default } }
+        let ty = self.0.ty();
         let FieldStrategy::Optionize {
             wrap,
             nest,
@@ -385,7 +407,7 @@ impl ToTokens for Upgrade<'_> {
             // A default callback can change a sibling's shared interior state.
             // Check each child when consuming it, after all parent defaults ran.
             q! {
-                <#nest as #krate::Optionized<#ty>>::upgrade(#value)
+                <#nest as #krate::Optionized<#subject_ty>>::upgrade(#value)
                     .unwrap_or_else(|_| panic!("nested object became invalid during upgrading"))
             }
         } else {
@@ -404,7 +426,7 @@ impl ToTokens for Upgrade<'_> {
                 q! { unreachable!("validated field is missing") }
             };
             q! {
-                match #this.#optionized {
+                match <#object_ty as #krate::__private::OptionalField<#ty, #index>>::into_option(#this.#optionized) {
                     Option::Some(value) => #value,
                     Option::None => #missing,
                 }
@@ -420,25 +442,26 @@ pub(super) struct UpgradeDefault<'f>(pub(super) &'f FieldIr);
 
 impl ToTokens for UpgradeDefault<'_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        expand! { self.0 => { ty, optionized, strategy, local, default } }
+        expand! { self.0 => { krate, subject_ty, object_ty, optionized, strategy, index, local, default } }
+        let ty = self.0.ty();
         let Some(default) = default else {
             return;
         };
         let default = match default {
             Override::Explicit(default) => q! { #default },
-            Override::Inherit => q! { |_| <#ty as ::core::default::Default>::default() },
+            Override::Inherit => q! { |_| <#subject_ty as ::core::default::Default>::default() },
         };
         let this = format_ident!("self", span = Span::mixed_site());
         let value = q! {
             {
-                let default: fn(&Self) -> #ty = #default;
+                let default: fn(&Self) -> #subject_ty = #default;
                 default(&#this)
             }
         };
         let value = if matches!(strategy, FieldStrategy::Skip) {
             value
         } else {
-            q! { #this.#optionized.is_none().then(|| #value) }
+            q! { <#object_ty as #krate::__private::OptionalField<#ty, #index>>::as_ref(&#this.#optionized).is_none().then(|| #value) }
         };
         tokens.extend(q! { let #local = #value; });
     }

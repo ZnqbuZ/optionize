@@ -26,6 +26,7 @@ CASES = {
     "cfg_attribute": ("`skip` can only be combined with `default`", "skip"),
     "default_flatten": ("`default` cannot be used with `flatten`", "default"),
     "default_mutable": ("mismatched types", "mutable_default"),
+    "optional_flatten": ("`optional` cannot be used with `flatten`", "Option"),
 }
 
 

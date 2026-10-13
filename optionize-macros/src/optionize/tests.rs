@@ -90,6 +90,7 @@ fn skip_rejects_combinations_with_other_field_options() {
         quote!(as = Child),
         quote!(name = "renamed"),
         quote!(attrs()),
+        quote!(optional = Update),
     ] {
         let messages = errors(quote! {
             #[optionize(partial)]
@@ -103,6 +104,43 @@ fn skip_rejects_combinations_with_other_field_options() {
             messages[0].contains("`skip` can only be combined with `default`"),
             "{option}: {messages:?}"
         );
+    }
+}
+
+#[test]
+fn custom_wrappers_reject_incompatible_attribute_locations() {
+    let cases = [
+        (
+            quote! {
+                #[optionize(subject = Model, optional = Update)]
+                struct Patch { value: Option<u32> }
+            },
+            "`optional` cannot be used with `subject`",
+        ),
+        (
+            quote! {
+                #[optionize(subject = Model)]
+                struct Patch {
+                    #[optionize(optional = Update)]
+                    value: Option<u32>,
+                }
+            },
+            "`optional` cannot be used with `subject`",
+        ),
+        (
+            quote! {
+                struct Model {
+                    #[optionize(flatten, optional = Update)]
+                    value: u32,
+                }
+            },
+            "`optional` cannot be used with `flatten`",
+        ),
+    ];
+    for (input, expected) in cases {
+        let messages = errors(input);
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert!(messages[0].contains(expected), "{messages:?}");
     }
 }
 
