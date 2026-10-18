@@ -1063,7 +1063,7 @@ pub trait Optionizable<Object: PartialOptionized<Self>>: Sized {
 ///
 /// An unconstrained validation call cannot select between those subjects:
 ///
-/// ```compile_fail,E0283
+/// ```compile_fail,E0284
 /// # use optionize::{optionized, Optionized};
 /// # struct Patch { value: Option<u32> }
 /// # #[optionized]
@@ -1077,7 +1077,7 @@ pub trait Optionizable<Object: PartialOptionized<Self>>: Sized {
 ///
 /// Neither can an upgrade whose result has no known type:
 ///
-/// ```compile_fail,E0283
+/// ```compile_fail,E0284
 /// # use optionize::{optionized, Optionized};
 /// # struct Patch { value: Option<u32> }
 /// # #[optionized]
