@@ -128,6 +128,39 @@ fn attributes_report_all_independent_field_conflicts() {
 }
 
 #[test]
+fn defaults_require_upgrading() {
+    for partial in [quote!(partial), quote!(partial(marked))] {
+        let messages = errors(quote! {
+            #[optionize(#partial)]
+            struct Config<Value> {
+                #[optionize(default = |_| 1)]
+                value: u32,
+                #[optionize(skip, default)]
+                other: Value,
+            }
+        });
+        assert_eq!(
+            messages, ["`default` requires `upgradable` when `partial` is specified"; 2],
+            "{partial}"
+        );
+    }
+
+    let output = parse(
+        Crate::default(),
+        quote! {
+            #[optionize(partial(upgradable))]
+            struct Config {
+                #[optionize(default = |_| 1)]
+                value: u32,
+                #[optionize(skip, default)]
+                other: u32,
+            }
+        },
+    );
+    assert!(output.is_ok());
+}
+
+#[test]
 fn skip_rejects_combinations_with_other_field_options() {
     for option in [
         quote!(flatten),

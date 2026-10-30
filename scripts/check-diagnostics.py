@@ -32,6 +32,7 @@ CASES = {
     "marked_list": ("`marked` cannot be used when `object` is specified", "marked"),
     "default_callback_flatten": ("`default` cannot be used with `flatten`", "default"),
     "subject_qualified": ("`subject` cannot be a qualified path", "Config"),
+    "default_partial": ("`default` requires `upgradable` when `partial` is specified", "default"),
 }
 
 

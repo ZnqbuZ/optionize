@@ -167,8 +167,10 @@
 //! ```
 //!
 //! `default` cannot be combined with `flatten`, because flattened fields are
-//! always supplied. Standard defaults add `FieldType: Default` only to the upgrade
-//! implementation; other operations remain available without that bound.
+//! always supplied. With `partial`, it requires `upgradable`, because only
+//! upgrading fills missing fields. Standard defaults add `FieldType: Default`
+//! only to the upgrade implementation; other operations remain available without
+//! that bound.
 //! Callbacks are infallible functions, but may panic. They should not invalidate
 //! nested objects through shared interior state: nested values are checked again
 //! when consumed, and invalidation during construction causes a panic.
@@ -962,6 +964,7 @@ extern crate self as optionize;
 ///   Skipped fields always use the initializer. Callbacks run after initial validation, before any
 ///   fields are moved, and see the original object. Explicit clears never trigger defaults.
 ///   Defaults do not affect patching, merging, or retaining, and cannot be combined with `flatten`.
+///   With `partial`, requires `upgradable`.
 /// - `nest = Type` or `nest = "Type"`: Delegates this field to a nested object that implements
 ///   `PartialOptionized` (and `Optionized` when upgrading is enabled). With `subject = ...`,
 ///   name the nested subject instead; the declared field already supplies its object type.

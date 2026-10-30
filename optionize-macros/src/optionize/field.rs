@@ -50,6 +50,7 @@ impl FieldIr {
         fields: &mut Punctuated<Field, Comma>,
         krate: Crate,
         partial: bool,
+        upgradable: bool,
         reverse: bool,
     ) -> Result<Vec<Self>> {
         let mut result = Vec::new();
@@ -178,6 +179,13 @@ impl FieldIr {
                     },
                 )
             };
+            if !upgradable && let Some(default) = &args.default {
+                // Only upgrading fills missing fields.
+                errors.push(
+                    Error::custom("`default` requires `upgradable` when `partial` is specified")
+                        .with_span(&default.span()),
+                );
+            }
             let default = args
                 .default
                 .map(|default| default.into_inner())

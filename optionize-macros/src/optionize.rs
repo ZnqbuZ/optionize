@@ -144,7 +144,13 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                 Fields::Unnamed(fields) => &mut fields.unnamed,
                 Fields::Unit => &mut Default::default(),
             };
-            FieldIr::extract(fields, krate.clone(), partial, reverse)?
+            FieldIr::extract(
+                fields,
+                krate.clone(),
+                partial,
+                upgradable.is_some(),
+                reverse,
+            )?
         };
 
         let marker = if let Some(marked) = marked {
