@@ -124,7 +124,7 @@ impl<Parsed: Parse> TypeArg<Parsed> {
     }
 }
 
-/// A function written after `from` or `into`.
+/// A function written after `from`, `into`, or `default`.
 ///
 /// Only two shapes are accepted, and the leading token decides which one: a
 /// closure with exactly one parameter or a function path. Any other expression
@@ -279,7 +279,7 @@ pub(super) struct FieldArgs {
     pub(super) r#as: Option<TypeArg<Type>>,
     pub(super) with: Option<WithArgs>,
     pub(super) skip: Flag,
-    pub(super) default: Option<SpannedValue<Override<Expr>>>,
+    pub(super) default: Option<SpannedValue<Override<FunctionArg>>>,
 }
 
 impl FieldArgs {

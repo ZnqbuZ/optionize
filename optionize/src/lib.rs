@@ -98,8 +98,9 @@
 //! ## Upgrade defaults
 //!
 //! `default` uses the subject field's `Default::default()` when its update is
-//! absent. `default = callback` instead accepts a function or non-capturing closure
-//! with signature `fn(&Object) -> FieldType`. The parameter is the actual object,
+//! absent. `default = callback` instead accepts a function path or a non-capturing
+//! closure with one parameter, with signature `fn(&Object) -> FieldType`; any other
+//! expression is rejected where it starts. The parameter is the actual object,
 //! including when `object = ...` or `subject = ...` selects an existing type.
 //! Callbacks receive an immutable reference and never require the object to be cloned.
 //!
@@ -954,7 +955,8 @@ extern crate self as optionize;
 ///   - If skipping fields leaves a generic parameter unused in a generated object, use `marked` to consume it.
 ///   - Uses the same `default` initializer as ordinary fields, implicitly defaulting to `Default::default()`.
 /// - `default`: Fills a missing field during upgrading with its subject type's `Default::default()`.
-///   `default = callback` accepts `fn(&Object) -> FieldType`, including non-capturing closures.
+///   `default = callback` accepts a function path or a non-capturing closure with one parameter,
+///   of type `fn(&Object) -> FieldType`.
 ///   Skipped fields always use the initializer. Callbacks run after initial validation, before any
 ///   fields are moved, and see the original object. Explicit clears never trigger defaults.
 ///   Defaults do not affect patching, merging, or retaining, and cannot be combined with `flatten`.

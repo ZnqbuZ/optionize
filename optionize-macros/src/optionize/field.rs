@@ -6,7 +6,7 @@ use std::mem::take;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::token::Comma;
-use syn::{Expr, Field, Index, Member, Type, Visibility};
+use syn::{Field, Index, Member, Type, Visibility};
 
 use super::args::{Crate, FieldArgs, FunctionArg, TypeArg};
 use super::utils::{format, is_optionize, member_to_string, span};
@@ -41,7 +41,7 @@ pub(super) struct FieldIr {
     pub(super) original: Member,
     pub(super) optionized: Member,
     pub(super) strategy: FieldStrategy,
-    pub(super) default: Option<Override<Expr>>,
+    pub(super) default: Option<Override<FunctionArg>>,
     pub(super) local: Ident,
 }
 
