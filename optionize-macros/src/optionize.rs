@@ -8,20 +8,20 @@ use darling::ast::NestedMeta;
 use darling::util::Override;
 use darling::{Error, FromAttributes, FromMeta, Result};
 use proc_macro2::{Ident, Span, TokenStream};
-use quote::{format_ident, quote, quote_spanned as qs};
+use quote::{format_ident, quote};
 use std::collections::HashSet;
 use syn::ext::IdentExt;
 use syn::spanned::Spanned;
 use syn::token::{Brace, Paren};
 use syn::{
     Data, DeriveInput, Fields, FieldsNamed, FieldsUnnamed, Index, Lifetime, PathArguments,
-    parse_quote, parse_quote_spanned as pqs, parse2,
+    parse_quote, parse2,
 };
 
 use args::{Crate, OptionizedArgs, StructArgs};
 use codegen::{Merge, Optionize, Patch, Retain, Upgrade, UpgradeDefault, Validate, View};
 use field::{FieldIr, FieldStrategy};
-use utils::{collect_idents, extend_where_clause, format, new_ident, span};
+use utils::{collect_idents, extend_where_clause, format, new_ident, pqs, qs, span};
 
 fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
     let mut object = parse2::<DeriveInput>(input)?;

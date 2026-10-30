@@ -1,7 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
-    "optionize", "optionize-macros", "optionize/tests/fixtures/models"
+    "optionize", "optionize-macros", "optionize/tests/fixtures/models",
+    "optionize/tests/fixtures/downstream",
 ]
 
 [workspace.package]

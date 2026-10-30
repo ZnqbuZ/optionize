@@ -63,6 +63,22 @@ pub(super) fn new_ident(name: &str, idents: &HashSet<String>) -> Ident {
     format_ident!("{ident}", span = Span::mixed_site())
 }
 
+// Tokens written by this macro only borrow the location of `$span`, so
+// diagnostics still point at the user's code. They keep the macro's context:
+// they follow this crate's edition whatever the caller's is, and lints treat
+// them as generated code. Interpolated user tokens keep their own spans.
+macro_rules! qs {
+    ($span:expr => $($tt:tt)*) => {
+        ::quote::quote_spanned! { ::proc_macro2::Span::mixed_site().located_at($span) => $($tt)* }
+    };
+}
+
+macro_rules! pqs {
+    ($span:expr => $($tt:tt)*) => {
+        ::syn::parse_quote_spanned! { ::proc_macro2::Span::mixed_site().located_at($span) => $($tt)* }
+    };
+}
+
 macro_rules! span {
     ($span:expr) => {
         $crate::optionize::utils::span!(@impl $span, $)
@@ -72,16 +88,16 @@ macro_rules! span {
         #[allow(unused_macros)]
         macro_rules! q {
             ($_($_ tt:tt)*) => {
-                ::quote::quote_spanned! { $span => $_($_ tt)* }
+                $crate::optionize::utils::qs! { $span => $_($_ tt)* }
             };
         }
         #[allow(unused_macros)]
         macro_rules! pq {
             ($_($_ tt:tt)*) => {
-                ::syn::parse_quote_spanned! { $span => $_($_ tt)* }
+                $crate::optionize::utils::pqs! { $span => $_($_ tt)* }
             };
         }
     };
 }
 
-pub(super) use span;
+pub(super) use {pqs, qs, span};
