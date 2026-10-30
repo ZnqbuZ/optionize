@@ -100,6 +100,34 @@ fn attributes_report_all_independent_mapping_conflicts() {
 }
 
 #[test]
+fn attributes_report_all_independent_field_conflicts() {
+    let messages = errors(quote! {
+        struct Config {
+            #[optionize(flatten, default, nest = Child, as = u8)]
+            value: u32,
+        }
+    });
+    assert_eq!(
+        messages,
+        [
+            "`default` cannot be used with `flatten`",
+            "`as` cannot be used with `nest`",
+        ]
+    );
+
+    let messages = errors(quote! {
+        struct Config {
+            #[optionize(with())]
+            value: u32,
+        }
+    });
+    assert_eq!(
+        messages,
+        ["`with` requires `as`", "`with` requires `from` or `into`"]
+    );
+}
+
+#[test]
 fn skip_rejects_combinations_with_other_field_options() {
     for option in [
         quote!(flatten),

@@ -303,35 +303,40 @@ impl FieldArgs {
                 || self.r#as.is_some()
                 || self.with.is_some())
         {
+            // The other options are moot for a skipped field, so their
+            // combinations are not checked.
             return Err(Error::custom("`skip` can only be combined with `default`")
                 .with_span(&self.skip.span()));
         }
 
+        let mut errors = Error::accumulator();
+
         if self.flatten.is_present()
             && let Some(default) = &self.default
         {
-            return Err(
-                Error::custom("`default` cannot be used with `flatten`").with_span(&default.span())
+            errors.push(
+                Error::custom("`default` cannot be used with `flatten`").with_span(&default.span()),
             );
         }
 
         if let Some(convert) = &self.r#as
             && self.nest.is_some()
         {
-            return Err(Error::custom("`as` cannot be used with `nest`").with_span(&convert.span()));
+            errors
+                .push(Error::custom("`as` cannot be used with `nest`").with_span(&convert.span()));
         }
 
         if let Some(with) = &self.with {
             if self.r#as.is_none() {
-                return Err(Error::custom("`with` requires `as`").with_span(&with.span()));
+                errors.push(Error::custom("`with` requires `as`").with_span(&with.span()));
             }
             if with.from.is_none() && with.into.is_none() {
-                return Err(
-                    Error::custom("`with` requires `from` or `into`").with_span(&with.span())
+                errors.push(
+                    Error::custom("`with` requires `from` or `into`").with_span(&with.span()),
                 );
             }
         }
 
-        Ok(self)
+        errors.finish_with(self)
     }
 }
