@@ -28,6 +28,7 @@ CASES = {
     "default_mutable": ("mismatched types", "mutable_default"),
     "arguments_unknown": ("Unknown field: `unknown`", "unknown"),
     "with_missing_as": ("`with` requires `as`", "with"),
+    "with_closure_arity": ("closure must take exactly one parameter", "seconds"),
 }
 
 

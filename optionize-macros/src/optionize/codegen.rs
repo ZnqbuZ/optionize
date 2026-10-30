@@ -1,8 +1,9 @@
 use darling::util::Override;
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::{ToTokens, format_ident};
-use syn::{Expr, Type};
+use syn::Type;
 
+use super::args::FunctionArg;
 use super::field::{FieldIr, FieldStrategy};
 use super::utils::{member_to_string, span};
 
@@ -469,7 +470,7 @@ impl ToTokens for UpgradeDefault<'_> {
 /// A converted value: the `with` function applied to it, or `Into` without one.
 pub(super) struct Convert<'f> {
     pub(super) span: Span,
-    pub(super) function: Option<&'f Expr>,
+    pub(super) function: Option<&'f FunctionArg>,
     pub(super) from: &'f Type,
     pub(super) into: &'f Type,
     pub(super) value: TokenStream,

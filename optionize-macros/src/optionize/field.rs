@@ -8,7 +8,7 @@ use syn::spanned::Spanned;
 use syn::token::Comma;
 use syn::{Expr, Field, Index, Member, Type, Visibility};
 
-use super::args::{Crate, FieldArgs, TypeArg};
+use super::args::{Crate, FieldArgs, FunctionArg, TypeArg};
 use super::utils::{format, is_optionize, member_to_string, span};
 
 #[derive(Debug)]
@@ -27,9 +27,9 @@ pub(super) enum FieldStrategy {
 pub(super) struct Conversion {
     pub(super) ty: Type,
     /// From the subject's value to the object's.
-    pub(super) downgrade: Option<Expr>,
+    pub(super) downgrade: Option<FunctionArg>,
     /// From the object's value to the subject's.
-    pub(super) upgrade: Option<Expr>,
+    pub(super) upgrade: Option<FunctionArg>,
 }
 
 pub(super) struct FieldIr {

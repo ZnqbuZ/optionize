@@ -164,6 +164,51 @@ fn conversion_functions_require_as_and_a_direction() {
 }
 
 #[test]
+fn conversion_functions_are_closures_with_one_parameter_or_paths() {
+    for function in [
+        quote!(|seconds, extra| seconds),
+        quote!(|| 1),
+        quote!("|seconds, extra| seconds"),
+    ] {
+        let messages = errors(quote! {
+            struct Config {
+                #[optionize(as = u64, with(from = #function))]
+                value: u32,
+            }
+        });
+        assert_eq!(
+            messages,
+            ["closure must take exactly one parameter at with/from"],
+            "{function}"
+        );
+    }
+    for function in [quote!(make()), quote!(move |seconds| seconds)] {
+        let messages = errors(quote! {
+            struct Config {
+                #[optionize(as = u64, with(into = #function))]
+                value: u32,
+            }
+        });
+        assert_eq!(messages.len(), 1, "{function}: {messages:?}");
+        assert!(
+            messages[0].ends_with("at with/into"),
+            "{function}: {messages:?}"
+        );
+    }
+    // A string follows the same grammar.
+    parse(
+        Crate::default(),
+        quote! {
+            struct Config {
+                #[optionize(as = u64, with(from = "Duration::from_secs", into = "|timeout| timeout.as_secs()"))]
+                value: u32,
+            }
+        },
+    )
+    .unwrap();
+}
+
+#[test]
 fn converted_fields_reject_nesting() {
     let messages = errors(quote! {
         struct Config {

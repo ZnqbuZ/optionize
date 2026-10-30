@@ -4,9 +4,12 @@ use derive_more::Deref;
 use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::{ToTokens, format_ident};
-use syn::parse::Parse;
+use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
-use syn::{Expr, Lit, LitStr, Meta, Path, Type, TypePath, parse_quote, parse2};
+use syn::{
+    Expr, ExprClosure, ExprPath, Lit, LitStr, Meta, Path, Token, Type, TypePath, parse_quote,
+    parse2,
+};
 
 use super::attrs::Attributes;
 use super::utils::format;
@@ -121,6 +124,67 @@ impl<Parsed: Parse> TypeArg<Parsed> {
     }
 }
 
+/// A function written after `from` or `into`.
+///
+/// Only two shapes are accepted, and the leading token decides which one: a
+/// closure with exactly one parameter or a function path. Any other expression
+/// is a syntax error at the point where the value starts, which keeps closure
+/// modifiers (`async`, `move`, `const`, `for<...>`) out of the grammar rather
+/// than giving each one a diagnostic.
+#[derive(Debug)]
+pub(super) enum FunctionArg {
+    /// A non-capturing closure, coerced to a function pointer.
+    Closure(ExprClosure),
+    /// A function called through a function pointer.
+    Function(ExprPath),
+}
+
+impl Parse for FunctionArg {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        if !input.peek(Token![|]) {
+            return Ok(Self::Function(input.parse()?));
+        }
+        let closure = input.parse::<ExprClosure>()?;
+        if closure.inputs.len() != 1 {
+            // With at least one parameter the diagnostic points at the
+            // parameter list; `|| ...` has none, so the closure itself is
+            // highlighted.
+            let span = if closure.inputs.is_empty() {
+                closure.span()
+            } else {
+                closure.inputs.span()
+            };
+            return Err(syn::Error::new(
+                span,
+                "closure must take exactly one parameter",
+            ));
+        }
+        Ok(Self::Closure(closure))
+    }
+}
+
+impl FromMeta for FunctionArg {
+    fn from_expr(expr: &Expr) -> Result<Self> {
+        match expr {
+            // The contents of a string must satisfy the same grammar.
+            Expr::Lit(lit) if let Lit::Str(value) = &lit.lit => Ok(value.parse()?),
+            // Invisible groups appear when the attribute is forwarded through
+            // a `macro_rules!` fragment.
+            Expr::Group(group) => Self::from_expr(&group.expr),
+            _ => Ok(parse2(expr.to_token_stream())?),
+        }
+    }
+}
+
+impl ToTokens for FunctionArg {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        match self {
+            Self::Closure(closure) => closure.to_tokens(tokens),
+            Self::Function(path) => path.to_tokens(tokens),
+        }
+    }
+}
+
 #[derive(Debug, Default, Deref, FromAttributes)]
 #[darling(default, attributes(optionize), and_then = "Self::finalize")]
 pub(super) struct StructArgs {
@@ -179,8 +243,8 @@ impl StructArgs {
 /// converts the field's type into the `as` type.
 #[derive(Debug)]
 pub(super) struct WithArgs {
-    pub(super) from: Option<Expr>,
-    pub(super) into: Option<Expr>,
+    pub(super) from: Option<FunctionArg>,
+    pub(super) into: Option<FunctionArg>,
     /// The span of `with` itself, which errors about the whole list point at.
     pub(super) span: Span,
 }
@@ -190,8 +254,8 @@ impl FromMeta for WithArgs {
         #[derive(Default, FromMeta)]
         #[darling(default)]
         struct Functions {
-            from: Option<Expr>,
-            into: Option<Expr>,
+            from: Option<FunctionArg>,
+            into: Option<FunctionArg>,
         }
 
         let Functions { from, into } = Functions::from_meta(meta)?;

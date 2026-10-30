@@ -501,10 +501,11 @@
 //! `with(from = ..., into = ...)` takes these functions relative to the annotated
 //! field: `from` converts the `as` type into the field's type, and `into` converts the
 //! field's type into the `as` type, like `From` and `Into` on the field's type. Each is
-//! a function path or a non-capturing closure, so mapping a foreign type to another
-//! foreign type needs no wrapper; an omitted direction still uses `From`. Under
-//! `subject = ...`, the annotated field belongs to the object, so `from` serves
-//! downgrading and `into` serves patching and upgrading.
+//! a function path or a non-capturing closure with one parameter, so mapping a foreign
+//! type to another foreign type needs no wrapper; an omitted direction still uses
+//! `From`. Any other expression, such as a call or a `move` closure, is rejected where
+//! it starts. Under `subject = ...`, the annotated field belongs to the object, so
+//! `from` serves downgrading and `into` serves patching and upgrading.
 //!
 //! The object's type may be any type, such as a tuple or an array. Attribute values
 //! are parsed as expressions, so generic arguments use `::<...>`, and a type that is
@@ -971,7 +972,8 @@ extern crate self as optionize;
 /// - `with(from = function, into = function)`: Converts an `as` field with these functions
 ///   instead of `From`. Relative to this field, `from` converts the `as` type into the field's
 ///   type and `into` converts the field's type into the `as` type. Each is a function path or a
-///   non-capturing closure, and an omitted direction still uses `From`. Requires `as`.
+///   non-capturing closure with one parameter, and an omitted direction still uses `From`.
+///   Requires `as`.
 ///
 /// ## Field Visibility
 /// The generated struct and its fields **strictly retain the visibility** of the original struct and its fields.
