@@ -91,9 +91,10 @@
 //!
 //! Ordinary fields have no implicit defaults during upgrading: `None` is missing
 //! even when the field's type implements `Default`, unless explicitly configured
-//! with `#[optionize(default)]` or `default = callback`. Deriving `Default` for an
-//! object makes wrapped fields `None`; flattened fields retain their type's default
-//! values and still participate in updates. It does not fill the subject's defaults.
+//! with `#[optionize(default)]` or `default = callback` on the field or the struct.
+//! Deriving `Default` for an object makes wrapped fields `None`; flattened fields
+//! retain their type's default values and still participate in updates. It does
+//! not fill the subject's defaults.
 //!
 //! ## Upgrade defaults
 //!
@@ -131,9 +132,10 @@
 //!
 //! Upgrading first validates the supplied fields. If validation fails, no default
 //! callbacks run. Otherwise, required defaults are evaluated once in declaration
-//! order, before any fields are moved out of the object. Every callback sees the
-//! original patch: defaults computed for earlier fields are not written back into
-//! it. Callbacks must handle other omitted defaulted fields themselves.
+//! order, the struct's first, before any fields are moved out of the object.
+//! Every callback sees the original patch: defaults computed for earlier fields
+//! are not written back into it. Callbacks must handle other omitted defaulted
+//! fields themselves.
 //!
 //! Defaults only apply during upgrading. They do not change `patch`, `load`,
 //! `merge`, `retain`, Serde behavior, or the object's `Default` implementation.
@@ -166,11 +168,41 @@
 //! assert!(ConfigOptional { endpoint: Some(EndpointOptional { port: None }) }.upgrade().is_err());
 //! ```
 //!
+//! On the struct, `default` fills every missing field without a default of its
+//! own from the subject's `Default::default()`, like Serde's container `default`.
+//! `default = callback` has the signature `fn(&Object) -> Subject`, which also
+//! suits an external subject without `Default`. The subject is built at most once,
+//! only when such a field is missing; skipped fields take their values from it too.
+//!
+//! ```rust
+//! use optionize::{optionized, Optionized};
+//!
+//! #[optionized]
+//! #[optionize(default)]
+//! struct Config {
+//!     host: String,
+//!     port: u16,
+//!     #[optionize(default = |_| 3)]
+//!     retries: u8,
+//! }
+//!
+//! impl Default for Config {
+//!     fn default() -> Self {
+//!         Self { host: "localhost".into(), port: 8080, retries: 1 }
+//!     }
+//! }
+//!
+//! let config = ConfigOptional { host: None, port: Some(9090), retries: None }.upgrade().unwrap();
+//! assert_eq!(config.host, "localhost");
+//! assert_eq!(config.port, 9090);
+//! assert_eq!(config.retries, 3); // The field's own default wins.
+//! ```
+//!
 //! `default` cannot be combined with `flatten`, because flattened fields are
 //! always supplied. With `partial`, it requires `upgradable`, because only
-//! upgrading fills missing fields. Standard defaults add `FieldType: Default`
-//! only to the upgrade implementation; other operations remain available without
-//! that bound.
+//! upgrading fills missing fields. Standard defaults add `FieldType: Default`, or
+//! `Subject: Default` on the struct, only to the upgrade implementation; other
+//! operations remain available without that bound.
 //! Callbacks are infallible functions, but may panic. They should not invalidate
 //! nested objects through shared interior state: nested values are checked again
 //! when consumed, and invalidation during construction causes a panic.
@@ -310,10 +342,11 @@
 //! ```
 //!
 //! Use `partial(upgradable)` to retain upgrading while allowing skipped fields.
-//! During upgrading, a skipped field uses `Default::default()` or the callback
-//! supplied by `#[optionize(skip, default = callback)]`. It follows the same
-//! initialization rules as ordinary upgrade defaults and can inspect the original
-//! object. `skip` can be combined with `default`, but not other field options.
+//! During upgrading, a skipped field uses its own `default`, as in
+//! `#[optionize(skip, default = callback)]`, then the struct's `default`, then
+//! `Default::default()`. It follows the same initialization rules as ordinary
+//! upgrade defaults and can inspect the original object. `skip` can be combined
+//! with `default`, but not other field options.
 //!
 //! ```rust
 //! use optionize::{optionized, Optionized};
@@ -903,7 +936,7 @@ extern crate self as optionize;
 ///
 /// ## Struct-level attributes
 ///
-/// Configure the mapping with `#[optionize(name = "...", attrs(...), partial(...))]`,
+/// Configure the mapping with `#[optionize(name = "...", attrs(...), partial(...), default)]`,
 /// optionally selecting either `object = ...` or `subject = ...`.
 /// Use `#[optionized(crate = path)]` to override automatic crate-path detection.
 ///
@@ -941,6 +974,11 @@ extern crate self as optionize;
 ///     - For unit structs, this changes the generated struct to a tuple struct (or a named struct if `name` is specified).
 ///     - Use `marked(name = my_marker)` to explicitly name the injected `PhantomData` field.
 ///     - `marked(attrs(...))` applies the same selection rules to the marker's default `#[doc(hidden)]` attribute.
+/// - `default`: During upgrading, fills every missing field without a `default` of its own,
+///   including skipped fields, from the subject's `Default::default()`. `default = callback`
+///   accepts the same functions as the field option, of type `fn(&Object) -> Subject`.
+///   The subject is built at most once, only when such a field is missing. With `partial`,
+///   requires `upgradable`.
 ///
 /// ## Field-level attributes
 ///
@@ -957,8 +995,10 @@ extern crate self as optionize;
 ///   - With `subject = ...`, declare the unmanaged subject field with its subject type;
 ///     the macro removes it from the local object.
 ///   - If skipping fields leaves a generic parameter unused in a generated object, use `marked` to consume it.
-///   - Uses the same `default` initializer as ordinary fields, implicitly defaulting to `Default::default()`.
-/// - `default`: Fills a missing field during upgrading with its subject type's `Default::default()`.
+///   - Uses the same `default` initializer as ordinary fields, implicitly defaulting to the struct's
+///     `default`, or else `Default::default()`.
+/// - `default`: Fills a missing field during upgrading with its subject type's `Default::default()`,
+///   taking precedence over the struct's `default`.
 ///   `default = callback` accepts a function path or a non-capturing closure with one parameter,
 ///   of type `fn(&Object) -> FieldType`.
 ///   Skipped fields always use the initializer. Callbacks run after initial validation, before any
@@ -1186,7 +1226,7 @@ pub trait Optionized<Subject>: PartialOptionized<Subject> {
     fn validate(&self) -> Result<(), Self::Errors>;
 
     /// Constructs the full subject from an object that has already been validated.
-    /// Generated implementations prepare field defaults before moving fields and
+    /// Generated implementations prepare defaults before moving fields and
     /// still check nested objects when consuming them, since callbacks can affect
     /// shared interior state.
     ///

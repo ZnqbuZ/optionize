@@ -19,8 +19,10 @@ use syn::{
 };
 
 use args::{Crate, FieldArgs, OptionizedArgs, StructArgs};
-use codegen::{Merge, Optionize, Patch, Retain, Upgrade, UpgradeDefault, Validate, View};
-use field::{FieldIr, FieldStrategy};
+use codegen::{
+    Merge, Optionize, Patch, Retain, SharedDefault, Upgrade, UpgradeDefault, Validate, View,
+};
+use field::{DefaultRule, FieldIr, FieldStrategy};
 use utils::{
     collect_idents, extend_where_clause, format, is_deprecation, is_optionize, new_ident, pqs, qs,
     span,
@@ -149,6 +151,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                 krate.clone(),
                 partial,
                 upgradable.is_some(),
+                args.default.is_some(),
                 reverse,
             )?
         };
@@ -563,11 +566,18 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                     let FieldIr {
                         ty, default, span, ..
                     } = field;
-                    matches!(default, Some(Override::Inherit)).then(|| {
+                    matches!(default, Some(DefaultRule::Own(Override::Inherit))).then(|| {
                         pqs! { *span => #ty: ::core::default::Default }
                     })
                 }),
             );
+            if let Some(default) = &args.default
+                && matches!(**default, Override::Inherit)
+            {
+                where_clause
+                    .predicates
+                    .push(pqs! { default.span() => #Subject: ::core::default::Default });
+            }
             where_clause
         };
         let validate = {
@@ -599,6 +609,13 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
             }
         };
         let upgrade = {
+            let shared = args.default.as_ref().map(|default| SharedDefault {
+                span: default.span(),
+                default,
+                subject: &Subject,
+                constructor: &subject_constructor,
+                fields: &originals,
+            });
             let defaults = originals.iter().map(UpgradeDefault);
             let upgrades = originals.iter().map(Upgrade);
             let fields = originals.iter().map(|field| {
@@ -613,6 +630,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
             qs! { span =>
                 #[inline]
                 unsafe fn upgrade_unchecked(#this) -> #Subject {
+                    #shared
                     #(#defaults)*
                     #(#upgrades)*
                     #[allow(clippy::init_numbered_fields)]

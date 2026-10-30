@@ -4,7 +4,7 @@ use quote::{ToTokens, format_ident};
 use syn::Type;
 
 use super::args::FunctionArg;
-use super::field::{FieldIr, FieldStrategy};
+use super::field::{DefaultRule, FieldIr, FieldStrategy};
 use super::utils::{member_to_string, span};
 
 macro_rules! expand {
@@ -444,7 +444,7 @@ pub(super) struct UpgradeDefault<'f>(pub(super) &'f FieldIr);
 impl ToTokens for UpgradeDefault<'_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         expand! { self.0 => { ty, optionized, strategy, local, default } }
-        let Some(default) = default else {
+        let Some(DefaultRule::Own(default)) = default else {
             return;
         };
         let default = match default {
@@ -464,6 +464,69 @@ impl ToTokens for UpgradeDefault<'_> {
             q! { #this.#optionized.is_none().then(|| #value) }
         };
         tokens.extend(q! { let #local = #value; });
+    }
+}
+
+/// The struct's `default`: the subject it returns is built at most once, when a
+/// field relying on it is missing, and split into the values of those fields.
+pub(super) struct SharedDefault<'f> {
+    pub(super) span: Span,
+    pub(super) default: &'f Override<FunctionArg>,
+    pub(super) subject: &'f TokenStream,
+    pub(super) constructor: &'f TokenStream,
+    pub(super) fields: &'f [FieldIr],
+}
+
+impl ToTokens for SharedDefault<'_> {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        let Self {
+            span,
+            default,
+            subject,
+            constructor,
+            fields,
+        } = self;
+        span!(*span);
+        let default = match default {
+            Override::Explicit(default) => q! { #default },
+            Override::Inherit => q! { |_| <#subject as ::core::default::Default>::default() },
+        };
+        let fields = fields
+            .iter()
+            .filter(|field| matches!(field.default, Some(DefaultRule::Shared)))
+            .collect::<Vec<_>>();
+        if fields.is_empty() {
+            // Nothing relies on the function, but it is still checked.
+            tokens.extend(q! { let _: fn(&Self) -> #subject = #default; });
+            return;
+        }
+
+        let this = format_ident!("self", span = Span::mixed_site());
+        let skipped = fields
+            .iter()
+            .filter(|field| matches!(field.strategy, FieldStrategy::Skip))
+            .map(|field| &field.local)
+            .collect::<Vec<_>>();
+        let missing = if skipped.is_empty() {
+            let members = fields.iter().map(|field| &field.optionized);
+            q! { #(#this.#members.is_none())||* }
+        } else {
+            // A skipped field is always missing.
+            q! { true }
+        };
+        let members = fields.iter().map(|field| &field.original);
+        let locals = fields.iter().map(|field| &field.local).collect::<Vec<_>>();
+        let nones = fields.iter().map(|_| q! { Option::None });
+        tokens.extend(q! {
+            let (#(#locals,)*) = if #missing {
+                let default: fn(&Self) -> #subject = #default;
+                let #constructor { #(#members: #locals,)* .. } = default(&#this);
+                (#(Option::Some(#locals),)*)
+            } else {
+                (#(#nones,)*)
+            };
+            #(let #skipped = #skipped.expect("missing field default was prepared");)*
+        });
     }
 }
 

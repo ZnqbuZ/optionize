@@ -143,12 +143,24 @@ fn defaults_require_upgrading() {
             messages, ["`default` requires `upgradable` when `partial` is specified"; 2],
             "{partial}"
         );
+
+        let messages = errors(quote! {
+            #[optionize(#partial, default)]
+            struct Config {
+                value: u32,
+            }
+        });
+        assert_eq!(
+            messages,
+            ["`default` requires `upgradable` when `partial` is specified"],
+            "{partial}"
+        );
     }
 
     let output = parse(
         Crate::default(),
         quote! {
-            #[optionize(partial(upgradable))]
+            #[optionize(partial(upgradable), default)]
             struct Config {
                 #[optionize(default = |_| 1)]
                 value: u32,
@@ -271,31 +283,41 @@ fn conversion_functions_are_closures_with_one_parameter_or_paths() {
 
 #[test]
 fn default_callbacks_are_closures_with_one_parameter_or_paths() {
-    for callback in [quote!(|| 1), quote!(|object, extra| 1)] {
-        let messages = errors(quote! {
-            struct Config {
+    // On a field and on the struct.
+    let inputs = |callback: &TokenStream| {
+        [
+            quote! {
+                struct Config {
+                    #[optionize(default = #callback)]
+                    value: u32,
+                }
+            },
+            quote! {
                 #[optionize(default = #callback)]
-                value: u32,
-            }
-        });
-        assert_eq!(
-            messages,
-            ["closure must take exactly one parameter at default"],
-            "{callback}"
-        );
+                struct Config {
+                    value: u32,
+                }
+            },
+        ]
+    };
+    for callback in [quote!(|| 1), quote!(|object, extra| 1)] {
+        for input in inputs(&callback) {
+            assert_eq!(
+                errors(input),
+                ["closure must take exactly one parameter at default"],
+                "{callback}"
+            );
+        }
     }
     for callback in [quote!(make()), quote!(move |_| 1)] {
-        let messages = errors(quote! {
-            struct Config {
-                #[optionize(default = #callback)]
-                value: u32,
-            }
-        });
-        assert_eq!(messages.len(), 1, "{callback}: {messages:?}");
-        assert!(
-            messages[0].ends_with("at default"),
-            "{callback}: {messages:?}"
-        );
+        for input in inputs(&callback) {
+            let messages = errors(input);
+            assert_eq!(messages.len(), 1, "{callback}: {messages:?}");
+            assert!(
+                messages[0].ends_with("at default"),
+                "{callback}: {messages:?}"
+            );
+        }
     }
 }
 

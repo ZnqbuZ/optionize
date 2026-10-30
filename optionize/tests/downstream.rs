@@ -5,8 +5,8 @@ use core::marker::PhantomData;
 use optionize::{Optionizable, Optionized, PartialOptionized, Retain};
 use optionize_test_downstream::external::{Peer, WirePatch};
 use optionize_test_downstream::{
-    Config, ConfigOptional, Endpoint, EndpointOptional, Interval, IntervalOptional, Pair,
-    PairOptional, PeerPatch, Seconds, Wire,
+    Config, ConfigOptional, Endpoint, EndpointOptional, Interval, IntervalOptional, Limits,
+    LimitsOptional, Pair, PairOptional, PeerPatch, Seconds, Wire,
 };
 
 fn endpoint(port: u16) -> Endpoint {
@@ -91,6 +91,24 @@ fn conversion_functions_run_in_both_directions() {
     assert_eq!(patch, IntervalOptional { every: Some(2) });
     let interval: Interval = patch.upgrade().unwrap();
     assert_eq!(interval.every.as_secs(), 2);
+}
+
+#[test]
+fn struct_defaults_fill_missing_fields() {
+    let limits: Limits = LimitsOptional {
+        connections: None,
+        retries: None,
+    }
+    .upgrade()
+    .unwrap();
+    assert_eq!(
+        limits,
+        Limits {
+            connections: 64,
+            retries: 3,
+            burst: 8,
+        }
+    );
 }
 
 #[test]

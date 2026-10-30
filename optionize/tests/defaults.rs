@@ -369,3 +369,219 @@ mod shared_state {
         assert_eq!(calls.get(), 0);
     }
 }
+
+#[optionized]
+#[optionize(default, partial(upgradable))]
+struct Server {
+    host: String,
+    port: u16,
+    #[optionize(default = |_| 3)]
+    retries: u8,
+    #[optionize(flatten)]
+    verbose: bool,
+    #[optionize(nest = ChildOptional)]
+    child: Child,
+    #[optionize(skip)]
+    connections: Vec<u32>,
+}
+
+impl Default for Server {
+    fn default() -> Self {
+        Self {
+            host: String::from("localhost"),
+            port: 8080,
+            retries: 1,
+            verbose: false,
+            child: Child {
+                required: String::from("default child"),
+            },
+            connections: vec![1],
+        }
+    }
+}
+
+#[test]
+fn struct_defaults_fill_fields_without_their_own() {
+    let server = ServerOptional {
+        host: None,
+        port: Some(1),
+        retries: None,
+        verbose: true,
+        child: None,
+    }
+    .upgrade()
+    .unwrap();
+    assert_eq!(server.host, "localhost");
+    assert_eq!(server.port, 1);
+    // The field's own default wins.
+    assert_eq!(server.retries, 3);
+    assert!(server.verbose);
+    assert_eq!(server.child.required, "default child");
+    // Not `Vec::default()`.
+    assert_eq!(server.connections, [1]);
+}
+
+#[test]
+fn struct_defaults_still_validate_supplied_children() {
+    let patch = ServerOptional {
+        host: None,
+        port: None,
+        retries: None,
+        verbose: false,
+        child: Some(ChildOptional { required: None }),
+    };
+    let errors = patch.validate().unwrap_err();
+    assert_eq!(errors.into_iter().count(), 1);
+}
+
+#[optionized]
+#[optionize(default = |object| {
+    object.calls.set(object.calls.get() + 1);
+    Lazy {
+        calls: object.calls.clone(),
+        first: 1,
+        second: object.first.map_or(2, |first| first * 10),
+    }
+})]
+struct Lazy {
+    #[optionize(flatten)]
+    calls: Rc<Cell<u32>>,
+    first: u32,
+    second: u32,
+}
+
+#[test]
+fn struct_default_callbacks_run_once_only_when_a_field_is_missing() {
+    let calls = Rc::new(Cell::new(0));
+    for (first, second, expected, total) in [
+        (Some(3), Some(4), (3, 4), 0),
+        (None, Some(5), (1, 5), 1),
+        (Some(3), None, (3, 30), 2),
+        (None, None, (1, 2), 3),
+    ] {
+        let lazy = LazyOptional {
+            calls: calls.clone(),
+            first,
+            second,
+        }
+        .upgrade()
+        .unwrap();
+        assert_eq!((lazy.first, lazy.second), expected);
+        assert_eq!(calls.get(), total);
+    }
+}
+
+#[optionized]
+#[optionize(
+    subject = models::Subject,
+    partial(upgradable),
+    default = |_| models::Subject {
+        enabled: true,
+        count: 1,
+        label: String::from("subject"),
+        optional: Some(2),
+    },
+)]
+struct SubjectPatch {
+    enabled: Option<bool>,
+    #[optionize(name = "count")]
+    amount: Option<u32>,
+    #[optionize(default = |_| String::from("own"))]
+    label: Option<String>,
+    #[optionize(skip)]
+    optional: Option<u32>,
+}
+
+#[optionized]
+#[optionize(default)]
+#[derive(Debug, PartialEq)]
+struct Pair(u32, #[optionize(default = |_| 7)] u32, String);
+
+impl Default for Pair {
+    fn default() -> Self {
+        Self(5, 6, String::from("five"))
+    }
+}
+
+#[test]
+fn struct_defaults_support_external_subjects_and_tuples() {
+    // `models::Subject` has no `Default`, and this crate cannot add one.
+    let subject = SubjectPatch {
+        enabled: Some(false),
+        amount: None,
+        label: None,
+    }
+    .upgrade()
+    .unwrap();
+    assert_eq!(
+        subject,
+        models::Subject {
+            enabled: false,
+            count: 1,
+            label: String::from("own"),
+            optional: Some(2),
+        }
+    );
+
+    let pair = PairOptional(None, None, Some(String::from("x")))
+        .upgrade()
+        .unwrap();
+    assert_eq!(pair, Pair(5, 7, String::from("x")));
+}
+
+#[optionized]
+#[optionize(default)]
+#[derive(Default)]
+struct Wrapper<Value> {
+    value: Value,
+    label: String,
+}
+
+#[test]
+fn struct_defaults_only_constrain_upgrading() {
+    struct NoDefault;
+    let mut full = Wrapper {
+        value: NoDefault,
+        label: String::new(),
+    };
+    full.load(WrapperOptional {
+        value: Some(NoDefault),
+        label: None,
+    });
+    let _: WrapperOptional<NoDefault> = full.downgrade();
+    let full = WrapperOptional::<String> {
+        value: None,
+        label: Some(String::from("label")),
+    }
+    .upgrade()
+    .unwrap();
+    assert!(full.value.is_empty());
+    assert_eq!(full.label, "label");
+}
+
+#[optionized]
+#[optionize(default = |_| unreachable!("every field has its own default"))]
+struct Covered {
+    #[optionize(flatten)]
+    flag: bool,
+    #[optionize(default = |_| 1)]
+    value: u32,
+}
+
+#[optionized]
+#[optionize(default)]
+#[derive(Default)]
+struct Unit;
+
+#[test]
+fn struct_defaults_without_dependent_fields_are_never_called() {
+    let covered = CoveredOptional {
+        flag: true,
+        value: None,
+    }
+    .upgrade()
+    .unwrap();
+    assert!(covered.flag);
+    assert_eq!(covered.value, 1);
+    let _: Unit = UnitOptional.upgrade().unwrap();
+}

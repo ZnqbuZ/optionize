@@ -54,6 +54,27 @@ pub struct Config<'a, Data: Default> {
 pub struct Pair(pub u32, pub String);
 
 #[optionized]
+#[optionize(default, partial(upgradable))]
+#[derive(Debug, PartialEq)]
+pub struct Limits {
+    pub connections: u32,
+    #[optionize(default = |_| 3)]
+    pub retries: u8,
+    #[optionize(skip)]
+    pub burst: u32,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            connections: 64,
+            retries: 1,
+            burst: 8,
+        }
+    }
+}
+
+#[optionized]
 #[derive(Debug, PartialEq)]
 pub struct Interval {
     #[optionize(as = u64, with(from = Duration::from_secs, into = |every| every.as_secs()))]

@@ -225,6 +225,7 @@ pub(super) struct StructArgs {
     pub(super) partial: Option<Keyed<Override<PartialArgs>>>,
     pub(super) object: Option<TypeArg>,
     pub(super) subject: Option<TypeArg>,
+    pub(super) default: Option<Keyed<Override<FunctionArg>>>,
 }
 
 impl StructArgs {
@@ -262,6 +263,16 @@ impl StructArgs {
             errors.push(
                 Error::custom("`marked` cannot be used when `object` is specified")
                     .with_span(&marked.span()),
+            );
+        }
+
+        if let Some(default) = &self.default
+            && let Some(partial) = &self.partial
+            && !matches!(&**partial, Override::Explicit(partial) if partial.upgradable.is_present())
+        {
+            errors.push(
+                Error::custom("`default` requires `upgradable` when `partial` is specified")
+                    .with_span(&default.span()),
             );
         }
 

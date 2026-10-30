@@ -32,6 +32,15 @@ pub(super) struct Conversion {
     pub(super) upgrade: Option<FunctionArg>,
 }
 
+/// How upgrading fills a missing field.
+#[derive(Debug)]
+pub(super) enum DefaultRule {
+    /// The field's own `default`: its type's `Default`, or a callback.
+    Own(Override<FunctionArg>),
+    /// The struct's `default`, shared by the fields without their own.
+    Shared,
+}
+
 pub(super) struct FieldIr {
     pub(super) krate: Crate,
     pub(super) ty: Type,
@@ -41,7 +50,7 @@ pub(super) struct FieldIr {
     pub(super) original: Member,
     pub(super) optionized: Member,
     pub(super) strategy: FieldStrategy,
-    pub(super) default: Option<Override<FunctionArg>>,
+    pub(super) default: Option<DefaultRule>,
     pub(super) local: Ident,
 }
 
@@ -51,6 +60,7 @@ impl FieldIr {
         krate: Crate,
         partial: bool,
         upgradable: bool,
+        shared: bool,
         reverse: bool,
     ) -> Result<Vec<Self>> {
         let mut result = Vec::new();
@@ -186,10 +196,15 @@ impl FieldIr {
                         .with_span(&default.span()),
                 );
             }
-            let default = args
-                .default
-                .map(|default| default.into_inner())
-                .or_else(|| matches!(strategy, FieldStrategy::Skip).then_some(Default::default()));
+            let default = match args.default {
+                Some(default) => Some(DefaultRule::Own(default.into_inner())),
+                // A flattened field is never missing.
+                None if matches!(strategy, FieldStrategy::Optionize { wrap: false, .. }) => None,
+                None if shared => Some(DefaultRule::Shared),
+                // A skipped field is always missing.
+                None => matches!(strategy, FieldStrategy::Skip)
+                    .then_some(DefaultRule::Own(Override::Inherit)),
+            };
             let ir = Self {
                 krate: krate.clone(),
                 ty,

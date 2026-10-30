@@ -135,6 +135,8 @@ fn main() {
 
 Defaults are opt-in and apply when upgrading. Deriving `Default` for the patch
 creates omitted fields; it does not fill the complete configuration's defaults.
+To take omitted fields from `Config::default()`, put `#[optionize(default)]` on
+the struct.
 `upgrade()` consumes the patch even on failure. Use `validate()` first if you
 want to inspect errors and keep editing the patch.
 

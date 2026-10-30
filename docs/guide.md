@@ -73,6 +73,7 @@ You can customize the generated struct and its fields using the `#[optionize(...
 - `#[optionize(attrs(derive(Debug, Default)))]`: Replace the attributes inherited by the generated struct. Select original attributes with `+path` or `..`, and exclude them with `-path`.
 - `#[optionize(partial(upgradable))]`: By default, the generated struct implements both `PartialOptionized` and `Optionized`. If you only want partial updates and don't need upgrading, use `#[optionize(partial)]`. If you want both while using `partial` specific features (like `skip`), use `#[optionize(partial(upgradable))]`.
 - `#[optionize(partial(marked))]`: Adds a `PhantomData` marker to the generated struct, typing it strictly to the original struct.
+- `#[optionize(default)]` / `#[optionize(default = callback)]`: During upgrading, fill every omitted field without a `default` of its own, including skipped fields, from the subject's `Default::default()`, like Serde's container `default`. The callback is a function path or a non-capturing closure with one parameter, of type `fn(&Object) -> Subject`, which also suits an external subject without `Default`. The subject is built at most once, only when such a field is omitted. With `partial`, requires `partial(upgradable)`.
 
 ```rust
 use optionize::optionized;
@@ -135,14 +136,14 @@ attribute.
 - `#[optionize(nest = NestedTypeOptional)]` or `#[optionize(nest = "NestedTypeOptional")]`: Recursively apply optionize logic to a nested optionized struct. With `subject = ...`, name the nested subject type instead. Allows deep patching, retaining changes, and upgrading.
 - `#[optionize(as = OtherType)]` or `#[optionize(as = "OtherType")]`: Map the field to a different type in the optionized struct, such as a tuple or an array; quote types that are not expressions, such as `"&'static str"`. The two types must convert into each other with `From`, unless `with` supplies functions: downgrading converts the subject's value into the optionized type, while patching and upgrading convert it back. Cannot be combined with `nest`. With `subject = ...`, name the subject's field type instead. Converted fields are not compared, so `retain` keeps their updates and the subject type needs no `PartialEq`.
 - `#[optionize(as = OtherType, with(from = function, into = function))]`: Convert with functions instead of `From`, for example between two foreign types. Relative to the annotated field, `from` converts `OtherType` into the field's type and `into` converts the field's type into `OtherType`; with `subject = ...`, the annotated field belongs to the object, so `from` serves downgrading and `into` serves patching and upgrading. Each is a function path or a non-capturing closure with one parameter, and an omitted direction still uses `From`.
-- `#[optionize(skip)]`: Omit the field from the object. Requires `partial` or `partial(upgradable)`. When upgrading, it uses the same `default` initializer as ordinary fields, implicitly calling `Default::default()`. With `subject = ...`, declare the unmanaged subject field with its subject type; the macro removes it from the local object.
-- `#[optionize(default)]` / `#[optionize(default = callback)]`: Initialize an omitted field during upgrading. The callback is a function path or a non-capturing closure with one parameter, of type `fn(&Object) -> FieldType`; otherwise the field type's `Default` is used. Combine with `skip` to supply its initializer. Cannot be combined with `flatten`. With `partial`, requires `partial(upgradable)`, because only upgrading fills omitted fields.
+- `#[optionize(skip)]`: Omit the field from the object. Requires `partial` or `partial(upgradable)`. When upgrading, it uses the same `default` initializer as ordinary fields, falling back to the struct's `default`, then `Default::default()`. With `subject = ...`, declare the unmanaged subject field with its subject type; the macro removes it from the local object.
+- `#[optionize(default)]` / `#[optionize(default = callback)]`: Initialize an omitted field during upgrading. The callback is a function path or a non-capturing closure with one parameter, of type `fn(&Object) -> FieldType`; otherwise the field type's `Default` is used. Takes precedence over the struct's `default`. Combine with `skip` to supply its initializer. Cannot be combined with `flatten`. With `partial`, requires `partial(upgradable)`, because only upgrading fills omitted fields.
 
-Defaults run after successful initial validation, in declaration order, before
-moving any fields. They inspect the original object, including omitted fields;
-earlier computed defaults are not written back. They do not change patch/load,
-merge, retain, or Serde behavior. Explicit false, zero, empty strings, and clears
-are supplied values. Nested defaults return complete child subjects, while
+Defaults run after successful initial validation, in declaration order with the
+struct's first, before moving any fields. They inspect the original object,
+including omitted fields; earlier computed defaults are not written back. They do
+not change patch/load, merge, retain, or Serde behavior. Explicit false, zero,
+empty strings, and clears are supplied values. Nested defaults return complete child subjects, while
 supplied nested patches still undergo validation. Callbacks should not invalidate
 nested objects through interior mutability; such invalidation during construction
 causes a panic.
