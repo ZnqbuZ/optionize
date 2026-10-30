@@ -391,6 +391,6 @@ indices follow the remaining fields. Attributes activated by `cfg_attr`, such as
 `optionize(name = "active")`, are processed normally.
 
 Run `cargo test --workspace` for behavior and documentation examples. Run
-`python3 scripts/check-diagnostics.py` with Rust 1.95 installed to also verify
-native compiler error messages and highlighted source ranges. The script respects
-`CARGO_TARGET_DIR` and requires no Python packages.
+`python3 scripts/check-diagnostics.py` to also verify native compiler error
+messages and highlighted source ranges. The script respects `CARGO_TARGET_DIR`
+and requires no Python packages.

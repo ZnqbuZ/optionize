@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check native proc-macro error messages and source ranges.
 
-Requires Python 3 and Rust 1.95. CARGO_TARGET_DIR is respected.
+Requires Python 3 and stable Rust. CARGO_TARGET_DIR is respected.
 """
 
 import json
@@ -33,7 +33,7 @@ CASES = {
 
 def main():
     build = subprocess.run(
-        ["cargo", "+1.95", "build", "--offline", "-p", "optionize", "--message-format=json"],
+        ["cargo", "build", "--offline", "-p", "optionize", "--message-format=json"],
         cwd=ROOT, capture_output=True, text=True,
     )
     if build.returncode:
@@ -52,7 +52,7 @@ def main():
             source = ROOT / "optionize" / "tests" / "ui" / f"{name}.rs"
             result = subprocess.run(
                 [
-                    "rustc", "+1.95", "--edition=2024", "--crate-type=lib",
+                    "rustc", "--edition=2024", "--crate-type=lib",
                     "--emit=metadata", "--out-dir", output, "--error-format=json",
                     "--extern", f"patches={library}",
                     "-L", f"dependency={library.parent / 'deps'}", str(source),

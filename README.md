@@ -38,7 +38,7 @@ Operations move values without requiring `Clone`. The runtime crate supports
 
 ## Quick start
 
-Requires **Rust 1.95 or later**.
+Works on stable Rust, from both edition 2021 and edition 2024 crates.
 
 ```toml
 [dependencies]
@@ -250,7 +250,7 @@ cargo test --workspace
 ```
 
 For compiler diagnostics and source-range checks, run
-`python3 scripts/check-diagnostics.py` with Rust 1.95 installed.
+`python3 scripts/check-diagnostics.py`.
 
 Bug reports and usage examples are welcome in
 [GitHub issues](https://github.com/ZnqbuZ/optionize/issues). Please include a small
