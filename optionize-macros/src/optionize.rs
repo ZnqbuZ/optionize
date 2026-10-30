@@ -24,7 +24,7 @@ use codegen::{
 };
 use field::{DefaultRule, FieldIr, FieldStrategy};
 use utils::{
-    collect_idents, extend_where_clause, format, is_deprecation, is_optionize, new_ident, pqs, qs,
+    collect_idents, extend_where_clause, format, is_deprecated, is_optionize, new_ident, pqs, qs,
     span,
 };
 
@@ -55,13 +55,13 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
     // `allow(deprecated)`. Allow deprecated items only when the mapping can use
     // them; the fields of an external side cannot be inspected.
     let deprecated = |object: &DeriveInput| {
-        object.attrs.iter().any(is_deprecation)
+        object.attrs.iter().any(is_deprecated)
             || match &object.data {
                 Data::Struct(data) => data
                     .fields
                     .iter()
                     .flat_map(|field| &field.attrs)
-                    .any(is_deprecation),
+                    .any(is_deprecated),
                 _ => false,
             }
     };

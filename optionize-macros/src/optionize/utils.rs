@@ -22,7 +22,7 @@ pub(super) fn is_optionize(attr: &Attribute) -> bool {
 
 /// Whether an attribute deprecates its item, or allows or expects the
 /// `deprecated` lint on it.
-pub(super) fn is_deprecation(attr: &Attribute) -> bool {
+pub(super) fn is_deprecated(attr: &Attribute) -> bool {
     let path = attr.path();
     path.segments
         .last()
