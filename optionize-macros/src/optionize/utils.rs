@@ -3,7 +3,8 @@ use proc_macro2::{Ident, Span, TokenStream};
 use quote::format_ident;
 use std::collections::HashSet;
 use syn::ext::IdentExt;
-use syn::{Attribute, LitStr, Member, WhereClause, WherePredicate};
+use syn::punctuated::Punctuated;
+use syn::{Attribute, LitStr, Member, Meta, Token, WhereClause, WherePredicate};
 
 pub(super) fn format<Parsed: syn::parse::Parse>(pattern: &LitStr, ident: &Ident) -> Result<Parsed> {
     let value = pattern.value().replace("{}", &ident.unraw().to_string());
@@ -17,6 +18,19 @@ pub(super) fn is_optionize(attr: &Attribute) -> bool {
         .segments
         .last()
         .is_some_and(|s| s.ident == "optionize")
+}
+
+/// Whether an attribute deprecates its item, or allows or expects the
+/// `deprecated` lint on it.
+pub(super) fn is_deprecation(attr: &Attribute) -> bool {
+    let path = attr.path();
+    path.segments
+        .last()
+        .is_some_and(|s| s.ident == "deprecated")
+        || ((path.is_ident("allow") || path.is_ident("expect"))
+            && attr
+                .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+                .is_ok_and(|lints| lints.iter().any(|lint| lint.path().is_ident("deprecated"))))
 }
 
 pub(super) fn member_to_string(member: &Member) -> String {

@@ -21,7 +21,9 @@ use syn::{
 use args::{Crate, OptionizedArgs, StructArgs};
 use codegen::{Merge, Optionize, Patch, Retain, Upgrade, UpgradeDefault, Validate, View};
 use field::{FieldIr, FieldStrategy};
-use utils::{collect_idents, extend_where_clause, format, new_ident, pqs, qs, span};
+use utils::{
+    collect_idents, extend_where_clause, format, is_deprecation, new_ident, pqs, qs, span,
+};
 
 fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
     let mut object = parse2::<DeriveInput>(input)?;
@@ -31,6 +33,21 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
     let args = StructArgs::from_attributes(&object.attrs)?;
     let reverse = args.subject.is_some();
     let generated = !reverse && args.object.is_none();
+    // Generated code accesses every field, but `forbid(deprecated)` rejects any
+    // `allow(deprecated)`. Allow deprecated items only when the mapping can use
+    // them; the fields of an external side cannot be inspected.
+    let deprecated = |object: &DeriveInput| {
+        object.attrs.iter().any(is_deprecation)
+            || match &object.data {
+                Data::Struct(data) => data
+                    .fields
+                    .iter()
+                    .flat_map(|field| &field.attrs)
+                    .any(is_deprecation),
+                _ => false,
+            }
+    };
+    let allow = !generated || deprecated(&object);
     let mut declarations = if reverse {
         TokenStream::new()
     } else {
@@ -187,6 +204,8 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
     } else if generated {
         declarations.extend(q! { #object });
     }
+    // `attrs` may deprecate the generated object or its fields.
+    let allow = allow || deprecated(&object);
 
     let generics = object.generics;
     let (impl_generics, _, where_clause) = generics.split_for_impl();
@@ -572,9 +591,10 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
         });
     }
 
+    let allow = allow.then(|| q! { #[allow(deprecated)] });
     Ok(q! {
         #declarations
-        #[allow(deprecated)]
+        #allow
         const _: () = { #output };
     })
 }

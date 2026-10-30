@@ -217,10 +217,13 @@
 //! their written order across all lists and are not merged or deduplicated.
 //! Paths match exactly, without name resolution; a selector that matches nothing
 //! has no effect. `-path` alone does not imply inheriting everything else.
-//! Generated implementations allow access to deprecated fields and types, while
-//! direct accesses in user code still follow the user's lint settings. Deprecation
-//! attributes are inherited normally. An enclosing `forbid(deprecated)` cannot be
-//! overridden by the generated `allow(deprecated)`.
+//! Generated implementations allow deprecated items when the mapping can use
+//! them: when the struct or one of its fields is marked `#[deprecated]` or allows
+//! or expects the `deprecated` lint, including through `attrs`, and always with
+//! `object = ...` or `subject = ...`, whose external fields the macro cannot see.
+//! Other mappings compile inside `forbid(deprecated)`, which rejects any
+//! `allow(deprecated)`. Direct accesses in user code still follow the user's lint
+//! settings, and deprecation attributes are inherited normally.
 //!
 //! This example retains the type's documentation while replacing its entire
 //! derive list, and retains the field's documentation while appending another line:
