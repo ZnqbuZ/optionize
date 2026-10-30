@@ -311,6 +311,26 @@ fn attributes_reject_options_in_incompatible_struct_shapes() {
 }
 
 #[test]
+fn subjects_reject_qualified_paths() {
+    for subject in [
+        quote!(<Concrete as Spec>::Config),
+        quote!("<Concrete as Spec>::Config"),
+    ] {
+        let messages = errors(quote! {
+            #[optionize(subject = #subject)]
+            struct Patch {
+                value: Option<u32>,
+            }
+        });
+        assert_eq!(
+            messages,
+            ["`subject` cannot be a qualified path; name the struct or a type alias for it"],
+            "{subject}"
+        );
+    }
+}
+
+#[test]
 fn optionized_rejects_enums_and_unions() {
     for input in [
         quote!(

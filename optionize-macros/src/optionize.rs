@@ -89,6 +89,15 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
     #[allow(non_snake_case)]
     let (Subject, subject_constructor) = if let Some(subject) = args.subject {
         let mut path = subject.format(&ident)?;
+        // Upgrading builds the subject with a struct literal, which cannot name a
+        // qualified path on stable Rust (E0658), while a type alias can.
+        if path.qself.is_some() {
+            let segment = path.path.segments.last().map(|segment| &segment.ident);
+            return Err(Error::custom(
+                "`subject` cannot be a qualified path; name the struct or a type alias for it",
+            )
+            .with_span(&segment.map_or_else(|| path.span(), Ident::span)));
+        }
         let ty = q! { #path };
         for segment in &mut path.path.segments {
             if let PathArguments::AngleBracketed(arguments) = &mut segment.arguments {

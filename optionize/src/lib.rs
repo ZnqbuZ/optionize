@@ -918,7 +918,9 @@ extern crate self as optionize;
 ///   unquoted-path syntax as `object`. Generic update bounds use
 ///   `PartialOptionized<Subject>` and `Optionized<Subject>`. For `retain`, generic
 ///   baseline bounds use `Schema<Subject, Object>`; ordinary calls infer the mapping.
-///   This cannot be combined with `object`, struct-level `name`, or struct-level `attrs`.
+///   A qualified path such as `<T as Trait>::Assoc` is rejected: name the struct or a
+///   type alias for it. This cannot be combined with `object`, struct-level `name`, or
+///   struct-level `attrs`.
 /// - `attrs`: By default, the generated struct inherits all attributes from the original struct (except `#[optionize(...)]`).
 ///   With ordinary attributes only, `attrs(...)` replaces those attributes;
 ///   for example, `attrs(derive(Debug))` makes the generated struct only derive `Debug`.
