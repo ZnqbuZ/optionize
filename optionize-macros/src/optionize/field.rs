@@ -154,7 +154,10 @@ impl FieldIr {
                 let convert = convert.map(|ty| {
                     let (from, into) = args
                         .with
-                        .map(|with| (with.from, with.into))
+                        .map(|with| {
+                            let with = with.into_inner();
+                            (with.from, with.into)
+                        })
                         .unwrap_or_default();
                     // `from` and `into` are relative to the annotated field, which
                     // belongs to the object when the subject is external.

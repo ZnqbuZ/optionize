@@ -29,6 +29,8 @@ CASES = {
     "arguments_unknown": ("Unknown field: `unknown`", "unknown"),
     "with_missing_as": ("`with` requires `as`", "with"),
     "with_closure_arity": ("closure must take exactly one parameter", "seconds"),
+    "marked_list": ("`marked` cannot be used when `object` is specified", "marked"),
+    "default_callback_flatten": ("`default` cannot be used with `flatten`", "default"),
 }
 
 

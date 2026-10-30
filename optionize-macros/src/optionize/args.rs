@@ -1,4 +1,4 @@
-use darling::util::{Flag, Override, SpannedValue};
+use darling::util::{Flag, Override};
 use darling::{Error, FromAttributes, FromMeta, Result};
 use derive_more::Deref;
 use proc_macro_crate::{FoundCrate, crate_name};
@@ -42,6 +42,37 @@ impl ToTokens for Crate {
     }
 }
 
+/// A value with the span of the key that introduced it: `default` in
+/// `default = ...`, or `marked` in `marked(...)`.
+///
+/// darling's `SpannedValue` spans the value or the list contents instead, so
+/// errors about the whole option would point inside it.
+#[derive(Debug, Deref)]
+pub(super) struct Keyed<T> {
+    #[deref]
+    value: T,
+    span: Span,
+}
+
+impl<T> Keyed<T> {
+    pub(super) fn span(&self) -> Span {
+        self.span
+    }
+
+    pub(super) fn into_inner(self) -> T {
+        self.value
+    }
+}
+
+impl<T: FromMeta> FromMeta for Keyed<T> {
+    fn from_meta(meta: &Meta) -> Result<Self> {
+        Ok(Self {
+            value: T::from_meta(meta)?,
+            span: meta.path().span(),
+        })
+    }
+}
+
 #[derive(Debug, Default, FromMeta)]
 #[darling(default)]
 pub(super) struct OptionizedArgs {
@@ -75,7 +106,7 @@ pub(super) struct MarkedArgs {
 #[darling(default)]
 pub(super) struct PartialArgs {
     pub(super) upgradable: Flag,
-    pub(super) marked: Option<SpannedValue<Override<MarkedArgs>>>,
+    pub(super) marked: Option<Keyed<Override<MarkedArgs>>>,
 }
 
 /// A type written directly or as a string, read with the `Parsed` grammar.
@@ -191,7 +222,7 @@ pub(super) struct StructArgs {
     #[deref]
     #[darling(flatten)]
     pub(super) general: GeneralArgs,
-    pub(super) partial: Option<SpannedValue<Override<PartialArgs>>>,
+    pub(super) partial: Option<Keyed<Override<PartialArgs>>>,
     pub(super) object: Option<TypeArg>,
     pub(super) subject: Option<TypeArg>,
 }
@@ -241,30 +272,11 @@ impl StructArgs {
 /// The functions that convert a field with `as`, relative to the annotated
 /// field: `from` converts the `as` type into the field's type, and `into`
 /// converts the field's type into the `as` type.
-#[derive(Debug)]
+#[derive(Debug, Default, FromMeta)]
+#[darling(default)]
 pub(super) struct WithArgs {
     pub(super) from: Option<FunctionArg>,
     pub(super) into: Option<FunctionArg>,
-    /// The span of `with` itself, which errors about the whole list point at.
-    pub(super) span: Span,
-}
-
-impl FromMeta for WithArgs {
-    fn from_meta(meta: &Meta) -> Result<Self> {
-        #[derive(Default, FromMeta)]
-        #[darling(default)]
-        struct Functions {
-            from: Option<FunctionArg>,
-            into: Option<FunctionArg>,
-        }
-
-        let Functions { from, into } = Functions::from_meta(meta)?;
-        Ok(Self {
-            from,
-            into,
-            span: meta.path().span(),
-        })
-    }
 }
 
 #[derive(Debug, Default, Deref, FromAttributes)]
@@ -277,9 +289,9 @@ pub(super) struct FieldArgs {
     pub(super) nest: Option<TypeArg>,
     #[darling(rename = "as")]
     pub(super) r#as: Option<TypeArg<Type>>,
-    pub(super) with: Option<WithArgs>,
+    pub(super) with: Option<Keyed<WithArgs>>,
     pub(super) skip: Flag,
-    pub(super) default: Option<SpannedValue<Override<FunctionArg>>>,
+    pub(super) default: Option<Keyed<Override<FunctionArg>>>,
 }
 
 impl FieldArgs {
@@ -311,10 +323,12 @@ impl FieldArgs {
 
         if let Some(with) = &self.with {
             if self.r#as.is_none() {
-                return Err(Error::custom("`with` requires `as`").with_span(&with.span));
+                return Err(Error::custom("`with` requires `as`").with_span(&with.span()));
             }
             if with.from.is_none() && with.into.is_none() {
-                return Err(Error::custom("`with` requires `from` or `into`").with_span(&with.span));
+                return Err(
+                    Error::custom("`with` requires `from` or `into`").with_span(&with.span())
+                );
             }
         }
 
