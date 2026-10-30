@@ -18,7 +18,7 @@ use syn::{
     parse_quote, parse2,
 };
 
-use args::{Crate, OptionizedArgs, StructArgs};
+use args::{Crate, FieldArgs, OptionizedArgs, StructArgs};
 use codegen::{Merge, Optionize, Patch, Retain, Upgrade, UpgradeDefault, Validate, View};
 use field::{FieldIr, FieldStrategy};
 use utils::{
@@ -30,7 +30,22 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
     let span = object.span();
     span!(span);
 
-    let args = StructArgs::from_attributes(&object.attrs)?;
+    let args = match StructArgs::from_attributes(&object.attrs) {
+        Ok(args) => args,
+        Err(error) => {
+            // Field attributes parse without the struct's options, so their
+            // errors are reported in the same pass.
+            let mut errors = vec![error];
+            if let Data::Struct(data) = &object.data {
+                errors.extend(
+                    data.fields
+                        .iter()
+                        .filter_map(|field| FieldArgs::from_attributes(&field.attrs).err()),
+                );
+            }
+            return Err(Error::multiple(errors));
+        }
+    };
     let reverse = args.subject.is_some();
     let generated = !reverse && args.object.is_none();
     // Generated code accesses every field, but `forbid(deprecated)` rejects any

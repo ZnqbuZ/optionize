@@ -25,6 +25,23 @@ fn attributes_report_errors_on_fields_after_an_invalid_attribute() {
 }
 
 #[test]
+fn attributes_report_field_errors_after_an_invalid_struct_attribute() {
+    let messages = errors(quote! {
+        #[optionize(object = Patch, subject = Config)]
+        struct Local {
+            #[optionize(skip, flatten)]
+            first: u32,
+            #[optionize(unknown)]
+            second: u32,
+        }
+    });
+    assert_eq!(messages.len(), 3, "{messages:?}");
+    assert!(messages[0].contains("`subject` and `object` cannot be combined"));
+    assert!(messages[1].contains("`skip` can only be combined with `default`"));
+    assert!(messages[2].contains("Unknown field: `unknown`"));
+}
+
+#[test]
 fn attributes_reject_conflicting_mapping_options() {
     let cases = [
         (
