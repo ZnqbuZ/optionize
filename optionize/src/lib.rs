@@ -493,11 +493,18 @@
 //! ## Converted fields
 //!
 //! `as = Type` maps a field to a different type in the generated object, such as a
-//! plain representation of a subject-only type. The two types must convert into each
-//! other with `From`, so no conversion can fail: downgrading converts the subject's
-//! value into the object's type, while patching and upgrading convert it back.
-//! Because [`PartialOptionized`] performs both directions, mapping a foreign type to
-//! another foreign type needs an existing implementation or a local wrapper.
+//! plain representation of a subject-only type. Downgrading converts the subject's
+//! value into the object's type, while patching and upgrading convert it back, so
+//! neither direction may fail. Both directions use `From` unless `with` supplies a
+//! function for them.
+//!
+//! `with(from = ..., into = ...)` takes these functions relative to the annotated
+//! field: `from` converts the `as` type into the field's type, and `into` converts the
+//! field's type into the `as` type, like `From` and `Into` on the field's type. Each is
+//! a function path or a non-capturing closure, so mapping a foreign type to another
+//! foreign type needs no wrapper; an omitted direction still uses `From`. Under
+//! `subject = ...`, the annotated field belongs to the object, so `from` serves
+//! downgrading and `into` serves patching and upgrading.
 //!
 //! The object's type may be any type, such as a tuple or an array. Attribute values
 //! are parsed as expressions, so generic arguments use `::<...>`, and a type that is
@@ -548,6 +555,23 @@
 //! let mut patch = ConfigOptional { timeout: Some(Seconds(7)) };
 //! assert!(patch.retain(&config));
 //! assert_eq!(patch.timeout, Some(Seconds(7)));
+//! ```
+//!
+//! With `with`, the same mapping needs no wrapper type:
+//!
+//! ```rust
+//! use core::time::Duration;
+//! use optionize::{optionized, Optionizable, Optionized};
+//!
+//! #[optionized]
+//! struct Config {
+//!     #[optionize(as = u64, with(from = Duration::from_secs, into = |timeout| timeout.as_secs()))]
+//!     timeout: Duration,
+//! }
+//!
+//! let patch: ConfigOptional = Config { timeout: Duration::from_secs(30) }.downgrade();
+//! assert_eq!(patch.timeout, Some(30));
+//! assert_eq!(patch.upgrade().unwrap().timeout, Duration::from_secs(30));
 //! ```
 //!
 //! The generated object stores the mapped type, so the subject's type needs no
@@ -914,7 +938,7 @@ extern crate self as optionize;
 ///
 /// ## Field-level attributes
 ///
-/// `#[optionize(name = "...", attrs(...), flatten, skip, default = callback, nest = "...", as = "...")]`
+/// `#[optionize(name = "...", attrs(...), flatten, skip, default = callback, nest = "...", as = "...", with(...))]`
 ///
 /// - `name`: Renames a named field in the generated struct. Use `{}` as a placeholder for its original name.
 ///   Tuple fields cannot be renamed.
@@ -939,10 +963,15 @@ extern crate self as optionize;
 ///   Generic arguments must be explicit. String paths for `nest` do not substitute `{}`.
 /// - `as = Type` or `as = "Type"`: Maps this field to a different type in the generated object,
 ///   such as a tuple or an array; quote types that are not expressions, such as `"&'static str"`.
-///   The two types must convert into each other with `From`: downgrading converts the subject's
-///   value into the object's type, while patching and upgrading convert it back. Cannot be
-///   combined with `nest`, which already determines the object type. With `subject = ...`,
-///   name the subject's field type instead. Strings do not substitute `{}`.
+///   The two types must convert into each other with `From`, unless `with` supplies functions:
+///   downgrading converts the subject's value into the object's type, while patching and
+///   upgrading convert it back. Cannot be combined with `nest`, which already determines the
+///   object type. With `subject = ...`, name the subject's field type instead. Strings do not
+///   substitute `{}`.
+/// - `with(from = function, into = function)`: Converts an `as` field with these functions
+///   instead of `From`. Relative to this field, `from` converts the `as` type into the field's
+///   type and `into` converts the field's type into the `as` type. Each is a function path or a
+///   non-capturing closure, and an omitted direction still uses `From`. Requires `as`.
 ///
 /// ## Field Visibility
 /// The generated struct and its fields **strictly retain the visibility** of the original struct and its fields.

@@ -239,19 +239,28 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                         return None;
                     };
                     if let Some(convert) = convert {
-                        // Both directions are required: `optionize` converts the field
-                        // into its object type, while `patch` and `upgrade` convert back.
+                        let object = &convert.ty;
+                        // `optionize` converts the field into its object type, while
+                        // `patch` and `upgrade` convert it back. A direction without a
+                        // `with` function converts with `From`.
                         return Some([
-                            pqs! { *span => #convert: ::core::convert::From<#ty> },
-                            pqs! { *span => #ty: ::core::convert::From<#convert> },
+                            convert
+                                .downgrade
+                                .is_none()
+                                .then(|| pqs! { *span => #object: ::core::convert::From<#ty> }),
+                            convert
+                                .upgrade
+                                .is_none()
+                                .then(|| pqs! { *span => #ty: ::core::convert::From<#object> }),
                         ]);
                     }
                     let nest = nest.as_ref()?;
                     Some([
-                        pqs! { *span => #nest: #krate::Schema<#ty> },
-                        pqs! { *span => #nest: #krate::PartialOptionized<#ty> },
+                        Some(pqs! { *span => #nest: #krate::Schema<#ty> }),
+                        Some(pqs! { *span => #nest: #krate::PartialOptionized<#ty> }),
                     ])
                 })
+                .flatten()
                 .flatten(),
         );
         where_clause
@@ -266,7 +275,7 @@ fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
                 let ty = &field.ty;
                 let (nest, convert) = match &field.strategy {
                     FieldStrategy::Optionize { nest, convert, .. } => {
-                        (nest.as_ref(), convert.as_ref())
+                        (nest.as_ref(), convert.as_ref().map(|convert| &convert.ty))
                     }
                     FieldStrategy::Skip => (None, None),
                 };

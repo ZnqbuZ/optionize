@@ -1,6 +1,7 @@
 use darling::util::Override;
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::{ToTokens, format_ident};
+use syn::{Expr, Type};
 
 use super::field::{FieldIr, FieldStrategy};
 use super::utils::{member_to_string, span};
@@ -159,8 +160,15 @@ impl ToTokens for Optionize<'_, '_> {
         let subject = self.subject;
         let optionize = if let Some(nest) = nest {
             q! { <#nest as #krate::PartialOptionized<#ty>>::optionize(#subject.#original) }
-        } else if convert.is_some() {
-            q! { ::core::convert::Into::into(#subject.#original) }
+        } else if let Some(convert) = convert {
+            Convert {
+                span: self.field.span,
+                function: convert.downgrade.as_ref(),
+                from: ty,
+                to: &convert.ty,
+                value: q! { #subject.#original },
+            }
+            .into_token_stream()
         } else {
             q! { #subject.#original }
         };
@@ -206,8 +214,15 @@ impl ToTokens for Patch<'_, '_> {
         } else {
             q! { #this.#optionized }
         };
-        let patch = if convert.is_some() {
-            q! { ::core::convert::Into::into(#patch) }
+        let patch = if let Some(convert) = convert {
+            Convert {
+                span: self.field.span,
+                function: convert.upgrade.as_ref(),
+                from: &convert.ty,
+                to: ty,
+                value: patch,
+            }
+            .into_token_stream()
         } else {
             patch
         };
@@ -391,8 +406,15 @@ impl ToTokens for Upgrade<'_> {
         } else {
             value
         };
-        let value = if convert.is_some() {
-            q! { ::core::convert::Into::into(#value) }
+        let value = if let Some(convert) = convert {
+            Convert {
+                span: self.0.span,
+                function: convert.upgrade.as_ref(),
+                from: &convert.ty,
+                to: ty,
+                value,
+            }
+            .into_token_stream()
         } else {
             value
         };
@@ -441,5 +463,41 @@ impl ToTokens for UpgradeDefault<'_> {
             q! { #this.#optionized.is_none().then(|| #value) }
         };
         tokens.extend(q! { let #local = #value; });
+    }
+}
+
+/// A converted value: the `with` function applied to it, or `Into` without one.
+pub(super) struct Convert<'f> {
+    pub(super) span: Span,
+    pub(super) function: Option<&'f Expr>,
+    pub(super) from: &'f Type,
+    pub(super) to: &'f Type,
+    pub(super) value: TokenStream,
+}
+
+impl ToTokens for Convert<'_> {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        let Self {
+            span,
+            function,
+            from,
+            to,
+            value,
+        } = self;
+        span!(*span);
+        tokens.extend(match function {
+            // Coercing to a function pointer gives an untyped closure parameter
+            // its type, and accepts a function path as well.
+            Some(function) => {
+                let convert = format_ident!("convert", span = Span::mixed_site());
+                q! {
+                    {
+                        let #convert: fn(#from) -> #to = #function;
+                        #convert(#value)
+                    }
+                }
+            }
+            None => q! { ::core::convert::Into::into(#value) },
+        });
     }
 }

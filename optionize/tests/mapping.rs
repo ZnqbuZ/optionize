@@ -1,4 +1,5 @@
 use core::time::Duration;
+use std::path::PathBuf;
 
 use optionize::{Optionizable, Optionized, PartialOptionized, Retain, optionized};
 use optionize_test_models as models;
@@ -97,6 +98,35 @@ impl From<Color> for (u8, u8, u8) {
     }
 }
 
+// `Duration` and `u64` convert in neither direction with `From`, and
+// `String: From<PathBuf>` does not exist.
+#[optionized]
+#[derive(Debug, PartialEq)]
+struct Timeouts {
+    #[optionize(as = u64, with(from = Duration::from_secs, into = |timeout| timeout.as_secs()))]
+    connect: Duration,
+    #[optionize(flatten, as = u64, with(
+        from = Duration::from_millis,
+        into = |interval: Duration| interval.as_millis() as u64,
+    ))]
+    interval: Duration,
+    #[optionize(as = String, with(into = |path: PathBuf| path.to_string_lossy().into_owned()))]
+    log: PathBuf,
+}
+
+// The annotated field belongs to the object here, so `from` converts the
+// subject's `Duration` into it and `into` converts it back.
+#[optionized]
+#[optionize(subject = models::DurationSubject)]
+#[derive(Debug, PartialEq)]
+struct SecondsPatch {
+    #[optionize(as = Duration, with(
+        from = |timeout: Duration| timeout.as_secs(),
+        into = Duration::from_secs,
+    ))]
+    timeout: Option<u64>,
+}
+
 // Any type works, written directly when it is also an expression or as a string.
 #[optionized]
 #[derive(Debug, PartialEq)]
@@ -166,6 +196,61 @@ fn converted_fields_map_to_any_type() {
         Palette {
             fill: Color(1, 2, 3),
             stroke: Color(4, 5, 6),
+        }
+    );
+}
+
+#[test]
+fn conversion_functions_replace_from_in_each_direction() {
+    let patch = Timeouts {
+        connect: Duration::from_secs(3),
+        interval: Duration::from_millis(250),
+        log: PathBuf::from("node.log"),
+    }
+    .downgrade();
+    assert_eq!(
+        patch,
+        TimeoutsOptional {
+            connect: Some(3),
+            interval: 250,
+            log: Some(String::from("node.log")),
+        }
+    );
+
+    let mut subject = patch.upgrade().unwrap();
+    assert_eq!(
+        subject,
+        Timeouts {
+            connect: Duration::from_secs(3),
+            interval: Duration::from_millis(250),
+            log: PathBuf::from("node.log"),
+        }
+    );
+
+    subject.load(TimeoutsOptional {
+        connect: Some(7),
+        interval: 500,
+        log: None,
+    });
+    assert_eq!(subject.connect, Duration::from_secs(7));
+    assert_eq!(subject.interval, Duration::from_millis(500));
+    assert_eq!(subject.log, PathBuf::from("node.log"));
+}
+
+#[test]
+fn conversion_functions_follow_the_annotated_field_in_subject_mappings() {
+    let mut subject = models::DurationSubject {
+        timeout: Duration::from_secs(1),
+    };
+    subject.load(SecondsPatch { timeout: Some(4) });
+    assert_eq!(subject.timeout, Duration::from_secs(4));
+
+    let patch: SecondsPatch = subject.downgrade();
+    assert_eq!(patch.timeout, Some(4));
+    assert_eq!(
+        patch.upgrade().unwrap(),
+        models::DurationSubject {
+            timeout: Duration::from_secs(4)
         }
     );
 }

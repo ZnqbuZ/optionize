@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_debug_implementations, unused_qualifications)]
 
+use core::time::Duration;
 use optionize::optionized;
 
 #[optionized]
@@ -51,6 +52,13 @@ pub struct Config<'a, Data: Default> {
 #[optionized]
 #[derive(Debug, PartialEq)]
 pub struct Pair(pub u32, pub String);
+
+#[optionized]
+#[derive(Debug, PartialEq)]
+pub struct Interval {
+    #[optionize(as = u64, with(from = Duration::from_secs, into = |every| every.as_secs()))]
+    pub every: Duration,
+}
 
 pub mod external {
     #[derive(Debug, PartialEq)]

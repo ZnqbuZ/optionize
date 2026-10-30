@@ -105,6 +105,7 @@ fn skip_rejects_combinations_with_other_field_options() {
         quote!(flatten),
         quote!(nest = ChildPatch),
         quote!(as = Child),
+        quote!(with(from = convert)),
         quote!(name = "renamed"),
         quote!(attrs()),
     ] {
@@ -141,6 +142,25 @@ fn defaults_reject_flattened_fields_and_the_legacy_skip_initializer() {
         }
     });
     assert_eq!(messages, ["Unknown field: `upgrade` at skip"]);
+}
+
+#[test]
+fn conversion_functions_require_as_and_a_direction() {
+    let messages = errors(quote! {
+        struct Config {
+            #[optionize(with(from = convert))]
+            value: u32,
+        }
+    });
+    assert_eq!(messages, ["`with` requires `as`"]);
+
+    let messages = errors(quote! {
+        struct Config {
+            #[optionize(as = u64, with())]
+            value: u32,
+        }
+    });
+    assert_eq!(messages, ["`with` requires `from` or `into`"]);
 }
 
 #[test]

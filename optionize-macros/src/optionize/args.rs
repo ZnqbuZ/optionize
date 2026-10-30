@@ -2,11 +2,11 @@ use darling::util::{Flag, Override, SpannedValue};
 use darling::{Error, FromAttributes, FromMeta, Result};
 use derive_more::Deref;
 use proc_macro_crate::{FoundCrate, crate_name};
-use proc_macro2::{Ident, TokenStream};
+use proc_macro2::{Ident, Span, TokenStream};
 use quote::{ToTokens, format_ident};
 use syn::parse::Parse;
 use syn::spanned::Spanned;
-use syn::{Expr, Lit, LitStr, Path, Type, TypePath, parse_quote, parse2};
+use syn::{Expr, Lit, LitStr, Meta, Path, Type, TypePath, parse_quote, parse2};
 
 use super::attrs::Attributes;
 use super::utils::format;
@@ -174,6 +174,35 @@ impl StructArgs {
     }
 }
 
+/// The functions that convert a field with `as`, relative to the annotated
+/// field: `from` converts the `as` type into the field's type, and `into`
+/// converts the field's type into the `as` type.
+#[derive(Debug)]
+pub(super) struct WithArgs {
+    pub(super) from: Option<Expr>,
+    pub(super) into: Option<Expr>,
+    /// The span of `with` itself, which errors about the whole list point at.
+    pub(super) span: Span,
+}
+
+impl FromMeta for WithArgs {
+    fn from_meta(meta: &Meta) -> Result<Self> {
+        #[derive(Default, FromMeta)]
+        #[darling(default)]
+        struct Functions {
+            from: Option<Expr>,
+            into: Option<Expr>,
+        }
+
+        let Functions { from, into } = Functions::from_meta(meta)?;
+        Ok(Self {
+            from,
+            into,
+            span: meta.path().span(),
+        })
+    }
+}
+
 #[derive(Debug, Default, Deref, FromAttributes)]
 #[darling(default, attributes(optionize), and_then = "Self::finalize")]
 pub(super) struct FieldArgs {
@@ -184,6 +213,7 @@ pub(super) struct FieldArgs {
     pub(super) nest: Option<TypeArg>,
     #[darling(rename = "as")]
     pub(super) r#as: Option<TypeArg<Type>>,
+    pub(super) with: Option<WithArgs>,
     pub(super) skip: Flag,
     pub(super) default: Option<SpannedValue<Override<Expr>>>,
 }
@@ -194,7 +224,8 @@ impl FieldArgs {
             && (self.general.is_some()
                 || self.flatten.is_present()
                 || self.nest.is_some()
-                || self.r#as.is_some())
+                || self.r#as.is_some()
+                || self.with.is_some())
         {
             return Err(Error::custom("`skip` can only be combined with `default`")
                 .with_span(&self.skip.span()));
@@ -212,6 +243,15 @@ impl FieldArgs {
             && self.nest.is_some()
         {
             return Err(Error::custom("`as` cannot be used with `nest`").with_span(&convert.span()));
+        }
+
+        if let Some(with) = &self.with {
+            if self.r#as.is_none() {
+                return Err(Error::custom("`with` requires `as`").with_span(&with.span));
+            }
+            if with.from.is_none() && with.into.is_none() {
+                return Err(Error::custom("`with` requires `from` or `into`").with_span(&with.span));
+            }
         }
 
         Ok(self)

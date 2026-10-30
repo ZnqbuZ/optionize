@@ -5,8 +5,8 @@ use core::marker::PhantomData;
 use optionize::{Optionizable, Optionized, PartialOptionized, Retain};
 use optionize_test_downstream::external::{Peer, WirePatch};
 use optionize_test_downstream::{
-    Config, ConfigOptional, Endpoint, EndpointOptional, Pair, PairOptional, PeerPatch, Seconds,
-    Wire,
+    Config, ConfigOptional, Endpoint, EndpointOptional, Interval, IntervalOptional, Pair,
+    PairOptional, PeerPatch, Seconds, Wire,
 };
 
 fn endpoint(port: u16) -> Endpoint {
@@ -80,6 +80,17 @@ fn generated_mappings_run_every_operation() {
     assert_eq!(config.retries, 3);
     assert_eq!(config.data, 0);
     assert_eq!(config.timeout, Seconds(9));
+}
+
+#[test]
+fn conversion_functions_run_in_both_directions() {
+    let patch = Interval {
+        every: core::time::Duration::from_secs(2),
+    }
+    .downgrade();
+    assert_eq!(patch, IntervalOptional { every: Some(2) });
+    let interval: Interval = patch.upgrade().unwrap();
+    assert_eq!(interval.every.as_secs(), 2);
 }
 
 #[test]

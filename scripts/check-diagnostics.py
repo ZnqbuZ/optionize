@@ -27,6 +27,7 @@ CASES = {
     "default_flatten": ("`default` cannot be used with `flatten`", "default"),
     "default_mutable": ("mismatched types", "mutable_default"),
     "arguments_unknown": ("Unknown field: `unknown`", "unknown"),
+    "with_missing_as": ("`with` requires `as`", "with"),
 }
 
 

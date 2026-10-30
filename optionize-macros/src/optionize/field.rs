@@ -17,8 +17,19 @@ pub(super) enum FieldStrategy {
     Optionize {
         wrap: bool,
         nest: Option<Box<Type>>,
-        convert: Option<Box<Type>>,
+        convert: Option<Box<Conversion>>,
     },
+}
+
+/// The object's type of a converted field, and the functions that replace
+/// `Into` when converting between the subject and the object.
+#[derive(Debug)]
+pub(super) struct Conversion {
+    pub(super) ty: Type,
+    /// From the subject's value to the object's.
+    pub(super) downgrade: Option<Expr>,
+    /// From the object's value to the subject's.
+    pub(super) upgrade: Option<Expr>,
 }
 
 pub(super) struct FieldIr {
@@ -140,13 +151,27 @@ impl FieldIr {
                     };
                     (ty, nest, convert)
                 };
+                let convert = convert.map(|ty| {
+                    let (from, into) = args
+                        .with
+                        .map(|with| (with.from, with.into))
+                        .unwrap_or_default();
+                    // `from` and `into` are relative to the annotated field, which
+                    // belongs to the object when the subject is external.
+                    let (downgrade, upgrade) = if reverse { (from, into) } else { (into, from) };
+                    Box::new(Conversion {
+                        ty,
+                        downgrade,
+                        upgrade,
+                    })
+                });
                 args.general.attrs.patch(&mut field.attrs);
                 (
                     ty,
                     FieldStrategy::Optionize {
                         wrap,
                         nest: nest.map(Box::new),
-                        convert: convert.map(Box::new),
+                        convert,
                     },
                 )
             };
