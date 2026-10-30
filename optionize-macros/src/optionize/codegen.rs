@@ -439,12 +439,12 @@ impl ToTokens for Upgrade<'_> {
     }
 }
 
-pub(super) struct UpgradeDefault<'f>(pub(super) &'f FieldIr);
+pub(super) struct FieldDefault<'f>(pub(super) &'f FieldIr);
 
-impl ToTokens for UpgradeDefault<'_> {
+impl ToTokens for FieldDefault<'_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         expand! { self.0 => { ty, optionized, strategy, local, default } }
-        let Some(DefaultRule::Own(default)) = default else {
+        let Some(DefaultRule::Field(default)) = default else {
             return;
         };
         let default = match default {
@@ -469,7 +469,7 @@ impl ToTokens for UpgradeDefault<'_> {
 
 /// The struct's `default`: the subject it returns is built at most once, when a
 /// field relying on it is missing, and split into the values of those fields.
-pub(super) struct SharedDefault<'f> {
+pub(super) struct StructDefault<'f> {
     pub(super) span: Span,
     pub(super) default: &'f Override<FunctionArg>,
     pub(super) subject: &'f TokenStream,
@@ -477,7 +477,7 @@ pub(super) struct SharedDefault<'f> {
     pub(super) fields: &'f [FieldIr],
 }
 
-impl ToTokens for SharedDefault<'_> {
+impl ToTokens for StructDefault<'_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         let Self {
             span,
@@ -493,7 +493,7 @@ impl ToTokens for SharedDefault<'_> {
         };
         let fields = fields
             .iter()
-            .filter(|field| matches!(field.default, Some(DefaultRule::Shared)))
+            .filter(|field| matches!(field.default, Some(DefaultRule::Struct)))
             .collect::<Vec<_>>();
         if fields.is_empty() {
             // Nothing relies on the function, but it is still checked.

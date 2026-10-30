@@ -36,9 +36,9 @@ pub(super) struct Conversion {
 #[derive(Debug)]
 pub(super) enum DefaultRule {
     /// The field's own `default`: its type's `Default`, or a callback.
-    Own(Override<FunctionArg>),
-    /// The struct's `default`, shared by the fields without their own.
-    Shared,
+    Field(Override<FunctionArg>),
+    /// The struct's `default`, which fills the fields without their own.
+    Struct,
 }
 
 pub(super) struct FieldIr {
@@ -60,7 +60,7 @@ impl FieldIr {
         krate: Crate,
         partial: bool,
         upgradable: bool,
-        shared: bool,
+        struct_default: bool,
         reverse: bool,
     ) -> Result<Vec<Self>> {
         let mut result = Vec::new();
@@ -197,13 +197,13 @@ impl FieldIr {
                 );
             }
             let default = match args.default {
-                Some(default) => Some(DefaultRule::Own(default.into_inner())),
+                Some(default) => Some(DefaultRule::Field(default.into_inner())),
                 // A flattened field is never missing.
                 None if matches!(strategy, FieldStrategy::Optionize { wrap: false, .. }) => None,
-                None if shared => Some(DefaultRule::Shared),
+                None if struct_default => Some(DefaultRule::Struct),
                 // A skipped field is always missing.
                 None => matches!(strategy, FieldStrategy::Skip)
-                    .then_some(DefaultRule::Own(Override::Inherit)),
+                    .then_some(DefaultRule::Field(Override::Inherit)),
             };
             let ir = Self {
                 krate: krate.clone(),
