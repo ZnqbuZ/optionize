@@ -165,7 +165,7 @@ impl ToTokens for Optionize<'_, '_> {
                 span: self.field.span,
                 function: convert.downgrade.as_ref(),
                 from: ty,
-                to: &convert.ty,
+                into: &convert.ty,
                 value: q! { #subject.#original },
             }
             .into_token_stream()
@@ -219,7 +219,7 @@ impl ToTokens for Patch<'_, '_> {
                 span: self.field.span,
                 function: convert.upgrade.as_ref(),
                 from: &convert.ty,
-                to: ty,
+                into: ty,
                 value: patch,
             }
             .into_token_stream()
@@ -411,7 +411,7 @@ impl ToTokens for Upgrade<'_> {
                 span: self.0.span,
                 function: convert.upgrade.as_ref(),
                 from: &convert.ty,
-                to: ty,
+                into: ty,
                 value,
             }
             .into_token_stream()
@@ -471,7 +471,7 @@ pub(super) struct Convert<'f> {
     pub(super) span: Span,
     pub(super) function: Option<&'f Expr>,
     pub(super) from: &'f Type,
-    pub(super) to: &'f Type,
+    pub(super) into: &'f Type,
     pub(super) value: TokenStream,
 }
 
@@ -481,7 +481,7 @@ impl ToTokens for Convert<'_> {
             span,
             function,
             from,
-            to,
+            into,
             value,
         } = self;
         span!(*span);
@@ -492,7 +492,7 @@ impl ToTokens for Convert<'_> {
                 let convert = format_ident!("convert", span = Span::mixed_site());
                 q! {
                     {
-                        let #convert: fn(#from) -> #to = #function;
+                        let #convert: fn(#from) -> #into = #function;
                         #convert(#value)
                     }
                 }
