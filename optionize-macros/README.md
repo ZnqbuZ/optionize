@@ -10,4 +10,9 @@ See the [project README](https://github.com/ZnqbuZ/optionize#readme) for a quick
 
 ## License
 
-[MIT](https://github.com/ZnqbuZ/optionize/blob/HEAD/LICENSE)
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](https://github.com/ZnqbuZ/optionize/blob/HEAD/LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](https://github.com/ZnqbuZ/optionize/blob/HEAD/LICENSE-MIT))
+
+at your option.
