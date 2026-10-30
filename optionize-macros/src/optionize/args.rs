@@ -4,8 +4,9 @@ use derive_more::Deref;
 use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Ident, TokenStream};
 use quote::{ToTokens, format_ident};
+use syn::parse::Parse;
 use syn::spanned::Spanned;
-use syn::{Expr, Lit, LitStr, Path, TypePath, parse_quote};
+use syn::{Expr, Lit, LitStr, Path, Type, TypePath, parse_quote, parse2};
 
 use super::attrs::Attributes;
 use super::utils::format;
@@ -74,43 +75,48 @@ pub(super) struct PartialArgs {
     pub(super) marked: Option<SpannedValue<Override<MarkedArgs>>>,
 }
 
+/// A type written directly or as a string, read with the `Parsed` grammar.
 #[derive(Debug)]
-pub(super) enum TypeArg {
+pub(super) enum TypeArg<Parsed = TypePath> {
     Str(LitStr),
-    Path(TypePath),
+    Direct(Parsed),
 }
 
-impl FromMeta for TypeArg {
+impl<Parsed: Parse> FromMeta for TypeArg<Parsed> {
     fn from_expr(expr: &Expr) -> Result<Self> {
         match expr {
             Expr::Lit(lit) if let Lit::Str(value) = &lit.lit => Ok(Self::Str(value.clone())),
             Expr::Group(group) => Self::from_expr(&group.expr),
-            _ => TypePath::from_expr(expr).map(Self::Path),
+            // Attribute values parse as expressions; read their tokens again
+            // with the grammar this argument expects.
+            _ => parse2(expr.to_token_stream())
+                .map(Self::Direct)
+                .map_err(Error::from),
         }
     }
 }
 
-impl ToTokens for TypeArg {
+impl<Parsed: ToTokens> ToTokens for TypeArg<Parsed> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         match self {
             Self::Str(value) => value.to_tokens(tokens),
-            Self::Path(path) => path.to_tokens(tokens),
+            Self::Direct(parsed) => parsed.to_tokens(tokens),
         }
     }
 }
 
-impl TypeArg {
-    pub(super) fn parse(self) -> Result<TypePath> {
+impl<Parsed: Parse> TypeArg<Parsed> {
+    pub(super) fn parse(self) -> Result<Parsed> {
         match self {
             Self::Str(value) => value.parse().map_err(Error::from),
-            Self::Path(path) => Ok(path),
+            Self::Direct(parsed) => Ok(parsed),
         }
     }
 
-    pub(super) fn format(self, ident: &Ident) -> Result<TypePath> {
+    pub(super) fn format(self, ident: &Ident) -> Result<Parsed> {
         match self {
             Self::Str(pattern) => format(&pattern, ident),
-            Self::Path(path) => Ok(path),
+            Self::Direct(parsed) => Ok(parsed),
         }
     }
 }
@@ -177,7 +183,7 @@ pub(super) struct FieldArgs {
     pub(super) flatten: Flag,
     pub(super) nest: Option<TypeArg>,
     #[darling(rename = "as")]
-    pub(super) r#as: Option<TypeArg>,
+    pub(super) r#as: Option<TypeArg<Type>>,
     pub(super) skip: Flag,
     pub(super) default: Option<SpannedValue<Override<Expr>>>,
 }

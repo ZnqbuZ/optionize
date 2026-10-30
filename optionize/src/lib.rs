@@ -499,6 +499,10 @@
 //! Because [`PartialOptionized`] performs both directions, mapping a foreign type to
 //! another foreign type needs an existing implementation or a local wrapper.
 //!
+//! The object's type may be any type, such as a tuple or an array. Attribute values
+//! are parsed as expressions, so generic arguments use `::<...>`, and a type that is
+//! not also an expression is quoted, as in `as = "&'static str"`.
+//!
 //! A converted field combines with `flatten` and with `default`, but not with
 //! `nest`, which already determines the object's field type. Under `subject = ...`,
 //! `as` names the subject's field type, following `nest`.
@@ -933,11 +937,12 @@ extern crate self as optionize;
 ///   `PartialOptionized` (and `Optionized` when upgrading is enabled). With `subject = ...`,
 ///   name the nested subject instead; the declared field already supplies its object type.
 ///   Generic arguments must be explicit. String paths for `nest` do not substitute `{}`.
-/// - `as = Type` or `as = "Type"`: Maps this field to a different type in the generated object.
+/// - `as = Type` or `as = "Type"`: Maps this field to a different type in the generated object,
+///   such as a tuple or an array; quote types that are not expressions, such as `"&'static str"`.
 ///   The two types must convert into each other with `From`: downgrading converts the subject's
 ///   value into the object's type, while patching and upgrading convert it back. Cannot be
 ///   combined with `nest`, which already determines the object type. With `subject = ...`,
-///   name the subject's field type instead. String paths do not substitute `{}`.
+///   name the subject's field type instead. Strings do not substitute `{}`.
 ///
 /// ## Field Visibility
 /// The generated struct and its fields **strictly retain the visibility** of the original struct and its fields.

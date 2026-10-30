@@ -69,6 +69,44 @@ struct Wrapped {
     payload: Payload,
 }
 
+/// A color stored in the object as an array or a tuple.
+#[derive(Debug, PartialEq)]
+struct Color(u8, u8, u8);
+
+impl From<[u8; 3]> for Color {
+    fn from([red, green, blue]: [u8; 3]) -> Self {
+        Self(red, green, blue)
+    }
+}
+
+impl From<Color> for [u8; 3] {
+    fn from(Color(red, green, blue): Color) -> Self {
+        [red, green, blue]
+    }
+}
+
+impl From<(u8, u8, u8)> for Color {
+    fn from((red, green, blue): (u8, u8, u8)) -> Self {
+        Self(red, green, blue)
+    }
+}
+
+impl From<Color> for (u8, u8, u8) {
+    fn from(Color(red, green, blue): Color) -> Self {
+        (red, green, blue)
+    }
+}
+
+// Any type works, written directly when it is also an expression or as a string.
+#[optionized]
+#[derive(Debug, PartialEq)]
+struct Palette {
+    #[optionize(as = [u8; 3])]
+    fill: Color,
+    #[optionize(as = "(u8, u8, u8)")]
+    stroke: Color,
+}
+
 #[test]
 fn converted_fields_map_between_subject_and_object_types() {
     let mut patch = Config {
@@ -105,6 +143,29 @@ fn converted_fields_map_between_subject_and_object_types() {
         .unwrap(),
         Config {
             timeout: Duration::from_secs(3)
+        }
+    );
+}
+
+#[test]
+fn converted_fields_map_to_any_type() {
+    let patch = Palette {
+        fill: Color(1, 2, 3),
+        stroke: Color(4, 5, 6),
+    }
+    .downgrade();
+    assert_eq!(
+        patch,
+        PaletteOptional {
+            fill: Some([1, 2, 3]),
+            stroke: Some((4, 5, 6)),
+        }
+    );
+    assert_eq!(
+        patch.upgrade().unwrap(),
+        Palette {
+            fill: Color(1, 2, 3),
+            stroke: Color(4, 5, 6),
         }
     );
 }

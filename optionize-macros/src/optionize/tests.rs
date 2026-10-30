@@ -231,18 +231,63 @@ fn type_arguments_reject_non_paths_and_malformed_strings() {
                     value: Child,
                 }
             ),
-            quote!(
-                struct Config {
-                    #[optionize(as = #value)]
-                    value: u32,
-                }
-            ),
         ] {
             assert!(
                 parse(Crate::default(), input.clone()).is_err(),
                 "accepted invalid path: {input}"
             );
         }
+    }
+    // `as` accepts any type, so only values that are not types fail.
+    for value in [
+        quote!(123),
+        quote!(false),
+        quote!(factory()),
+        quote!("model::"),
+        quote!("model::Config<"),
+    ] {
+        let input = quote!(
+            struct Config {
+                #[optionize(as = #value)]
+                value: u32,
+            }
+        );
+        assert!(
+            parse(Crate::default(), input.clone()).is_err(),
+            "accepted invalid type: {input}"
+        );
+    }
+}
+
+#[test]
+fn converted_fields_accept_any_type() {
+    for (value, expected) in [
+        (quote!((u8, u16)), quote!(Option<(u8, u16)>)),
+        (quote!([u8; 4]), quote!(Option<[u8; 4]>)),
+        (quote!("&'static str"), quote!(Option<&'static str>)),
+    ] {
+        let output = parse(
+            Crate::default(),
+            quote! {
+                struct Config {
+                    #[optionize(as = #value)]
+                    value: u32,
+                }
+            },
+        )
+        .unwrap();
+        let output = parse2::<syn::File>(output).unwrap();
+        let ty = output
+            .items
+            .iter()
+            .find_map(|item| match item {
+                syn::Item::Struct(item) if item.ident == "ConfigOptional" => {
+                    item.fields.iter().next().map(|field| &field.ty)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(quote!(#ty).to_string(), expected.to_string());
     }
 }
 

@@ -116,7 +116,6 @@ impl FieldIr {
                 let Some(convert) = errors.handle(args.r#as.map(TypeArg::parse).transpose()) else {
                     continue;
                 };
-                let convert = convert.map(Type::Path);
                 // `ty` is the subject's field type in both directions; `convert`
                 // additionally carries the object's field type when they differ.
                 let (ty, nest, convert) = if reverse {
