@@ -8,6 +8,7 @@ pub fn optionized(args: TokenStream, input: TokenStream) -> TokenStream {
     let input = input.into();
     optionize::proc(args.into(), &input)
         .unwrap_or_else(|e| {
+            let input = optionize::strip(&input);
             let e = e.write_errors();
             quote! {
                 #input

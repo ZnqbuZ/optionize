@@ -275,6 +275,30 @@ fn attributes_reject_unknown_options_and_literal_attribute_entries() {
 }
 
 #[test]
+fn strip_keeps_everything_but_helper_attributes() {
+    let output = strip(&quote! {
+        #[optionize(name = "{}Patch")]
+        #[derive(Debug)]
+        struct Config {
+            #[optionize(flatten)]
+            #[doc = "kept"]
+            value: u32,
+        }
+    });
+    assert_eq!(
+        output.to_string(),
+        quote! {
+            #[derive(Debug)]
+            struct Config {
+                #[doc = "kept"]
+                value: u32,
+            }
+        }
+        .to_string()
+    );
+}
+
+#[test]
 fn attributes_accumulate_replacements_and_clear_inherited_field_attributes() {
     let output = parse(
         Crate::default(),

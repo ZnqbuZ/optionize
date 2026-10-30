@@ -22,7 +22,8 @@ use args::{Crate, FieldArgs, OptionizedArgs, StructArgs};
 use codegen::{Merge, Optionize, Patch, Retain, Upgrade, UpgradeDefault, Validate, View};
 use field::{FieldIr, FieldStrategy};
 use utils::{
-    collect_idents, extend_where_clause, format, is_deprecation, new_ident, pqs, qs, span,
+    collect_idents, extend_where_clause, format, is_deprecation, is_optionize, new_ident, pqs, qs,
+    span,
 };
 
 fn parse(krate: Crate, input: TokenStream) -> Result<TokenStream> {
@@ -623,6 +624,21 @@ pub fn proc(args: TokenStream, input: &TokenStream) -> Result<TokenStream> {
         #[#krate::__private::expand(crate = #krate)]
         #input
     })
+}
+
+/// Remove every `#[optionize(...)]` attribute from the struct and its fields,
+/// so rejected macro arguments are the only error reported.
+pub fn strip(input: &TokenStream) -> TokenStream {
+    let Ok(mut input) = parse2::<DeriveInput>(input.clone()) else {
+        return input.clone();
+    };
+    input.attrs.retain(|attr| !is_optionize(attr));
+    if let Data::Struct(data) = &mut input.data {
+        for field in data.fields.iter_mut() {
+            field.attrs.retain(|attr| !is_optionize(attr));
+        }
+    }
+    quote! { #input }
 }
 
 pub fn expand(args: TokenStream, input: &TokenStream) -> Result<TokenStream> {
