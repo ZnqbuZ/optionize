@@ -1,7 +1,9 @@
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
-    "optionize", "optionize-macros", "optionize/tests/fixtures/models",
+    "optionize",
+    "optionize-macros",
+    "optionize/tests/fixtures/models",
     "optionize/tests/fixtures/downstream",
 ]
 
@@ -15,14 +17,3 @@ categories = ["config", "rust-patterns"]
 
 [workspace.dependencies]
 optionize-macros = { version = "0.6.0", path = "optionize-macros" }
-
-[profile.dev]
-panic = "unwind"
-debug = 2
-
-[profile.release]
-panic = "abort"
-lto = true
-codegen-units = 1
-opt-level = 3
-strip = true
