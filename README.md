@@ -4,6 +4,8 @@
 
 [![crates.io](https://img.shields.io/crates/v/optionize.svg)](https://crates.io/crates/optionize)
 [![Documentation](https://docs.rs/optionize/badge.svg)](https://docs.rs/optionize)
+[![CI](https://github.com/ZnqbuZ/optionize/actions/workflows/rust.yml/badge.svg)](https://github.com/ZnqbuZ/optionize/actions/workflows/rust.yml)
+[![no_std](https://img.shields.io/badge/no__std-compatible-blue.svg)](#why-optionize)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
 [API documentation](https://docs.rs/optionize) · [Detailed guide](https://github.com/ZnqbuZ/optionize/blob/HEAD/docs/guide.md)

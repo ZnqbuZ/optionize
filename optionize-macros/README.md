@@ -1,12 +1,14 @@
 # optionize-macros
 
-Procedural macros for the `optionize` crate.
+[![crates.io](https://img.shields.io/crates/v/optionize-macros.svg)](https://crates.io/crates/optionize-macros)
+[![Documentation](https://docs.rs/optionize-macros/badge.svg)](https://docs.rs/optionize-macros)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-This crate implements the `#[optionized]` attribute, which generates partial versions of structs, wrapping ordinary fields in `Option<Value>`. It also generates trait implementations for applying and merging patches, retaining changes, and upgrading complete patches. The `Optionize` derive is an internal helper, not a standalone generation API.
+Procedural macros for the [`optionize`](https://crates.io/crates/optionize) crate.
 
-Use the main [`optionize`](https://crates.io/crates/optionize) crate in your application. It re-exports these macros alongside the required traits.
+This crate is an internal implementation helper and not intended to be used directly. Please depend on the main [`optionize`](https://crates.io/crates/optionize) crate instead.
 
-See the [project README](https://github.com/ZnqbuZ/optionize#readme) for a quick start and the [API documentation](https://docs.rs/optionize) for examples and attribute details.
+See the [project README](https://github.com/ZnqbuZ/optionize#readme) and [API documentation](https://docs.rs/optionize) for usage and examples.
 
 ## License
 
